@@ -1,0 +1,161 @@
+use std::fs;
+use std::path::PathBuf;
+
+use gpui_component::IconName;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// The kind of a session, mirroring MobaXterm's session categories.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionKind {
+    Ssh,
+    Sftp,
+    Rdp,
+    Serial,
+    Local,
+}
+
+impl SessionKind {
+    pub const ALL: [SessionKind; 5] = [
+        SessionKind::Ssh,
+        SessionKind::Sftp,
+        SessionKind::Rdp,
+        SessionKind::Serial,
+        SessionKind::Local,
+    ];
+
+    pub fn icon(self) -> IconName {
+        match self {
+            SessionKind::Ssh | SessionKind::Local => IconName::SquareTerminal,
+            SessionKind::Sftp => IconName::Folder,
+            SessionKind::Rdp => IconName::LayoutDashboard,
+            SessionKind::Serial => IconName::Cpu,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SessionKind::Ssh => "SSH",
+            SessionKind::Sftp => "SFTP",
+            SessionKind::Rdp => "RDP",
+            SessionKind::Serial => "Serial",
+            SessionKind::Local => "Local",
+        }
+    }
+
+    /// Whether this kind currently has a working terminal backend.
+    pub fn is_supported(self) -> bool {
+        matches!(
+            self,
+            SessionKind::Local | SessionKind::Ssh | SessionKind::Serial
+        )
+    }
+}
+
+/// A saved connection entry shown in the sessions sidebar.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Session {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: SessionKind,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    /// Transient only: never written to disk. Re-entered each app run.
+    #[serde(skip)]
+    pub password: String,
+    #[serde(default = "default_baud_rate")]
+    pub baud_rate: u32,
+    /// Path to a private key file for SSH public-key authentication. Tried
+    /// before falling back to password auth. Optional.
+    #[serde(default)]
+    pub private_key_path: Option<String>,
+}
+
+fn default_baud_rate() -> u32 {
+    115_200
+}
+
+impl Session {
+    pub fn new(name: impl Into<String>, kind: SessionKind) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            kind,
+            host: String::new(),
+            port: kind.default_port(),
+            username: String::new(),
+            password: String::new(),
+            baud_rate: default_baud_rate(),
+            private_key_path: None,
+        }
+    }
+
+    /// A short human-readable summary shown under the session name.
+    pub fn detail(&self) -> String {
+        match self.kind {
+            SessionKind::Local => "Local shell".to_string(),
+            SessionKind::Serial => {
+                if self.host.is_empty() {
+                    "No port configured".to_string()
+                } else {
+                    self.host.clone()
+                }
+            }
+            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Rdp => {
+                if self.host.is_empty() {
+                    "No host configured".to_string()
+                } else if self.username.is_empty() {
+                    format!("{}:{}", self.host, self.port)
+                } else {
+                    format!("{}@{}:{}", self.username, self.host, self.port)
+                }
+            }
+        }
+    }
+}
+
+impl SessionKind {
+    pub fn default_port(self) -> u16 {
+        match self {
+            SessionKind::Ssh | SessionKind::Sftp => 22,
+            SessionKind::Rdp => 3389,
+            SessionKind::Serial | SessionKind::Local => 0,
+        }
+    }
+}
+
+fn config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Oxidal")
+}
+
+fn sessions_path() -> PathBuf {
+    config_dir().join("sessions.json")
+}
+
+pub fn load_sessions() -> Vec<Session> {
+    let path = sessions_path();
+    match fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Err(_) => default_sessions(),
+    }
+}
+
+pub fn save_sessions(sessions: &[Session]) {
+    let dir = config_dir();
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    if let Ok(json) = serde_json::to_string_pretty(sessions) {
+        let _ = fs::write(sessions_path(), json);
+    }
+}
+
+fn default_sessions() -> Vec<Session> {
+    vec![Session::new("Local shell", SessionKind::Local)]
+}
