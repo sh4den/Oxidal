@@ -1,24 +1,7 @@
-use std::sync::Arc;
-use std::time::Duration;
-
-use russh::client;
 use russh::ChannelMsg;
 
 use super::backend::{Backend, BackendEvent};
-
-struct SshHandler;
-
-impl client::Handler for SshHandler {
-    type Error = russh::Error;
-
-    // TODO: verify against a known_hosts store instead of trusting blindly.
-    async fn check_server_key(
-        &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
+use crate::ssh_client;
 
 /// Connect to an SSH server and start an interactive shell over a PTY channel.
 /// The connection runs on a dedicated background thread with its own tokio
@@ -81,33 +64,7 @@ async fn run(
     in_rx: async_channel::Receiver<Vec<u8>>,
     resize_rx: async_channel::Receiver<(u16, u16)>,
 ) -> anyhow::Result<()> {
-    let config = Arc::new(client::Config {
-        inactivity_timeout: Some(Duration::from_secs(60)),
-        ..Default::default()
-    });
-
-    let mut session = client::connect(config, (host.as_str(), port), SshHandler).await?;
-
-    let mut authenticated = false;
-    if let Some(key_path) = private_key_path.filter(|p| !p.trim().is_empty()) {
-        let key_pair = russh::keys::load_secret_key(&key_path, None)
-            .map_err(|e| anyhow::anyhow!("failed to load private key {key_path}: {e}"))?;
-        let hash_alg = session.best_supported_rsa_hash().await?.flatten();
-        let auth = session
-            .authenticate_publickey(
-                username.clone(),
-                russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key_pair), hash_alg),
-            )
-            .await?;
-        authenticated = auth.success();
-    }
-
-    if !authenticated {
-        let auth = session.authenticate_password(username, password).await?;
-        if !auth.success() {
-            anyhow::bail!("SSH authentication failed");
-        }
-    }
+    let session = ssh_client::connect(host, port, username, password, private_key_path).await?;
 
     let mut channel = session.channel_open_session().await?;
     channel

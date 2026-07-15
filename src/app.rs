@@ -6,6 +6,7 @@ use gpui::{
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
+    resizable::{h_resizable, resizable_panel},
     tab::{Tab, TabBar},
     v_flex, ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar,
 };
@@ -14,6 +15,7 @@ use uuid::Uuid;
 use crate::session::{self, Session, SessionKind};
 use crate::session_dialog;
 use crate::settings_view::SettingsView;
+use crate::sftp::SftpPanel;
 use crate::terminal::{self, TerminalView};
 
 const TERM_ROWS: usize = 32;
@@ -21,6 +23,13 @@ const TERM_COLS: usize = 110;
 
 enum TabContent {
     Terminal(Entity<TerminalView>),
+    /// An SSH session pairs a terminal with a MobaXterm-style SFTP file
+    /// browser docked on the left, each over its own connection.
+    SshSession {
+        sftp: Entity<SftpPanel>,
+        terminal: Entity<TerminalView>,
+    },
+    Sftp(Entity<SftpPanel>),
     Settings(Entity<SettingsView>),
     Message(SharedString),
 }
@@ -116,9 +125,20 @@ impl OxidalApp {
                     TERM_ROWS as u16,
                     TERM_COLS as u16,
                 );
-                TabContent::Terminal(
-                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, window, cx)),
-                )
+                let terminal =
+                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, window, cx));
+                let sftp = cx.new(|cx| {
+                    SftpPanel::new(
+                        target.host.clone(),
+                        target.port,
+                        target.username.clone(),
+                        target.password.clone(),
+                        target.private_key_path.clone(),
+                        window,
+                        cx,
+                    )
+                });
+                TabContent::SshSession { sftp, terminal }
             }
             SessionKind::Serial => match terminal::serial::spawn(target.host.clone(), target.baud_rate) {
                 Ok(backend) => TabContent::Terminal(
@@ -126,9 +146,17 @@ impl OxidalApp {
                 ),
                 Err(err) => TabContent::Message(format!("Failed to open serial port: {err}").into()),
             },
-            SessionKind::Sftp => TabContent::Message(
-                "SFTP file browsing isn't implemented yet — only terminal sessions work so far.".into(),
-            ),
+            SessionKind::Sftp => TabContent::Sftp(cx.new(|cx| {
+                SftpPanel::new(
+                    target.host.clone(),
+                    target.port,
+                    target.username.clone(),
+                    target.password.clone(),
+                    target.private_key_path.clone(),
+                    window,
+                    cx,
+                )
+            })),
             SessionKind::Rdp => TabContent::Message(
                 "RDP isn't implemented yet — only terminal sessions work so far.".into(),
             ),
@@ -342,6 +370,16 @@ impl OxidalApp {
 
         let content = self.tabs.get(active_index).map(|tab| match &tab.content {
             TabContent::Terminal(view) => view.clone().into_any_element(),
+            TabContent::SshSession { sftp, terminal } => h_resizable("ssh-session-split")
+                .child(
+                    resizable_panel()
+                        .size(px(320.))
+                        .size_range(px(220.)..px(560.))
+                        .child(sftp.clone()),
+                )
+                .child(terminal.clone().into_any_element())
+                .into_any_element(),
+            TabContent::Sftp(view) => view.clone().into_any_element(),
             TabContent::Settings(view) => view.clone().into_any_element(),
             TabContent::Message(msg) => v_flex()
                 .flex_1()

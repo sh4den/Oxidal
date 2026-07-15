@@ -43,11 +43,11 @@ impl SessionKind {
         }
     }
 
-    /// Whether this kind currently has a working terminal backend.
+    /// Whether this kind currently has a working backend.
     pub fn is_supported(self) -> bool {
         matches!(
             self,
-            SessionKind::Local | SessionKind::Ssh | SessionKind::Serial
+            SessionKind::Local | SessionKind::Ssh | SessionKind::Serial | SessionKind::Sftp
         )
     }
 }
