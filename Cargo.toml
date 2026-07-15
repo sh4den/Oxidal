@@ -17,5 +17,7 @@ async-channel = "2"
 vte = "0.13"
 portable-pty = "0.8"
 russh = "0.51"
+russh-sftp = "2"
 serialport = "4"
-tokio = { version = "1", features = ["rt", "net", "io-util", "time"] }
+chrono = "0.4"
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "fs"] }

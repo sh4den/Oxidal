@@ -3,6 +3,8 @@ mod session;
 mod session_dialog;
 mod settings;
 mod settings_view;
+mod sftp;
+mod ssh_client;
 mod terminal;
 
 use gpui::{px, size, App, AppContext as _, Bounds, WindowBounds, WindowOptions};
