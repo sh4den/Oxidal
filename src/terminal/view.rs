@@ -1,16 +1,36 @@
 use gpui::{
-    div, hsla, prelude::FluentBuilder as _, px, Context, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Render, SharedString, Styled as _,
-    StyledText, TextRun, Window,
+    div, hsla, prelude::FluentBuilder as _, px, Context, FocusHandle, Font, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Render,
+    SharedString, Styled as _, StyledText, TextRun, Window,
 };
 use gpui_component::ElementExt as _;
 
 use super::backend::{Backend, BackendEvent};
-use super::grid::Grid;
+use super::grid::{Color, Grid};
 use crate::settings::AppSettings;
 
-/// Renders a live terminal grid (local shell, SSH, or serial session) and
-/// forwards keyboard input to its backend.
+fn cursor_fg() -> Hsla {
+    hsla(0., 0., 0.08, 1.)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct CellStyle {
+    fg: Color,
+    bg: Color,
+    bold: bool,
+    cursor: bool,
+}
+
+impl CellStyle {
+    fn colors(self) -> (Hsla, Option<Hsla>) {
+        if self.cursor {
+            (self.bg.as_bg().unwrap_or(cursor_fg()), Some(self.fg.as_fg()))
+        } else {
+            (self.fg.as_fg(), self.bg.as_bg())
+        }
+    }
+}
+
 pub struct TerminalView {
     grid: Grid,
     backend: Backend,
@@ -72,9 +92,6 @@ impl TerminalView {
         }
     }
 
-    /// Resize the grid (and tell the backend, so the shell/TUI gets a proper
-    /// resize notification) if the pane's measured size implies a different
-    /// row/column count than we currently have.
     fn resize(&mut self, rows: usize, cols: usize, cx: &mut Context<Self>) {
         if rows == self.grid.rows && cols == self.grid.cols {
             return;
@@ -84,47 +101,50 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn render_row(&self, row: usize, font_family: SharedString, line_height: f32) -> impl IntoElement {
-        let mut text = String::new();
+    fn render_row(
+        &self,
+        row: usize,
+        font: &Font,
+        bold_font: &Font,
+        line_height: f32,
+    ) -> impl IntoElement {
+        let cols = self.grid.cols;
+        let mut text = String::with_capacity(cols);
         let mut runs: Vec<TextRun> = Vec::new();
+        let mut last: Option<CellStyle> = None;
 
-        for col in 0..self.grid.cols {
-            let mut cell = self.grid.cell(row, col);
-            let is_cursor = self.grid.cursor_visible
-                && self.grid.cursor_row == row
-                && self.grid.cursor_col == col;
-            if is_cursor {
-                let fg = cell.bg.unwrap_or(hsla(0., 0., 0.08, 1.));
-                let bg = cell.fg;
-                cell.fg = fg;
-                cell.bg = Some(bg);
-            }
+        for col in 0..cols {
+            let cell = self.grid.cell(row, col);
+            let style = CellStyle {
+                fg: cell.fg,
+                bg: cell.bg,
+                bold: cell.bold(),
+                cursor: self.grid.cursor_visible
+                    && self.grid.cursor_row == row
+                    && self.grid.cursor_col == col,
+            };
 
-            let byte_len = cell.ch.len_utf8();
-            text.push(cell.ch);
+            let ch = cell.ch();
+            let byte_len = ch.len_utf8();
+            text.push(ch);
 
-            let font = gpui::font(font_family.clone());
-            let font = if cell.bold { font.bold() } else { font };
-
-            if let Some(last) = runs.last_mut() {
-                let same_style: &TextRun = last;
-                if same_style.color == cell.fg
-                    && same_style.background_color == cell.bg
-                    && same_style.font == font
-                {
-                    last.len += byte_len;
+            if let (Some(prev), Some(run)) = (last, runs.last_mut()) {
+                if prev == style {
+                    run.len += byte_len;
                     continue;
                 }
             }
 
+            let (fg, bg) = style.colors();
             runs.push(TextRun {
                 len: byte_len,
-                font,
-                color: cell.fg,
-                background_color: cell.bg,
+                font: if style.bold { bold_font.clone() } else { font.clone() },
+                color: fg,
+                background_color: bg,
                 underline: None,
                 strikethrough: None,
             });
+            last = Some(style);
         }
 
         // `w_full` + `overflow_hidden` keep a row's own (exactly `grid.cols`
@@ -153,8 +173,10 @@ impl Render for TerminalView {
         let font_size = settings.font_size.clamp(8.0, 32.0);
         let line_height = font_size * 1.43;
 
+        let base_font = gpui::font(font_family.clone());
+        let bold_font = base_font.clone().bold();
         let rows = (0..self.grid.rows)
-            .map(|row| self.render_row(row, font_family.clone(), line_height))
+            .map(|row| self.render_row(row, &base_font, &bold_font, line_height))
             .collect::<Vec<_>>();
         let closed_message = self.closed_message.clone();
 
