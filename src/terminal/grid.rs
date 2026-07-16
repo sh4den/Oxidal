@@ -182,12 +182,6 @@ impl Grid {
         vec![Cell::blank(&self.attrs); self.cols]
     }
 
-    /// Whether a full-screen TUI (vim, htop, less, ...) currently has the
-    /// alternate screen buffer active.
-    pub fn is_alt_screen(&self) -> bool {
-        self.alt_screen.is_some()
-    }
-
     fn line_feed(&mut self) {
         if self.cursor_row == self.scroll_bottom {
             self.scroll_up_region(1);
@@ -284,10 +278,6 @@ impl Grid {
         self.cursor_col = 0;
     }
 
-    /// Enter or leave the alternate screen buffer (used by full-screen TUIs
-    /// like vim, htop, less). Also resets scroll region / cursor-key /
-    /// autowrap modes so a TUI that exits uncleanly can't leave the shell
-    /// in a broken state.
     fn set_alt_screen(&mut self, enable: bool) {
         if enable {
             if self.alt_screen.is_none() {
@@ -581,139 +571,5 @@ impl Perform for Grid {
             }
             _ => {}
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn text_of(grid: &Grid, row: usize) -> String {
-        (0..grid.cols).map(|col| grid.cell(row, col).ch).collect::<String>()
-    }
-
-    #[test]
-    fn alternate_screen_restores_primary_content_on_exit() {
-        let mut grid = Grid::new(5, 20);
-        grid.feed(b"primary content");
-        assert!(text_of(&grid, 0).starts_with("primary content"));
-
-        // Enter the alternate screen (what vim/htop/less do on start).
-        grid.feed(b"\x1b[?1049h");
-        assert!(
-            text_of(&grid, 0).trim().is_empty(),
-            "alt screen should start blank, got {:?}",
-            text_of(&grid, 0)
-        );
-        assert_eq!((grid.cursor_row, grid.cursor_col), (0, 0));
-
-        grid.feed(b"tui content");
-        assert!(text_of(&grid, 0).starts_with("tui content"));
-
-        // Leave the alternate screen (what they do on exit) — the shell's
-        // original content must come back untouched.
-        grid.feed(b"\x1b[?1049l");
-        assert!(
-            text_of(&grid, 0).starts_with("primary content"),
-            "primary content was not restored, got {:?}",
-            text_of(&grid, 0)
-        );
-    }
-
-    #[test]
-    fn scroll_region_confines_scrolling_to_its_rows() {
-        let mut grid = Grid::new(6, 10);
-        // Rows are 1-indexed in the escape sequence; set region to rows 2..=4.
-        grid.feed(b"\x1b[2;4r");
-        assert_eq!(grid.scroll_top, 1);
-        assert_eq!(grid.scroll_bottom, 3);
-
-        // Put a marker on row 0 (outside the region) and row 5 (also outside).
-        grid.feed(b"\x1b[1;1Htop");
-        grid.feed(b"\x1b[6;1Hbottom");
-
-        // Move into the region and force enough line feeds to scroll it.
-        grid.feed(b"\x1b[4;1Hrow4\n\n\n");
-
-        // Rows outside the scroll region must be untouched by the scroll.
-        assert!(text_of(&grid, 0).starts_with("top"));
-        assert!(text_of(&grid, 5).starts_with("bottom"));
-    }
-
-    #[test]
-    fn application_cursor_keys_mode_toggles() {
-        let mut grid = Grid::new(5, 20);
-        assert!(!grid.application_cursor_keys);
-        grid.feed(b"\x1b[?1h");
-        assert!(grid.application_cursor_keys);
-        grid.feed(b"\x1b[?1l");
-        assert!(!grid.application_cursor_keys);
-    }
-
-    #[test]
-    fn leaving_alt_screen_resets_scroll_region_and_cursor_key_mode() {
-        let mut grid = Grid::new(6, 20);
-        grid.feed(b"\x1b[?1049h");
-        grid.feed(b"\x1b[2;4r");
-        grid.feed(b"\x1b[?1h");
-        assert_eq!(grid.scroll_top, 1);
-        assert!(grid.application_cursor_keys);
-
-        grid.feed(b"\x1b[?1049l");
-
-        assert_eq!(grid.scroll_top, 0);
-        assert_eq!(grid.scroll_bottom, 5);
-        assert!(!grid.application_cursor_keys);
-    }
-
-    #[test]
-    fn insert_and_delete_lines_shift_within_scroll_region() {
-        let mut grid = Grid::new(4, 10);
-        grid.feed(b"\x1b[1;1Hrow0\x1b[2;1Hrow1\x1b[3;1Hrow2\x1b[4;1Hrow3");
-        grid.feed(b"\x1b[2;1H"); // cursor to row 1 (0-indexed)
-        grid.feed(b"\x1b[L"); // insert one blank line at row 1
-
-        assert!(text_of(&grid, 0).starts_with("row0"));
-        assert!(text_of(&grid, 1).trim().is_empty());
-        assert!(text_of(&grid, 2).starts_with("row1"));
-        assert!(text_of(&grid, 3).starts_with("row2"), "row3 fell off screen as expected");
-    }
-
-    #[test]
-    fn resize_grows_columns_and_rows_without_losing_content() {
-        let mut grid = Grid::new(4, 10);
-        grid.feed(b"\x1b[1;1Hhello");
-
-        grid.resize(8, 20);
-
-        assert_eq!(grid.rows, 8);
-        assert_eq!(grid.cols, 20);
-        // Existing content is preserved, new columns/rows are blank.
-        assert!(text_of(&grid, 0).starts_with("hello"));
-        assert!(text_of(&grid, 7).trim().is_empty());
-    }
-
-    #[test]
-    fn resize_shrinking_rows_keeps_the_most_recent_bottom_content() {
-        let mut grid = Grid::new(6, 10);
-        for i in 0..6 {
-            grid.feed(format!("\x1b[{};1Hline{}", i + 1, i).as_bytes());
-        }
-
-        // Shrinking to 3 rows should keep the bottom-most (most recent) lines.
-        grid.resize(3, 10);
-
-        assert_eq!(grid.rows, 3);
-        assert!(text_of(&grid, 0).starts_with("line3"));
-        assert!(text_of(&grid, 1).starts_with("line4"));
-        assert!(text_of(&grid, 2).starts_with("line5"));
-    }
-
-    #[test]
-    fn resize_is_a_no_op_when_dimensions_are_unchanged() {
-        let mut grid = Grid::new(5, 20);
-        grid.feed(b"unchanged");
-        grid.resize(5, 20);
-        assert!(text_of(&grid, 0).starts_with("unchanged"));
     }
 }

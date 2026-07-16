@@ -1,13 +1,8 @@
-/// A message produced by a terminal backend (local shell, SSH, serial, ...).
 pub enum BackendEvent {
     Data(Vec<u8>),
-    /// The backend connection ended. `Some(message)` if it ended due to an error.
     Closed(Option<String>),
 }
 
-/// A running terminal backend: something that produces a byte stream and
-/// accepts input bytes + resize requests. Local PTYs, SSH shells and serial
-/// ports all implement this same shape so `TerminalView` can host any of them.
 pub struct Backend {
     pub events: async_channel::Receiver<BackendEvent>,
     input: async_channel::Sender<Vec<u8>>,
