@@ -42,14 +42,6 @@ impl SessionKind {
             SessionKind::Local => "Local",
         }
     }
-
-    /// Whether this kind currently has a working backend.
-    pub fn is_supported(self) -> bool {
-        matches!(
-            self,
-            SessionKind::Local | SessionKind::Ssh | SessionKind::Serial | SessionKind::Sftp
-        )
-    }
 }
 
 /// A saved connection entry shown in the sessions sidebar.
@@ -73,6 +65,25 @@ pub struct Session {
     /// before falling back to password auth. Optional.
     #[serde(default)]
     pub private_key_path: Option<String>,
+    /// The folder this session is filed under in the sidebar, if any.
+    #[serde(default)]
+    pub folder_id: Option<Uuid>,
+}
+
+/// A group of sessions shown together in the sidebar.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionFolder {
+    pub id: Uuid,
+    pub name: String,
+}
+
+impl SessionFolder {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+        }
+    }
 }
 
 fn default_baud_rate() -> u32 {
@@ -91,6 +102,7 @@ impl Session {
             password: String::new(),
             baud_rate: default_baud_rate(),
             private_key_path: None,
+            folder_id: None,
         }
     }
 
@@ -138,6 +150,10 @@ fn sessions_path() -> PathBuf {
     config_dir().join("sessions.json")
 }
 
+fn folders_path() -> PathBuf {
+    config_dir().join("folders.json")
+}
+
 pub fn load_sessions() -> Vec<Session> {
     let path = sessions_path();
     match fs::read_to_string(&path) {
@@ -153,6 +169,24 @@ pub fn save_sessions(sessions: &[Session]) {
     }
     if let Ok(json) = serde_json::to_string_pretty(sessions) {
         let _ = fs::write(sessions_path(), json);
+    }
+}
+
+pub fn load_folders() -> Vec<SessionFolder> {
+    let path = folders_path();
+    match fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub fn save_folders(folders: &[SessionFolder]) {
+    let dir = config_dir();
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    if let Ok(json) = serde_json::to_string_pretty(folders) {
+        let _ = fs::write(folders_path(), json);
     }
 }
 

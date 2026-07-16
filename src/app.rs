@@ -11,9 +11,11 @@ use gpui_component::{
     tab::{Tab, TabBar},
     v_flex,
 };
+use std::collections::HashSet;
+
 use uuid::Uuid;
 
-use crate::session::{self, Session, SessionKind};
+use crate::session::{self, Session, SessionFolder, SessionKind};
 use crate::session_dialog;
 use crate::settings_view::SettingsView;
 use crate::sftp::SftpPanel;
@@ -45,6 +47,8 @@ struct OpenTab {
 /// Root application view: title bar, sessions sidebar, tabbed workspace and status bar.
 pub struct OxidalApp {
     sessions: Vec<Session>,
+    folders: Vec<SessionFolder>,
+    collapsed_folders: HashSet<Uuid>,
     selected_session: Option<Uuid>,
     tabs: Vec<OpenTab>,
     active_tab: Option<usize>,
@@ -54,6 +58,8 @@ impl OxidalApp {
     pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
         Self {
             sessions: session::load_sessions(),
+            folders: session::load_folders(),
+            collapsed_folders: HashSet::new(),
             selected_session: None,
             tabs: Vec::new(),
             active_tab: None,
@@ -66,6 +72,14 @@ impl OxidalApp {
         cx.notify();
     }
 
+    pub fn update_session(&mut self, updated: Session, cx: &mut Context<Self>) {
+        if let Some(existing) = self.sessions.iter_mut().find(|s| s.id == updated.id) {
+            *existing = updated;
+            session::save_sessions(&self.sessions);
+            cx.notify();
+        }
+    }
+
     fn delete_session(&mut self, id: Uuid, cx: &mut Context<Self>) {
         self.sessions.retain(|s| s.id != id);
         session::save_sessions(&self.sessions);
@@ -76,6 +90,42 @@ impl OxidalApp {
         self.tabs.retain(|t| t.session_id != Some(id));
         if self.tabs.len() != tab_count_before {
             self.active_tab = if self.tabs.is_empty() { None } else { Some(0) };
+        }
+        cx.notify();
+    }
+
+    pub fn add_folder(&mut self, folder: SessionFolder, cx: &mut Context<Self>) {
+        self.folders.push(folder);
+        session::save_folders(&self.folders);
+        cx.notify();
+    }
+
+    pub fn rename_folder(&mut self, id: Uuid, name: String, cx: &mut Context<Self>) {
+        if let Some(folder) = self.folders.iter_mut().find(|f| f.id == id) {
+            folder.name = name;
+            session::save_folders(&self.folders);
+            cx.notify();
+        }
+    }
+
+    fn delete_folder(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        self.folders.retain(|f| f.id != id);
+        session::save_folders(&self.folders);
+        // Sessions inside the deleted folder move back to the root level
+        // rather than being deleted along with it.
+        for session in self.sessions.iter_mut() {
+            if session.folder_id == Some(id) {
+                session.folder_id = None;
+            }
+        }
+        session::save_sessions(&self.sessions);
+        self.collapsed_folders.remove(&id);
+        cx.notify();
+    }
+
+    fn toggle_folder_collapsed(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        if !self.collapsed_folders.remove(&id) {
+            self.collapsed_folders.insert(id);
         }
         cx.notify();
     }
@@ -218,8 +268,9 @@ impl OxidalApp {
                             .small()
                             .icon(IconName::Plus)
                             .label("Session")
-                            .on_click(cx.listener(|_, _, window, cx| {
-                                session_dialog::open_new_session_dialog(window, cx);
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                let folders = view.folders.clone();
+                                session_dialog::open_new_session_dialog(folders, window, cx);
                             })),
                     )
                     .child(
@@ -235,77 +286,171 @@ impl OxidalApp {
             .pr_2()
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self.sessions.iter().map(|item| {
-            let id = item.id;
-            let selected = self.selected_session == Some(id);
-            let supported = item.kind.is_supported();
+    fn render_session_row(&self, item: &Session, indent: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = item.id;
+        let selected = self.selected_session == Some(id);
+        let group_name = SharedString::from(format!("session-{id}"));
+        let folders = self.folders.clone();
+        let session = item.clone();
 
-            h_flex()
-                .id(SharedString::from(format!("session-{id}")))
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .mx_1()
-                .rounded_md()
-                .cursor_pointer()
-                .when(selected, |this| {
-                    this.bg(cx.theme().sidebar_accent)
-                        .text_color(cx.theme().sidebar_accent_foreground)
-                })
-                .on_click(
-                    cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
-                        if event.click_count() >= 2 {
-                            view.connect_session(id, window, cx);
+        h_flex()
+            .id(SharedString::from(format!("session-{id}")))
+            .group(group_name.clone())
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .mx_1()
+            .when(indent, |this| this.pl_6())
+            .rounded_md()
+            .cursor_pointer()
+            .when(selected, |this| {
+                this.bg(cx.theme().sidebar_accent)
+                    .text_color(cx.theme().sidebar_accent_foreground)
+            })
+            .on_click(
+                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    if event.click_count() >= 2 {
+                        view.connect_session(id, window, cx);
+                    } else {
+                        view.selected_session = Some(id);
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(Icon::new(item.kind.icon()).small())
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_sm().child(SharedString::from(item.name.clone())))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(item.detail())),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .invisible()
+                    .group_hover(group_name, |this| this.visible())
+                    .child(
+                        Button::new(SharedString::from(format!("edit-{id}")))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Settings2)
+                            .tooltip("Edit")
+                            .on_click(cx.listener(move |_view, _, window, cx| {
+                                let weak_app = cx.weak_entity();
+                                session_dialog::open_edit_session_dialog(
+                                    session.clone(),
+                                    folders.clone(),
+                                    weak_app,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("delete-{id}")))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Delete)
+                            .tooltip("Delete")
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.delete_session(id, cx);
+                            })),
+                    ),
+            )
+    }
+
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+
+        for folder in self.folders.clone() {
+            let folder_id = folder.id;
+            let collapsed = self.collapsed_folders.contains(&folder_id);
+            let group_name = SharedString::from(format!("folder-{folder_id}"));
+
+            rows.push(
+                h_flex()
+                    .id(SharedString::from(format!("folder-{folder_id}")))
+                    .group(group_name.clone())
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .mx_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.toggle_folder_collapsed(folder_id, cx);
+                    }))
+                    .child(
+                        Icon::new(if collapsed {
+                            IconName::ChevronRight
                         } else {
-                            view.selected_session = Some(id);
-                            cx.notify();
-                        }
-                    }),
-                )
-                .child(Icon::new(item.kind.icon()).small())
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(div().text_sm().child(SharedString::from(item.name.clone())))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(item.detail())),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .when(!supported, |this| {
-                            this.text_color(cx.theme().muted_foreground)
+                            IconName::ChevronDown
                         })
-                        .child(item.kind.label()),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("connect-{id}")))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::SquareTerminal)
-                        .tooltip("Connect")
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            view.connect_session(id, window, cx);
-                        })),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("delete-{id}")))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Delete)
-                        .tooltip("Delete")
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.delete_session(id, cx);
-                        })),
-                )
-        });
+                        .xsmall(),
+                    )
+                    .child(Icon::new(IconName::Folder).small())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(SharedString::from(folder.name.clone())),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .invisible()
+                            .group_hover(group_name, |this| this.visible())
+                            .child({
+                                let folder = folder.clone();
+                                Button::new(SharedString::from(format!("edit-folder-{folder_id}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Settings2)
+                                    .tooltip("Rename")
+                                    .on_click(cx.listener(move |_view, _, window, cx| {
+                                        let weak_app = cx.weak_entity();
+                                        session_dialog::open_edit_folder_dialog(
+                                            folder.clone(),
+                                            weak_app,
+                                            window,
+                                            cx,
+                                        );
+                                    }))
+                            })
+                            .child(
+                                Button::new(SharedString::from(format!("delete-folder-{folder_id}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Delete)
+                                    .tooltip("Delete Folder")
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.delete_folder(folder_id, cx);
+                                    })),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+
+            if !collapsed {
+                for item in self.sessions.iter().filter(|s| s.folder_id == Some(folder_id)) {
+                    rows.push(self.render_session_row(item, true, cx).into_any_element());
+                }
+            }
+        }
+
+        for item in self.sessions.iter().filter(|s| s.folder_id.is_none()) {
+            rows.push(self.render_session_row(item, false, cx).into_any_element());
+        }
 
         v_flex()
             .w(px(280.))
@@ -327,13 +472,30 @@ impl OxidalApp {
                             .child("Sessions"),
                     )
                     .child(
-                        Button::new("add")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Plus)
-                            .on_click(cx.listener(|_, _, window, cx| {
-                                session_dialog::open_new_session_dialog(window, cx);
-                            })),
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("new-folder")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Folder)
+                                    .tooltip("New Folder")
+                                    .on_click(cx.listener(|_view, _, window, cx| {
+                                        let weak_app = cx.weak_entity();
+                                        session_dialog::open_new_folder_dialog(weak_app, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("add")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Plus)
+                                    .tooltip("New Session")
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        let folders = view.folders.clone();
+                                        session_dialog::open_new_session_dialog(folders, window, cx);
+                                    })),
+                            ),
                     ),
             )
             .child(
