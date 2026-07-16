@@ -1,29 +1,76 @@
 use gpui::{hsla, Hsla};
 use vte::{Params, Perform};
 
-#[derive(Clone, Copy, PartialEq)]
-pub struct Cell {
-    pub ch: char,
-    pub fg: Hsla,
-    pub bg: Option<Hsla>,
-    pub bold: bool,
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum Color {
+    #[default]
+    Default,
+    DefaultFg,
+    Indexed(u8),
+    Rgb(u8, u8, u8),
 }
 
-impl Cell {
-    fn blank(attrs: &Attrs) -> Self {
-        Self {
-            ch: ' ',
-            fg: attrs.fg,
-            bg: attrs.bg,
-            bold: attrs.bold,
+impl Color {
+    pub fn as_fg(self) -> Hsla {
+        match self {
+            Color::Default | Color::DefaultFg => default_fg(),
+            Color::Indexed(i) => palette_256(i as u16),
+            Color::Rgb(r, g, b) => rgb_to_hsla(r as f32 / 255., g as f32 / 255., b as f32 / 255.),
         }
+    }
+
+    pub fn as_bg(self) -> Option<Hsla> {
+        match self {
+            Color::Default => None,
+            other => Some(other.as_fg()),
+        }
+    }
+}
+
+const CHAR_MASK: u32 = (1 << 24) - 1;
+const FLAG_BOLD: u32 = 1 << 24;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Cell {
+    ch_flags: u32,
+    pub fg: Color,
+    pub bg: Color,
+}
+
+const _: () = assert!(std::mem::size_of::<Cell>() == 12);
+
+impl Cell {
+    const BLANK: Cell = Cell {
+        ch_flags: ' ' as u32,
+        fg: Color::Default,
+        bg: Color::Default,
+    };
+
+    fn new(ch: char, fg: Color, bg: Color, bold: bool) -> Self {
+        Self {
+            ch_flags: ch as u32 | if bold { FLAG_BOLD } else { 0 },
+            fg,
+            bg,
+        }
+    }
+
+    fn blank(attrs: &Attrs) -> Self {
+        Self::new(' ', attrs.fg, attrs.bg, attrs.bold)
+    }
+
+    pub fn ch(self) -> char {
+        char::from_u32(self.ch_flags & CHAR_MASK).unwrap_or(' ')
+    }
+
+    pub fn bold(self) -> bool {
+        self.ch_flags & FLAG_BOLD != 0
     }
 }
 
 #[derive(Clone, Copy)]
 struct Attrs {
-    fg: Hsla,
-    bg: Option<Hsla>,
+    fg: Color,
+    bg: Color,
     bold: bool,
     reverse: bool,
 }
@@ -31,8 +78,8 @@ struct Attrs {
 impl Default for Attrs {
     fn default() -> Self {
         Self {
-            fg: default_fg(),
-            bg: None,
+            fg: Color::Default,
+            bg: Color::Default,
             bold: false,
             reverse: false,
         }
@@ -59,28 +106,33 @@ fn ansi_color(code: u16, bright: bool) -> Hsla {
     hsla(h / 360., s, l, 1.)
 }
 
-/// The primary screen's content and cursor, stashed away while an alternate
-/// screen (vim, htop, less, ...) is active.
+fn ansi_index(code: u16, bright: bool) -> u8 {
+    code as u8 + if bright { 8 } else { 0 }
+}
+
+fn blank_grid(rows: usize, cols: usize, blank: Cell) -> Box<[Box<[Cell]>]> {
+    (0..rows)
+        .map(|_| vec![blank; cols].into_boxed_slice())
+        .collect()
+}
+
 struct SavedPrimaryScreen {
-    cells: Vec<Vec<Cell>>,
+    cells: Box<[Box<[Cell]>]>,
     cursor: (usize, usize),
 }
 
-/// A fixed-size character grid fed by a VTE parser. Supports the subset of
-/// ANSI/VT100/xterm sequences needed by shells (cmd, PowerShell, bash) as
-/// well as full-screen TUIs (vim, htop, less, nano): cursor movement, erase,
-/// SGR colors, line wrapping, scroll regions, line/character insert-delete,
-/// the alternate screen buffer, and application cursor-key mode.
 pub struct Grid {
     pub rows: usize,
     pub cols: usize,
-    cells: Vec<Vec<Cell>>,
+    cells: Box<[Box<[Cell]>]>,
     pub cursor_row: usize,
     pub cursor_col: usize,
     pub cursor_visible: bool,
     attrs: Attrs,
     saved_cursor: (usize, usize),
-    parser: vte::Parser,
+    /// Parked in an `Option` so `feed` can move it out and pass `self` as the
+    /// `Perform` sink without building a throwaway parser on every call.
+    parser: Option<vte::Parser>,
     /// Inclusive scroll region rows (DECSTBM). Defaults to the whole screen.
     scroll_top: usize,
     scroll_bottom: usize,
@@ -96,13 +148,13 @@ impl Grid {
         Self {
             rows,
             cols,
-            cells: vec![vec![Cell::blank(&attrs); cols]; rows],
+            cells: blank_grid(rows, cols, Cell::blank(&attrs)),
             cursor_row: 0,
             cursor_col: 0,
             cursor_visible: true,
             attrs,
             saved_cursor: (0, 0),
-            parser: vte::Parser::new(),
+            parser: Some(vte::Parser::new()),
             scroll_top: 0,
             scroll_bottom: rows.saturating_sub(1),
             autowrap: true,
@@ -129,10 +181,10 @@ impl Grid {
         }
 
         let old_cells = std::mem::take(&mut self.cells);
-        self.cells = Self::resized_cells(old_cells, rows, cols);
+        self.cells = resized_cells(old_cells, rows, cols);
         if let Some(alt) = &mut self.alt_screen {
             let alt_cells = std::mem::take(&mut alt.cells);
-            alt.cells = Self::resized_cells(alt_cells, rows, cols);
+            alt.cells = resized_cells(alt_cells, rows, cols);
             alt.cursor.0 = alt.cursor.0.min(rows - 1);
             alt.cursor.1 = alt.cursor.1.min(cols - 1);
         }
@@ -145,41 +197,18 @@ impl Grid {
         self.scroll_bottom = rows - 1;
     }
 
-    fn resized_cells(mut cells: Vec<Vec<Cell>>, new_rows: usize, new_cols: usize) -> Vec<Vec<Cell>> {
-        let blank = Cell {
-            ch: ' ',
-            fg: default_fg(),
-            bg: None,
-            bold: false,
-        };
-        for row in &mut cells {
-            if new_cols > row.len() {
-                row.extend(std::iter::repeat(blank).take(new_cols - row.len()));
-            } else {
-                row.truncate(new_cols);
-            }
-        }
-        let current_rows = cells.len();
-        if new_rows > current_rows {
-            for _ in 0..(new_rows - current_rows) {
-                cells.push(vec![blank; new_cols]);
-            }
-        } else if new_rows < current_rows {
-            cells.drain(0..current_rows - new_rows);
-        }
-        cells
-    }
-
     pub fn feed(&mut self, bytes: &[u8]) {
-        let mut parser = std::mem::replace(&mut self.parser, vte::Parser::new());
+        let Some(mut parser) = self.parser.take() else {
+            return;
+        };
         for byte in bytes {
             parser.advance(self, *byte);
         }
-        self.parser = parser;
+        self.parser = Some(parser);
     }
 
-    fn blank_row(&self) -> Vec<Cell> {
-        vec![Cell::blank(&self.attrs); self.cols]
+    fn blank_cell(&self) -> Cell {
+        Cell::blank(&self.attrs)
     }
 
     fn line_feed(&mut self) {
@@ -190,35 +219,47 @@ impl Grid {
         }
     }
 
-    fn scroll_up_region(&mut self, n: usize) {
-        let blank = self.blank_row();
-        for _ in 0..n {
-            if self.scroll_top <= self.scroll_bottom && self.scroll_bottom < self.rows {
-                self.cells.remove(self.scroll_top);
-                self.cells.insert(self.scroll_bottom, blank.clone());
+    /// Move `rows` within the scroll region up or down by `n`, blanking the
+    /// rows that wrap around. Rotating the row handles recycles the existing
+    /// row buffers, so scrolling never touches the allocator.
+    fn scroll_region(&mut self, n: usize, up: bool) {
+        if self.scroll_top > self.scroll_bottom || self.scroll_bottom >= self.rows {
+            return;
+        }
+        let n = n.min(self.scroll_bottom - self.scroll_top + 1);
+        let blank = self.blank_cell();
+        let region = &mut self.cells[self.scroll_top..=self.scroll_bottom];
+        if up {
+            region.rotate_left(n);
+            for row in region.iter_mut().rev().take(n) {
+                row.fill(blank);
+            }
+        } else {
+            region.rotate_right(n);
+            for row in region.iter_mut().take(n) {
+                row.fill(blank);
             }
         }
     }
 
+    fn scroll_up_region(&mut self, n: usize) {
+        self.scroll_region(n, true);
+    }
+
     fn scroll_down_region(&mut self, n: usize) {
-        let blank = self.blank_row();
-        for _ in 0..n {
-            if self.scroll_top <= self.scroll_bottom && self.scroll_bottom < self.rows {
-                self.cells.remove(self.scroll_bottom);
-                self.cells.insert(self.scroll_top, blank.clone());
-            }
-        }
+        self.scroll_region(n, false);
     }
 
     fn insert_lines(&mut self, n: usize) {
         if self.cursor_row < self.scroll_top || self.cursor_row > self.scroll_bottom {
             return;
         }
-        let blank = self.blank_row();
         let n = n.min(self.scroll_bottom - self.cursor_row + 1);
-        for _ in 0..n {
-            self.cells.remove(self.scroll_bottom);
-            self.cells.insert(self.cursor_row, blank.clone());
+        let blank = self.blank_cell();
+        let region = &mut self.cells[self.cursor_row..=self.scroll_bottom];
+        region.rotate_right(n);
+        for row in region.iter_mut().take(n) {
+            row.fill(blank);
         }
     }
 
@@ -226,38 +267,38 @@ impl Grid {
         if self.cursor_row < self.scroll_top || self.cursor_row > self.scroll_bottom {
             return;
         }
-        let blank = self.blank_row();
         let n = n.min(self.scroll_bottom - self.cursor_row + 1);
-        for _ in 0..n {
-            self.cells.remove(self.cursor_row);
-            self.cells.insert(self.scroll_bottom, blank.clone());
+        let blank = self.blank_cell();
+        let region = &mut self.cells[self.cursor_row..=self.scroll_bottom];
+        region.rotate_left(n);
+        for row in region.iter_mut().rev().take(n) {
+            row.fill(blank);
         }
     }
 
     fn insert_chars(&mut self, n: usize) {
-        let blank = Cell::blank(&self.attrs);
+        let blank = self.blank_cell();
+        let (col, cols) = (self.cursor_col, self.cols);
+        let n = n.min(cols - col);
         let row = &mut self.cells[self.cursor_row];
-        let n = n.min(self.cols - self.cursor_col);
-        row.truncate(self.cols - n);
-        for _ in 0..n {
-            row.insert(self.cursor_col, blank);
-        }
+        row.copy_within(col..cols - n, col + n);
+        row[col..col + n].fill(blank);
     }
 
     fn delete_chars(&mut self, n: usize) {
-        let blank = Cell::blank(&self.attrs);
+        let blank = self.blank_cell();
+        let (col, cols) = (self.cursor_col, self.cols);
+        let n = n.min(cols - col);
         let row = &mut self.cells[self.cursor_row];
-        let n = n.min(self.cols - self.cursor_col);
-        row.drain(self.cursor_col..self.cursor_col + n);
-        row.extend(std::iter::repeat(blank).take(n));
+        row.copy_within(col + n..cols, col);
+        row[cols - n..].fill(blank);
     }
 
     fn erase_chars(&mut self, n: usize) {
-        let blank = Cell::blank(&self.attrs);
-        let n = n.min(self.cols - self.cursor_col);
-        for c in &mut self.cells[self.cursor_row][self.cursor_col..self.cursor_col + n] {
-            *c = blank;
-        }
+        let blank = self.blank_cell();
+        let col = self.cursor_col;
+        let n = n.min(self.cols - col);
+        self.cells[self.cursor_row][col..col + n].fill(blank);
     }
 
     fn set_scroll_region(&mut self, top: Option<u16>, bottom: Option<u16>) {
@@ -278,10 +319,14 @@ impl Grid {
         self.cursor_col = 0;
     }
 
+    /// Enter or leave the alternate screen buffer (used by full-screen TUIs
+    /// like vim, htop, less). Also resets scroll region / cursor-key /
+    /// autowrap modes so a TUI that exits uncleanly can't leave the shell
+    /// in a broken state.
     fn set_alt_screen(&mut self, enable: bool) {
         if enable {
             if self.alt_screen.is_none() {
-                let blank = self.blank_row_grid();
+                let blank = blank_grid(self.rows, self.cols, self.blank_cell());
                 let cells = std::mem::replace(&mut self.cells, blank);
                 self.alt_screen = Some(SavedPrimaryScreen {
                     cells,
@@ -302,10 +347,6 @@ impl Grid {
         self.autowrap = true;
     }
 
-    fn blank_row_grid(&self) -> Vec<Vec<Cell>> {
-        vec![self.blank_row(); self.rows]
-    }
-
     fn put_char(&mut self, ch: char) {
         if self.cursor_col >= self.cols {
             if self.autowrap {
@@ -315,69 +356,67 @@ impl Grid {
                 self.cursor_col = self.cols - 1;
             }
         }
-        self.cells[self.cursor_row][self.cursor_col] = Cell {
-            ch,
-            fg: if self.attrs.reverse {
-                self.attrs.bg.unwrap_or(default_fg())
-            } else {
-                self.attrs.fg
-            },
-            bg: if self.attrs.reverse {
-                Some(self.attrs.fg)
-            } else {
-                self.attrs.bg
-            },
-            bold: self.attrs.bold,
+        let (fg, bg) = if self.attrs.reverse {
+            let bg = match self.attrs.fg {
+                Color::Default => Color::DefaultFg,
+                c => c,
+            };
+            (self.attrs.bg, bg)
+        } else {
+            (self.attrs.fg, self.attrs.bg)
         };
+        self.cells[self.cursor_row][self.cursor_col] = Cell::new(ch, fg, bg, self.attrs.bold);
         self.cursor_col += 1;
     }
 
     fn erase_line(&mut self, mode: u16) {
-        let blank = Cell::blank(&self.attrs);
+        let blank = self.blank_cell();
+        let (col, cols) = (self.cursor_col, self.cols);
         let row = &mut self.cells[self.cursor_row];
         match mode {
-            0 => {
-                for c in &mut row[self.cursor_col..] {
-                    *c = blank;
-                }
-            }
-            1 => {
-                for c in &mut row[..=self.cursor_col.min(self.cols - 1)] {
-                    *c = blank;
-                }
-            }
-            2 => {
-                for c in row.iter_mut() {
-                    *c = blank;
-                }
-            }
+            0 => row[col.min(cols)..].fill(blank),
+            1 => row[..=col.min(cols - 1)].fill(blank),
+            2 => row.fill(blank),
             _ => {}
         }
     }
 
     fn erase_display(&mut self, mode: u16) {
+        let blank = self.blank_cell();
         match mode {
             0 => {
                 self.erase_line(0);
-                for row in self.cursor_row + 1..self.rows {
-                    self.cells[row] = self.blank_row();
+                for row in self.cells[self.cursor_row + 1..].iter_mut() {
+                    row.fill(blank);
                 }
             }
             1 => {
                 self.erase_line(1);
-                for row in 0..self.cursor_row {
-                    self.cells[row] = self.blank_row();
+                for row in self.cells[..self.cursor_row].iter_mut() {
+                    row.fill(blank);
                 }
             }
             2 | 3 => {
-                self.cells = self.blank_row_grid();
+                for row in self.cells.iter_mut() {
+                    row.fill(blank);
+                }
             }
             _ => {}
         }
     }
 
     fn sgr(&mut self, params: &Params) {
-        let values: Vec<u16> = params.iter().map(|p| p.first().copied().unwrap_or(0)).collect();
+        let mut buf = [0u16; 32];
+        let mut len = 0;
+        for p in params.iter() {
+            if len == buf.len() {
+                break;
+            }
+            buf[len] = p.first().copied().unwrap_or(0);
+            len += 1;
+        }
+        let values = &buf[..len];
+
         if values.is_empty() {
             self.attrs = Attrs::default();
             return;
@@ -390,33 +429,36 @@ impl Grid {
                 22 => self.attrs.bold = false,
                 7 => self.attrs.reverse = true,
                 27 => self.attrs.reverse = false,
-                39 => self.attrs.fg = default_fg(),
-                49 => self.attrs.bg = None,
-                30..=37 => self.attrs.fg = ansi_color(values[i] - 30, self.attrs.bold),
-                90..=97 => self.attrs.fg = ansi_color(values[i] - 90, true),
-                40..=47 => self.attrs.bg = Some(ansi_color(values[i] - 40, false)),
-                100..=107 => self.attrs.bg = Some(ansi_color(values[i] - 100, true)),
+                39 => self.attrs.fg = Color::Default,
+                49 => self.attrs.bg = Color::Default,
+                30..=37 => {
+                    self.attrs.fg = Color::Indexed(ansi_index(values[i] - 30, self.attrs.bold))
+                }
+                90..=97 => self.attrs.fg = Color::Indexed(ansi_index(values[i] - 90, true)),
+                40..=47 => self.attrs.bg = Color::Indexed(ansi_index(values[i] - 40, false)),
+                100..=107 => self.attrs.bg = Color::Indexed(ansi_index(values[i] - 100, true)),
                 38 | 48 => {
                     let is_fg = values[i] == 38;
-                    if i + 1 < values.len() && values[i + 1] == 5 && i + 2 < values.len() {
-                        let color = palette_256(values[i + 2]);
-                        if is_fg {
-                            self.attrs.fg = color;
-                        } else {
-                            self.attrs.bg = Some(color);
-                        }
+                    let color = if i + 2 < values.len() && values[i + 1] == 5 {
                         i += 2;
-                    } else if i + 1 < values.len() && values[i + 1] == 2 && i + 4 < values.len() {
-                        let r = values[i + 2] as f32 / 255.;
-                        let g = values[i + 3] as f32 / 255.;
-                        let b = values[i + 4] as f32 / 255.;
-                        let color = rgb_to_hsla(r, g, b);
+                        Some(Color::Indexed(values[i].min(255) as u8))
+                    } else if i + 4 < values.len() && values[i + 1] == 2 {
+                        let rgb = Color::Rgb(
+                            values[i + 2].min(255) as u8,
+                            values[i + 3].min(255) as u8,
+                            values[i + 4].min(255) as u8,
+                        );
+                        i += 4;
+                        Some(rgb)
+                    } else {
+                        None
+                    };
+                    if let Some(color) = color {
                         if is_fg {
                             self.attrs.fg = color;
                         } else {
-                            self.attrs.bg = Some(color);
+                            self.attrs.bg = color;
                         }
-                        i += 4;
                     }
                 }
                 _ => {}
@@ -429,6 +471,25 @@ impl Grid {
         self.cursor_row = self.cursor_row.min(self.rows - 1);
         self.cursor_col = self.cursor_col.min(self.cols.saturating_sub(1));
     }
+}
+
+fn resized_cells(
+    cells: Box<[Box<[Cell]>]>,
+    new_rows: usize,
+    new_cols: usize,
+) -> Box<[Box<[Cell]>]> {
+    let skip = cells.len().saturating_sub(new_rows);
+    let mut rows: Vec<Box<[Cell]>> = Vec::with_capacity(new_rows);
+    for row in cells.into_vec().into_iter().skip(skip) {
+        let mut new_row = vec![Cell::BLANK; new_cols];
+        let keep = row.len().min(new_cols);
+        new_row[..keep].copy_from_slice(&row[..keep]);
+        rows.push(new_row.into_boxed_slice());
+    }
+    while rows.len() < new_rows {
+        rows.push(vec![Cell::BLANK; new_cols].into_boxed_slice());
+    }
+    rows.into_boxed_slice()
 }
 
 fn palette_256(code: u16) -> Hsla {
@@ -565,7 +626,10 @@ impl Perform for Grid {
                 self.scroll_bottom = self.rows.saturating_sub(1);
                 self.application_cursor_keys = false;
                 self.autowrap = true;
-                self.cells = self.blank_row_grid();
+                let blank = self.blank_cell();
+                for row in self.cells.iter_mut() {
+                    row.fill(blank);
+                }
                 self.cursor_row = 0;
                 self.cursor_col = 0;
             }

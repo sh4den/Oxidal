@@ -21,3 +21,14 @@ russh-sftp = "2"
 serialport = "4"
 chrono = "0.4"
 tokio = { version = "1", features = ["rt", "net", "io-util", "time", "fs"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = 0
+strip = "symbols"
+panic = "abort"
+incremental = false
+overflow-checks = false
+debug-assertions = false
