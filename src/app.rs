@@ -225,6 +225,7 @@ impl OxidalApp {
                             })),
                     ),
             )
+            .pr_2()
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -344,6 +345,7 @@ impl OxidalApp {
             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
                 Tab::new()
                     .prefix(Icon::new(tab.icon.clone()).xsmall())
+                    .pl_3()
                     .label(tab.title.clone())
                     .suffix(
                         Button::new(SharedString::from(format!("close-tab-{index}")))
