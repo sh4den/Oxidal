@@ -58,6 +58,7 @@ jobs:
             clang \
             cmake \
             pkg-config \
+            libudev-dev \
             libfontconfig1-dev \
             libfreetype6-dev \
             libwayland-dev \
