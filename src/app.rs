@@ -7,7 +7,6 @@ use gpui_component::{
     ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
-    resizable::{h_resizable, resizable_panel},
     tab::{Tab, TabBar},
     v_flex,
 };
@@ -44,6 +43,13 @@ struct OpenTab {
     content: TabContent,
 }
 
+/// Which content the left sidebar panel currently shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SidebarMode {
+    Sessions,
+    Explorer,
+}
+
 /// Root application view: title bar, sessions sidebar, tabbed workspace and status bar.
 pub struct OxidalApp {
     sessions: Vec<Session>,
@@ -52,6 +58,8 @@ pub struct OxidalApp {
     selected_session: Option<Uuid>,
     tabs: Vec<OpenTab>,
     active_tab: Option<usize>,
+    sidebar_mode: SidebarMode,
+    sidebar_collapsed: bool,
 }
 
 impl OxidalApp {
@@ -63,7 +71,20 @@ impl OxidalApp {
             selected_session: None,
             tabs: Vec::new(),
             active_tab: None,
+            sidebar_mode: SidebarMode::Sessions,
+            sidebar_collapsed: false,
         }
+    }
+
+    fn set_sidebar_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+        self.sidebar_mode = mode;
+        self.sidebar_collapsed = false;
+        cx.notify();
+    }
+
+    fn toggle_sidebar_collapsed(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+        cx.notify();
     }
 
     pub fn add_session(&mut self, new_session: Session, cx: &mut Context<Self>) {
@@ -90,6 +111,9 @@ impl OxidalApp {
         self.tabs.retain(|t| t.session_id != Some(id));
         if self.tabs.len() != tab_count_before {
             self.active_tab = if self.tabs.is_empty() { None } else { Some(0) };
+            if self.tabs.is_empty() && self.sidebar_mode == SidebarMode::Explorer {
+                self.sidebar_mode = SidebarMode::Sessions;
+            }
         }
         cx.notify();
     }
@@ -243,6 +267,9 @@ impl OxidalApp {
         };
         if self.tabs.is_empty() {
             self.active_tab = None;
+            if self.sidebar_mode == SidebarMode::Explorer {
+                self.sidebar_mode = SidebarMode::Sessions;
+            }
         }
         cx.notify();
     }
@@ -286,7 +313,12 @@ impl OxidalApp {
             .pr_2()
     }
 
-    fn render_session_row(&self, item: &Session, indent: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_session_row(
+        &self,
+        item: &Session,
+        indent: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let id = item.id;
         let selected = self.selected_session == Some(id);
         let group_name = SharedString::from(format!("session-{id}"));
@@ -366,7 +398,114 @@ impl OxidalApp {
             )
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let sessions_active = !self.sidebar_collapsed && self.sidebar_mode == SidebarMode::Sessions;
+        let explorer_active = !self.sidebar_collapsed && self.sidebar_mode == SidebarMode::Explorer;
+        let has_open_session = !self.tabs.is_empty();
+
+        v_flex()
+            .w(px(72.))
+            .flex_none()
+            .h_full()
+            .items_center()
+            .py_4()
+            .gap_2()
+            .bg(cx.theme().sidebar)
+            .border_r_1()
+            .border_color(cx.theme().sidebar_border)
+            .child(
+                Button::new("sidebar-sessions")
+                    .large()
+                    .icon(IconName::SquareTerminal)
+                    .tooltip("Sessions")
+                    .when(sessions_active, |b| b.primary())
+                    .when(!sessions_active, |b| b.ghost())
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.set_sidebar_mode(SidebarMode::Sessions, cx);
+                    })),
+            )
+            .when(has_open_session, |this| {
+                this.child(
+                    Button::new("sidebar-explorer")
+                        .large()
+                        .icon(IconName::Folder)
+                        .tooltip("File Explorer")
+                        .when(explorer_active, |b| b.primary())
+                        .when(!explorer_active, |b| b.ghost())
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.set_sidebar_mode(SidebarMode::Explorer, cx);
+                        })),
+                )
+            })
+            .child(div().flex_1())
+            .child(
+                Button::new("sidebar-collapse")
+                    .ghost()
+                    .large()
+                    .icon(if self.sidebar_collapsed {
+                        IconName::PanelLeftOpen
+                    } else {
+                        IconName::PanelLeftClose
+                    })
+                    .tooltip(if self.sidebar_collapsed {
+                        "Show Sidebar"
+                    } else {
+                        "Hide Sidebar"
+                    })
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.toggle_sidebar_collapsed(cx);
+                    })),
+            )
+    }
+
+    fn render_explorer_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let sftp = self
+            .active_tab
+            .and_then(|index| self.tabs.get(index))
+            .and_then(|tab| match &tab.content {
+                TabContent::SshSession { sftp, .. } => Some(sftp.clone()),
+                TabContent::Sftp(sftp) => Some(sftp.clone()),
+                _ => None,
+            });
+
+        let content = match sftp {
+            Some(sftp) => sftp.into_any_element(),
+            None => v_flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .p_4()
+                .child(Icon::new(IconName::Folder).with_size(px(32.)))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .text_center()
+                        .child("Connect to an SSH or SFTP session to browse its files"),
+                )
+                .into_any_element(),
+        };
+
+        v_flex()
+            .w(px(320.))
+            .flex_none()
+            .h_full()
+            .bg(cx.theme().sidebar)
+            .border_r_1()
+            .border_color(cx.theme().sidebar_border)
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("File Explorer"),
+            )
+            .child(div().flex_1().min_h_0().overflow_hidden().child(content))
+    }
+
+    fn render_sessions_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
 
         for folder in self.folders.clone() {
@@ -428,21 +567,29 @@ impl OxidalApp {
                                     }))
                             })
                             .child(
-                                Button::new(SharedString::from(format!("delete-folder-{folder_id}")))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Delete)
-                                    .tooltip("Delete Folder")
-                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                Button::new(SharedString::from(format!(
+                                    "delete-folder-{folder_id}"
+                                )))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Delete)
+                                .tooltip("Delete Folder")
+                                .on_click(cx.listener(
+                                    move |view, _, _, cx| {
                                         view.delete_folder(folder_id, cx);
-                                    })),
+                                    },
+                                )),
                             ),
                     )
                     .into_any_element(),
             );
 
             if !collapsed {
-                for item in self.sessions.iter().filter(|s| s.folder_id == Some(folder_id)) {
+                for item in self
+                    .sessions
+                    .iter()
+                    .filter(|s| s.folder_id == Some(folder_id))
+                {
                     rows.push(self.render_session_row(item, true, cx).into_any_element());
                 }
             }
@@ -482,7 +629,9 @@ impl OxidalApp {
                                     .tooltip("New Folder")
                                     .on_click(cx.listener(|_view, _, window, cx| {
                                         let weak_app = cx.weak_entity();
-                                        session_dialog::open_new_folder_dialog(weak_app, window, cx);
+                                        session_dialog::open_new_folder_dialog(
+                                            weak_app, window, cx,
+                                        );
                                     })),
                             )
                             .child(
@@ -493,7 +642,9 @@ impl OxidalApp {
                                     .tooltip("New Session")
                                     .on_click(cx.listener(|view, _, window, cx| {
                                         let folders = view.folders.clone();
-                                        session_dialog::open_new_session_dialog(folders, window, cx);
+                                        session_dialog::open_new_session_dialog(
+                                            folders, window, cx,
+                                        );
                                     })),
                             ),
                     ),
@@ -550,15 +701,7 @@ impl OxidalApp {
 
         let content = self.tabs.get(active_index).map(|tab| match &tab.content {
             TabContent::Terminal(view) => view.clone().into_any_element(),
-            TabContent::SshSession { sftp, terminal } => h_resizable("ssh-session-split")
-                .child(
-                    resizable_panel()
-                        .size(px(320.))
-                        .size_range(px(220.)..px(560.))
-                        .child(sftp.clone()),
-                )
-                .child(terminal.clone().into_any_element())
-                .into_any_element(),
+            TabContent::SshSession { terminal, .. } => terminal.clone().into_any_element(),
             TabContent::Sftp(view) => view.clone().into_any_element(),
             TabContent::Settings(view) => view.clone().into_any_element(),
             TabContent::Message(msg) => v_flex()
@@ -669,7 +812,17 @@ impl Render for OxidalApp {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_sidebar(cx))
+                    .child(self.render_sidebar_rail(cx))
+                    .when(!self.sidebar_collapsed, |this| {
+                        this.child(match self.sidebar_mode {
+                            SidebarMode::Sessions => {
+                                self.render_sessions_panel(cx).into_any_element()
+                            }
+                            SidebarMode::Explorer => {
+                                self.render_explorer_panel(cx).into_any_element()
+                            }
+                        })
+                    })
                     .child(self.render_workspace(cx)),
             )
             .child(self.render_status_bar(cx))
