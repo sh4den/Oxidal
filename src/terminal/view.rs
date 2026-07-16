@@ -1,34 +1,27 @@
 use gpui::{
-    div, hsla, prelude::FluentBuilder as _, px, Context, FocusHandle, Font, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Render,
-    SharedString, Styled as _, StyledText, TextRun, Window,
+    actions, canvas, div, fill, hsla, point, prelude::FluentBuilder as _, px, size, Bounds,
+    Context, FocusHandle, Font, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, PaintQuad, ParentElement as _, Pixels, Point, Render, ShapedLine, SharedString,
+    StrikethroughStyle, Styled as _, TextAlign, TextRun, UnderlineStyle, Window,
 };
-use gpui_component::ElementExt as _;
 
 use super::backend::{Backend, BackendEvent};
-use super::grid::{Color, Grid};
+use super::grid::{default_bg, Grid};
 use crate::settings::AppSettings;
+
+actions!(terminal, [SendTab, SendTabPrev]);
 
 fn cursor_fg() -> Hsla {
     hsla(0., 0., 0.08, 1.)
 }
 
 #[derive(Clone, Copy, PartialEq)]
-struct CellStyle {
-    fg: Color,
-    bg: Color,
+struct RunStyle {
+    color: Hsla,
     bold: bool,
-    cursor: bool,
-}
-
-impl CellStyle {
-    fn colors(self) -> (Hsla, Option<Hsla>) {
-        if self.cursor {
-            (self.bg.as_bg().unwrap_or(cursor_fg()), Some(self.fg.as_fg()))
-        } else {
-            (self.fg.as_fg(), self.bg.as_bg())
-        }
-    }
+    italic: bool,
+    underline: bool,
+    strike: bool,
 }
 
 pub struct TerminalView {
@@ -55,7 +48,10 @@ impl TerminalView {
                 Ok(BackendEvent::Data(bytes)) => {
                     if this
                         .update(cx, |view: &mut Self, cx| {
-                            view.grid.feed(&bytes);
+                            let replies = view.grid.feed(&bytes);
+                            if !replies.is_empty() {
+                                view.backend.write_input(&replies);
+                            }
                             cx.notify();
                         })
                         .is_err()
@@ -100,70 +96,6 @@ impl TerminalView {
         self.backend.resize(rows as u16, cols as u16);
         cx.notify();
     }
-
-    fn render_row(
-        &self,
-        row: usize,
-        font: &Font,
-        bold_font: &Font,
-        line_height: f32,
-    ) -> impl IntoElement {
-        let cols = self.grid.cols;
-        let mut text = String::with_capacity(cols);
-        let mut runs: Vec<TextRun> = Vec::new();
-        let mut last: Option<CellStyle> = None;
-
-        for col in 0..cols {
-            let cell = self.grid.cell(row, col);
-            let style = CellStyle {
-                fg: cell.fg,
-                bg: cell.bg,
-                bold: cell.bold(),
-                cursor: self.grid.cursor_visible
-                    && self.grid.cursor_row == row
-                    && self.grid.cursor_col == col,
-            };
-
-            let ch = cell.ch();
-            let byte_len = ch.len_utf8();
-            text.push(ch);
-
-            if let (Some(prev), Some(run)) = (last, runs.last_mut()) {
-                if prev == style {
-                    run.len += byte_len;
-                    continue;
-                }
-            }
-
-            let (fg, bg) = style.colors();
-            runs.push(TextRun {
-                len: byte_len,
-                font: if style.bold { bold_font.clone() } else { font.clone() },
-                color: fg,
-                background_color: bg,
-                underline: None,
-                strikethrough: None,
-            });
-            last = Some(style);
-        }
-
-        // `w_full` + `overflow_hidden` keep a row's own (exactly `grid.cols`
-        // characters wide) content from ever inflating an ancestor flex
-        // container's intrinsic size — see the `min_w_0` note on the
-        // container below for why that matters. Text wraps by default in
-        // gpui, so without `whitespace_nowrap` any tiny rounding gap between
-        // our column-width estimate and the real glyph advances would wrap
-        // the last character onto a second line — on every row, since a
-        // fixed-width row is right at that boundary by construction. A fixed
-        // row height makes that (and anything else unexpected) just clip
-        // instead of pushing every following row down.
-        div()
-            .w_full()
-            .h(px(line_height))
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .child(StyledText::new(text).with_runs(runs))
-    }
 }
 
 impl Render for TerminalView {
@@ -172,50 +104,15 @@ impl Render for TerminalView {
         let font_family = SharedString::from(settings.font_family.clone());
         let font_size = settings.font_size.clamp(8.0, 32.0);
         let line_height = font_size * 1.43;
-
-        let base_font = gpui::font(font_family.clone());
-        let bold_font = base_font.clone().bold();
-        let rows = (0..self.grid.rows)
-            .map(|row| self.render_row(row, &base_font, &bold_font, line_height))
-            .collect::<Vec<_>>();
         let closed_message = self.closed_message.clone();
 
-        let weak = cx.entity().downgrade();
-        let measure_font_family = font_family.clone();
-
-        div()
-            .track_focus(&self.focus_handle)
-            .key_context("Terminal")
-            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
-                view.handle_key(event);
-                cx.notify();
-            }))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|view, _event, window, cx| {
-                    view.focus_handle.focus(window, cx);
-                }),
-            )
-            .size_full()
-            // Without `min_w_0`/`min_h_0`, a flex item's default min-size is
-            // its content's natural size — so once a row's text got even
-            // slightly wider than the visible pane, this container would
-            // grow to fit it instead of clipping, `on_prepaint` would then
-            // measure that *inflated* size and add even more columns next
-            // frame, compounding every frame until it crashed.
-            .min_w_0()
-            .min_h_0()
-            .bg(hsla(0., 0., 0.07, 1.))
-            .text_color(hsla(0., 0., 0.9, 1.))
-            .p_2()
-            .font_family(font_family.clone())
-            .text_size(px(font_size))
-            .line_height(px(line_height))
-            .overflow_hidden()
-            .on_prepaint(move |bounds, window, cx| {
+        let measure = {
+            let weak = cx.entity().downgrade();
+            let font_family = font_family.clone();
+            move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut gpui::App| {
                 let run = TextRun {
                     len: 1,
-                    font: gpui::font(measure_font_family.clone()),
+                    font: gpui::font(font_family.clone()),
                     color: hsla(0., 0., 0., 1.),
                     background_color: None,
                     underline: None,
@@ -228,17 +125,90 @@ impl Render for TerminalView {
                     None,
                 );
                 let char_width = shaped.width();
+                if char_width > px(0.) {
+                    // Hard backstop: a pane this size is never real, so
+                    // clamping here means a layout regression can misbehave
+                    // visually but can no longer runaway-grow every frame
+                    // into a crash.
+                    let cols = ((bounds.size.width / char_width).floor() as usize).clamp(10, 500);
+                    let rows =
+                        ((bounds.size.height / px(line_height)).floor() as usize).clamp(4, 200);
+                    let _ = weak.update(cx, |view, cx| view.resize(rows, cols, cx));
+                }
+                char_width
+            }
+        };
+
+        let paint = {
+            let entity = cx.entity().clone();
+            let font_family = font_family.clone();
+            move |bounds: Bounds<Pixels>,
+                  char_width: Pixels,
+                  window: &mut Window,
+                  cx: &mut gpui::App| {
                 if char_width <= px(0.) {
                     return;
                 }
-                // Hard backstop: a pane this size is never real, so clamping
-                // here means a layout regression can misbehave visually but
-                // can no longer runaway-grow every frame into a crash.
-                let cols = ((bounds.size.width / char_width).floor() as usize).clamp(10, 500);
-                let rows = ((bounds.size.height / px(line_height)).floor() as usize).clamp(4, 200);
-                let _ = weak.update(cx, |view, cx| view.resize(rows, cols, cx));
-            })
-            .children(rows)
+                let base_font = gpui::font(font_family.clone());
+                let (quads, lines) = {
+                    let view = entity.read(cx);
+                    build_paint(
+                        &view.grid,
+                        bounds,
+                        char_width,
+                        px(line_height),
+                        px(font_size),
+                        &base_font,
+                        window,
+                    )
+                };
+                for quad in quads {
+                    window.paint_quad(quad);
+                }
+                for (line, origin) in lines {
+                    let _ =
+                        line.paint(origin, px(line_height), TextAlign::default(), None, window, cx);
+                }
+            }
+        };
+
+        div()
+            .track_focus(&self.focus_handle)
+            .key_context("Terminal")
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
+                view.handle_key(event);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SendTab, _window, cx| {
+                view.backend.write_input(b"\t");
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SendTabPrev, _window, cx| {
+                view.backend.write_input(b"\x1b[Z");
+                cx.notify();
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _event, window, cx| {
+                    view.focus_handle.focus(window, cx);
+                }),
+            )
+            .size_full()
+            // Without `min_w_0`/`min_h_0`, a flex item's default min-size is
+            // its content's natural size — this keeps the pane clipping
+            // instead of growing when a child measures wide.
+            .min_w_0()
+            .min_h_0()
+            .bg(default_bg())
+            .text_color(hsla(0., 0., 0.9, 1.))
+            .p_2()
+            .font_family(font_family)
+            .text_size(px(font_size))
+            .line_height(px(line_height))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .child(canvas(measure, paint).w_full().flex_1().min_h_0())
             .when_some(closed_message, |this, msg| {
                 this.child(
                     div()
@@ -248,6 +218,131 @@ impl Render for TerminalView {
                 )
             })
     }
+}
+
+fn build_paint(
+    grid: &Grid,
+    bounds: Bounds<Pixels>,
+    char_width: Pixels,
+    line_height: Pixels,
+    font_size: Pixels,
+    base_font: &Font,
+    window: &Window,
+) -> (Vec<PaintQuad>, Vec<(ShapedLine, Point<Pixels>)>) {
+    let mut quads = Vec::new();
+    let mut lines = Vec::new();
+
+    let cursor = grid
+        .cursor_visible
+        .then_some((grid.cursor_row, grid.cursor_col));
+
+    for row in 0..grid.rows {
+        let y = bounds.origin.y + line_height * row as f32;
+
+        let cell_bg = |col: usize| -> Option<Hsla> {
+            let cell = grid.cell(row, col);
+            if cursor == Some((row, col)) {
+                Some(cell.fg.as_fg())
+            } else {
+                cell.bg.as_bg()
+            }
+        };
+        let mut col = 0;
+        while col < grid.cols {
+            let bg = cell_bg(col);
+            let start = col;
+            col += 1;
+            while col < grid.cols && cell_bg(col) == bg {
+                col += 1;
+            }
+            if let Some(color) = bg {
+                let origin = point(bounds.origin.x + char_width * start as f32, y);
+                quads.push(fill(
+                    Bounds::new(origin, size(char_width * (col - start) as f32, line_height)),
+                    color,
+                ));
+            }
+        }
+
+        let mut text = String::new();
+        let mut style: Option<RunStyle> = None;
+        let mut start_col = 0;
+        let mut flush = |text: &mut String, style: Option<RunStyle>, start_col: usize| {
+            let Some(style) = style else {
+                text.clear();
+                return;
+            };
+            if text.trim().is_empty() && !style.underline && !style.strike {
+                text.clear();
+                return;
+            }
+            let mut font = base_font.clone();
+            if style.bold {
+                font = font.bold();
+            }
+            if style.italic {
+                font = font.italic();
+            }
+            let run = TextRun {
+                len: text.len(),
+                font,
+                color: style.color,
+                background_color: None,
+                underline: style.underline.then(|| UnderlineStyle {
+                    thickness: px(1.),
+                    color: Some(style.color),
+                    wavy: false,
+                }),
+                strikethrough: style.strike.then(|| StrikethroughStyle {
+                    thickness: px(1.),
+                    color: Some(style.color),
+                }),
+            };
+            let shaped = window.text_system().shape_line(
+                SharedString::from(std::mem::take(text)),
+                font_size,
+                &[run],
+                None,
+            );
+            lines.push((
+                shaped,
+                point(bounds.origin.x + char_width * start_col as f32, y),
+            ));
+        };
+
+        for col in 0..grid.cols {
+            let cell = grid.cell(row, col);
+            let is_cursor = cursor == Some((row, col));
+            let mut color = if is_cursor {
+                cell.bg.as_bg().unwrap_or(cursor_fg())
+            } else {
+                cell.fg.as_fg()
+            };
+            if cell.dim() {
+                color.a *= 0.6;
+            }
+            let cell_style = RunStyle {
+                color,
+                bold: cell.bold(),
+                italic: cell.italic(),
+                underline: cell.underline(),
+                strike: cell.strike(),
+            };
+            let ch = cell.ch();
+            if style != Some(cell_style) || !ch.is_ascii() {
+                flush(&mut text, style.take(), start_col);
+                style = Some(cell_style);
+                start_col = col;
+            }
+            text.push(ch);
+            if !ch.is_ascii() {
+                flush(&mut text, style.take(), start_col);
+            }
+        }
+        flush(&mut text, style, start_col);
+    }
+
+    (quads, lines)
 }
 
 /// Translate a raw key event into the bytes a shell/PTY expects to receive.

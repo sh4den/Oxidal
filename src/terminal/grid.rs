@@ -29,6 +29,10 @@ impl Color {
 
 const CHAR_MASK: u32 = (1 << 24) - 1;
 const FLAG_BOLD: u32 = 1 << 24;
+const FLAG_ITALIC: u32 = 1 << 25;
+const FLAG_UNDERLINE: u32 = 1 << 26;
+const FLAG_STRIKE: u32 = 1 << 27;
+const FLAG_DIM: u32 = 1 << 28;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
@@ -46,16 +50,16 @@ impl Cell {
         bg: Color::Default,
     };
 
-    fn new(ch: char, fg: Color, bg: Color, bold: bool) -> Self {
+    fn new(ch: char, fg: Color, bg: Color, flags: u32) -> Self {
         Self {
-            ch_flags: ch as u32 | if bold { FLAG_BOLD } else { 0 },
+            ch_flags: ch as u32 | flags,
             fg,
             bg,
         }
     }
 
     fn blank(attrs: &Attrs) -> Self {
-        Self::new(' ', attrs.fg, attrs.bg, attrs.bold)
+        Self::new(' ', attrs.fg, attrs.bg, 0)
     }
 
     pub fn ch(self) -> char {
@@ -65,29 +69,64 @@ impl Cell {
     pub fn bold(self) -> bool {
         self.ch_flags & FLAG_BOLD != 0
     }
+
+    pub fn italic(self) -> bool {
+        self.ch_flags & FLAG_ITALIC != 0
+    }
+
+    pub fn underline(self) -> bool {
+        self.ch_flags & FLAG_UNDERLINE != 0
+    }
+
+    pub fn strike(self) -> bool {
+        self.ch_flags & FLAG_STRIKE != 0
+    }
+
+    pub fn dim(self) -> bool {
+        self.ch_flags & FLAG_DIM != 0
+    }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Attrs {
     fg: Color,
     bg: Color,
     bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+    strike: bool,
     reverse: bool,
 }
 
-impl Default for Attrs {
-    fn default() -> Self {
-        Self {
-            fg: Color::Default,
-            bg: Color::Default,
-            bold: false,
-            reverse: false,
+impl Attrs {
+    fn flags(&self) -> u32 {
+        let mut flags = 0;
+        if self.bold {
+            flags |= FLAG_BOLD;
         }
+        if self.italic {
+            flags |= FLAG_ITALIC;
+        }
+        if self.underline {
+            flags |= FLAG_UNDERLINE;
+        }
+        if self.strike {
+            flags |= FLAG_STRIKE;
+        }
+        if self.dim {
+            flags |= FLAG_DIM;
+        }
+        flags
     }
 }
 
 fn default_fg() -> Hsla {
     hsla(0., 0., 0.85, 1.)
+}
+
+pub fn default_bg() -> Hsla {
+    hsla(0., 0., 0.07, 1.)
 }
 
 /// ANSI 16-color palette rendered as approximate terminal colors.
@@ -140,6 +179,11 @@ pub struct Grid {
     /// DECCKM: arrow keys send `ESC O x` instead of `ESC [ x` when set.
     pub application_cursor_keys: bool,
     alt_screen: Option<SavedPrimaryScreen>,
+    responses: Vec<u8>,
+    last_printed: Option<char>,
+    g0_graphics: bool,
+    g1_graphics: bool,
+    shift_out: bool,
 }
 
 impl Grid {
@@ -160,6 +204,11 @@ impl Grid {
             autowrap: true,
             application_cursor_keys: false,
             alt_screen: None,
+            responses: Vec::new(),
+            last_printed: None,
+            g0_graphics: false,
+            g1_graphics: false,
+            shift_out: false,
         }
     }
 
@@ -197,14 +246,15 @@ impl Grid {
         self.scroll_bottom = rows - 1;
     }
 
-    pub fn feed(&mut self, bytes: &[u8]) {
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         let Some(mut parser) = self.parser.take() else {
-            return;
+            return Vec::new();
         };
         for byte in bytes {
             parser.advance(self, *byte);
         }
         self.parser = Some(parser);
+        std::mem::take(&mut self.responses)
     }
 
     fn blank_cell(&self) -> Cell {
@@ -345,9 +395,17 @@ impl Grid {
         self.scroll_bottom = self.rows.saturating_sub(1);
         self.application_cursor_keys = false;
         self.autowrap = true;
+        self.shift_out = false;
     }
 
     fn put_char(&mut self, ch: char) {
+        let graphics = if self.shift_out {
+            self.g1_graphics
+        } else {
+            self.g0_graphics
+        };
+        let ch = if graphics { dec_graphics(ch) } else { ch };
+        self.last_printed = Some(ch);
         if self.cursor_col >= self.cols {
             if self.autowrap {
                 self.cursor_col = 0;
@@ -365,8 +423,16 @@ impl Grid {
         } else {
             (self.attrs.fg, self.attrs.bg)
         };
-        self.cells[self.cursor_row][self.cursor_col] = Cell::new(ch, fg, bg, self.attrs.bold);
+        self.cells[self.cursor_row][self.cursor_col] = Cell::new(ch, fg, bg, self.attrs.flags());
         self.cursor_col += 1;
+    }
+
+    fn reverse_line_feed(&mut self) {
+        if self.cursor_row == self.scroll_top {
+            self.scroll_down_region(1);
+        } else if self.cursor_row > 0 {
+            self.cursor_row -= 1;
+        }
     }
 
     fn erase_line(&mut self, mode: u16) {
@@ -426,7 +492,17 @@ impl Grid {
             match values[i] {
                 0 => self.attrs = Attrs::default(),
                 1 => self.attrs.bold = true,
-                22 => self.attrs.bold = false,
+                2 => self.attrs.dim = true,
+                3 => self.attrs.italic = true,
+                4 => self.attrs.underline = true,
+                9 => self.attrs.strike = true,
+                22 => {
+                    self.attrs.bold = false;
+                    self.attrs.dim = false;
+                }
+                23 => self.attrs.italic = false,
+                24 => self.attrs.underline = false,
+                29 => self.attrs.strike = false,
                 7 => self.attrs.reverse = true,
                 27 => self.attrs.reverse = false,
                 39 => self.attrs.fg = Color::Default,
@@ -537,7 +613,7 @@ impl Perform for Grid {
 
     fn execute(&mut self, byte: u8) {
         match byte {
-            b'\n' => self.line_feed(),
+            b'\n' | 0x0b | 0x0c => self.line_feed(),
             b'\r' => self.cursor_col = 0,
             0x08 => {
                 if self.cursor_col > 0 {
@@ -548,6 +624,8 @@ impl Perform for Grid {
                 let next_tab = (self.cursor_col / 8 + 1) * 8;
                 self.cursor_col = next_tab.min(self.cols - 1);
             }
+            0x0e => self.shift_out = true,
+            0x0f => self.shift_out = false,
             0x07 => {}
             _ => {}
         }
@@ -597,6 +675,57 @@ impl Perform for Grid {
             '@' => self.insert_chars(n(1) as usize),
             'P' => self.delete_chars(n(1) as usize),
             'X' => self.erase_chars(n(1) as usize),
+            'E' => {
+                self.cursor_row = (self.cursor_row + n(1) as usize).min(self.rows - 1);
+                self.cursor_col = 0;
+            }
+            'F' => {
+                self.cursor_row = self.cursor_row.saturating_sub(n(1) as usize);
+                self.cursor_col = 0;
+            }
+            'Z' => {
+                for _ in 0..n(1) {
+                    if self.cursor_col == 0 {
+                        break;
+                    }
+                    self.cursor_col = (self.cursor_col - 1) / 8 * 8;
+                }
+            }
+            'b' => {
+                if let Some(ch) = self.last_printed {
+                    for _ in 0..n(1) {
+                        self.put_char(ch);
+                    }
+                }
+            }
+            'n' => {
+                let private = intermediates.first() == Some(&b'?');
+                match n(0) {
+                    5 if !private => self.responses.extend_from_slice(b"\x1b[0n"),
+                    6 => {
+                        let row = self.cursor_row + 1;
+                        let col = self.cursor_col.min(self.cols.saturating_sub(1)) + 1;
+                        let reply = if private {
+                            format!("\x1b[?{row};{col}R")
+                        } else {
+                            format!("\x1b[{row};{col}R")
+                        };
+                        self.responses.extend_from_slice(reply.as_bytes());
+                    }
+                    _ => {}
+                }
+            }
+            'c' => match intermediates.first() {
+                None if n(0) == 0 => self.responses.extend_from_slice(b"\x1b[?6c"),
+                Some(&b'>') => self.responses.extend_from_slice(b"\x1b[>0;95;0c"),
+                _ => {}
+            },
+            't' => {
+                if intermediates.is_empty() && n(0) == 18 {
+                    let reply = format!("\x1b[8;{};{}t", self.rows, self.cols);
+                    self.responses.extend_from_slice(reply.as_bytes());
+                }
+            }
             'h' | 'l' => {
                 if intermediates.first() == Some(&b'?') {
                     let enable = action == 'h';
@@ -615,10 +744,28 @@ impl Perform for Grid {
         }
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+    fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        match intermediates.first() {
+            Some(&b'(') => {
+                self.g0_graphics = byte == b'0';
+                return;
+            }
+            Some(&b')') => {
+                self.g1_graphics = byte == b'0';
+                return;
+            }
+            Some(_) => return,
+            None => {}
+        }
         match byte {
             b'7' => self.saved_cursor = (self.cursor_row, self.cursor_col),
             b'8' => (self.cursor_row, self.cursor_col) = self.saved_cursor,
+            b'D' => self.line_feed(),
+            b'E' => {
+                self.cursor_col = 0;
+                self.line_feed();
+            }
+            b'M' => self.reverse_line_feed(),
             b'c' => {
                 self.attrs = Attrs::default();
                 self.alt_screen = None;
@@ -626,6 +773,11 @@ impl Perform for Grid {
                 self.scroll_bottom = self.rows.saturating_sub(1);
                 self.application_cursor_keys = false;
                 self.autowrap = true;
+                self.cursor_visible = true;
+                self.g0_graphics = false;
+                self.g1_graphics = false;
+                self.shift_out = false;
+                self.last_printed = None;
                 let blank = self.blank_cell();
                 for row in self.cells.iter_mut() {
                     row.fill(blank);
@@ -635,5 +787,53 @@ impl Perform for Grid {
             }
             _ => {}
         }
+    }
+
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        if params.len() < 2 || params[1] != b"?" {
+            return;
+        }
+        let (code, color) = match params[0] {
+            b"10" => ("10", default_fg()),
+            b"11" => ("11", default_bg()),
+            _ => return,
+        };
+        let c = (color.l * 255.) as u16;
+        let terminator = if bell_terminated { "\x07" } else { "\x1b\\" };
+        let reply =
+            format!("\x1b]{code};rgb:{c:02x}{c:02x}/{c:02x}{c:02x}/{c:02x}{c:02x}{terminator}");
+        self.responses.extend_from_slice(reply.as_bytes());
+    }
+}
+
+fn dec_graphics(ch: char) -> char {
+    match ch {
+        '`' => '◆',
+        'a' => '▒',
+        'f' => '°',
+        'g' => '±',
+        'j' => '┘',
+        'k' => '┐',
+        'l' => '┌',
+        'm' => '└',
+        'n' => '┼',
+        'o' => '⎺',
+        'p' => '⎻',
+        'q' => '─',
+        'r' => '⎼',
+        's' => '⎽',
+        't' => '├',
+        'u' => '┤',
+        'v' => '┴',
+        'w' => '┬',
+        'x' => '│',
+        'y' => '≤',
+        'z' => '≥',
+        '{' => 'π',
+        '|' => '≠',
+        '}' => '£',
+        '~' => '·',
+        '_' => ' ',
+        other => other,
     }
 }
