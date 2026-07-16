@@ -23,7 +23,12 @@ pub fn spawn(rows: u16, cols: u16) -> anyhow::Result<Backend> {
         pixel_height: 0,
     })?;
 
-    let cmd = CommandBuilder::new(default_shell());
+    let mut cmd = CommandBuilder::new(default_shell());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    if std::env::var_os("LANG").is_none() {
+        cmd.env("LANG", "en_US.UTF-8");
+    }
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
 

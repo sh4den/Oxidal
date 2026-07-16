@@ -7,10 +7,11 @@ mod sftp;
 mod ssh_client;
 mod terminal;
 
-use gpui::{px, size, App, AppContext as _, Bounds, WindowBounds, WindowOptions};
+use gpui::{px, size, App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowOptions};
 use gpui_component::{Root, Theme, ThemeMode, TitleBar};
 
 use crate::app::OxidalApp;
+use crate::terminal::view::{SendTab, SendTabPrev};
 
 fn main() {
     let application = gpui_platform::application().with_assets(gpui_component_assets::Assets);
@@ -18,6 +19,11 @@ fn main() {
     application.run(move |cx: &mut App| {
         // Must be called before using any GPUI Component features.
         gpui_component::init(cx);
+
+        cx.bind_keys([
+            KeyBinding::new("tab", SendTab, Some("Terminal")),
+            KeyBinding::new("shift-tab", SendTabPrev, Some("Terminal")),
+        ]);
 
         let settings = settings::load_settings();
         let mode = if settings.dark_mode {
