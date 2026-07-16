@@ -178,6 +178,11 @@ pub struct Grid {
     autowrap: bool,
     /// DECCKM: arrow keys send `ESC O x` instead of `ESC [ x` when set.
     pub application_cursor_keys: bool,
+    /// Mouse reporting mode (0 = off, else 1000/1002/1003) and whether the
+    /// SGR (1006) coordinate encoding is active.
+    pub mouse_mode: u16,
+    pub mouse_sgr: bool,
+    pub bracketed_paste: bool,
     alt_screen: Option<SavedPrimaryScreen>,
     responses: Vec<u8>,
     last_printed: Option<char>,
@@ -203,6 +208,9 @@ impl Grid {
             scroll_bottom: rows.saturating_sub(1),
             autowrap: true,
             application_cursor_keys: false,
+            mouse_mode: 0,
+            mouse_sgr: false,
+            bracketed_paste: false,
             alt_screen: None,
             responses: Vec::new(),
             last_printed: None,
@@ -214,6 +222,10 @@ impl Grid {
 
     pub fn cell(&self, row: usize, col: usize) -> Cell {
         self.cells[row][col]
+    }
+
+    pub fn alt_active(&self) -> bool {
+        self.alt_screen.is_some()
     }
 
     /// Resize the grid to fill however much space is actually available,
@@ -396,6 +408,9 @@ impl Grid {
         self.application_cursor_keys = false;
         self.autowrap = true;
         self.shift_out = false;
+        self.mouse_mode = 0;
+        self.mouse_sgr = false;
+        self.bracketed_paste = false;
     }
 
     fn put_char(&mut self, ch: char) {
@@ -735,6 +750,11 @@ impl Perform for Grid {
                             7 => self.autowrap = enable,
                             25 => self.cursor_visible = enable,
                             47 | 1047 | 1049 => self.set_alt_screen(enable),
+                            mode @ (1000 | 1002 | 1003) => {
+                                self.mouse_mode = if enable { mode } else { 0 };
+                            }
+                            1006 => self.mouse_sgr = enable,
+                            2004 => self.bracketed_paste = enable,
                             _ => {}
                         }
                     }
@@ -774,6 +794,9 @@ impl Perform for Grid {
                 self.application_cursor_keys = false;
                 self.autowrap = true;
                 self.cursor_visible = true;
+                self.mouse_mode = 0;
+                self.mouse_sgr = false;
+                self.bracketed_paste = false;
                 self.g0_graphics = false;
                 self.g1_graphics = false;
                 self.shift_out = false;

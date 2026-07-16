@@ -2,10 +2,11 @@ use std::collections::VecDeque;
 
 use gpui::{
     actions, canvas, div, fill, hsla, point, prelude::FluentBuilder as _, px, relative, size,
-    AnyElement, Bounds, Context, Div, FocusHandle, Font, Hsla, InteractiveElement as _,
-    IntoElement, KeyDownEvent, MouseButton, PaintQuad, ParentElement as _, Pixels, Point, Render,
-    ShapedLine, SharedString, StrikethroughStyle, Styled as _, TextAlign, TextRun, UnderlineStyle,
-    Window,
+    AnyElement, Bounds, ClipboardItem, Context, Div, FocusHandle, Font, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement as _, Pixels, Point, Render,
+    ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, TextAlign,
+    TextRun, UnderlineStyle, Window,
 };
 use gpui_component::{Icon, IconName, Sizable as _};
 
@@ -16,7 +17,7 @@ use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
 
-actions!(terminal, [SendTab, SendTabPrev]);
+actions!(terminal, [SendTab, SendTabPrev, CopySelection, PasteClipboard]);
 
 fn cursor_fg() -> Hsla {
     hsla(0., 0., 0.08, 1.)
@@ -31,6 +32,27 @@ struct RunStyle {
     strike: bool,
 }
 
+#[derive(Clone, Copy)]
+struct Selection {
+    anchor: (usize, usize),
+    head: (usize, usize),
+    dragging: bool,
+}
+
+impl Selection {
+    fn range(&self) -> ((usize, usize), (usize, usize)) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+}
+
+fn selection_bg() -> Hsla {
+    hsla(215. / 360., 0.45, 0.32, 1.)
+}
+
 pub struct TerminalView {
     grid: Grid,
     backend: Backend,
@@ -39,6 +61,8 @@ pub struct TerminalView {
     monitored: bool,
     stats: Option<RemoteStats>,
     cpu_history: VecDeque<f32>,
+    selection: Option<Selection>,
+    layout: Option<(Bounds<Pixels>, Pixels, Pixels)>,
 }
 
 impl TerminalView {
@@ -117,6 +141,8 @@ impl TerminalView {
             monitored,
             stats: None,
             cpu_history: VecDeque::new(),
+            selection: None,
+            layout: None,
         }
     }
 
@@ -132,7 +158,88 @@ impl TerminalView {
         }
         self.grid.resize(rows, cols);
         self.backend.resize(rows as u16, cols as u16);
+        self.selection = None;
         cx.notify();
+    }
+
+    fn cell_at(&self, position: Point<Pixels>, clamp: bool) -> Option<(usize, usize)> {
+        let (bounds, char_width, line_height) = self.layout?;
+        if char_width <= px(0.) {
+            return None;
+        }
+        if !clamp && !bounds.contains(&position) {
+            return None;
+        }
+        let col = ((position.x - bounds.origin.x) / char_width).floor() as isize;
+        let row = ((position.y - bounds.origin.y) / line_height).floor() as isize;
+        Some((
+            row.clamp(0, self.grid.rows as isize - 1) as usize,
+            col.clamp(0, self.grid.cols as isize - 1) as usize,
+        ))
+    }
+
+    fn send_mouse(&mut self, button: u8, row: usize, col: usize, press: bool, drag: bool) {
+        if self.grid.mouse_mode == 0 {
+            return;
+        }
+        let code = button + if drag { 32 } else { 0 };
+        let bytes = if self.grid.mouse_sgr {
+            format!(
+                "\x1b[<{};{};{}{}",
+                code,
+                col + 1,
+                row + 1,
+                if press { 'M' } else { 'm' }
+            )
+            .into_bytes()
+        } else {
+            let cb = 32 + if press { code } else { 3 };
+            let cx = 32 + (col + 1).min(223) as u8;
+            let cy = 32 + (row + 1).min(223) as u8;
+            vec![0x1b, b'[', b'M', cb, cx, cy]
+        };
+        self.backend.write_input(&bytes);
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection.as_ref()?.range();
+        let mut out = String::new();
+        for row in start.0..=end.0.min(self.grid.rows - 1) {
+            let from = if row == start.0 { start.1 } else { 0 };
+            let to = if row == end.0 { end.1 } else { self.grid.cols - 1 };
+            let mut line: String = (from..=to.min(self.grid.cols - 1))
+                .map(|col| self.grid.cell(row, col).ch())
+                .collect();
+            while line.ends_with(' ') {
+                line.pop();
+            }
+            if row != start.0 {
+                out.push('\n');
+            }
+            out.push_str(&line);
+        }
+        Some(out)
+    }
+
+    fn paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        if self.grid.bracketed_paste {
+            let mut bytes = b"\x1b[200~".to_vec();
+            bytes.extend_from_slice(text.as_bytes());
+            bytes.extend_from_slice(b"\x1b[201~");
+            self.backend.write_input(&bytes);
+        } else {
+            self.backend.write_input(text.as_bytes());
+        }
+    }
+
+    fn end_drag(&mut self) {
+        if let Some(selection) = self.selection.as_mut() {
+            selection.dragging = false;
+        }
+        if self.selection.is_some_and(|s| s.anchor == s.head) {
+            self.selection = None;
+        }
     }
 }
 
@@ -171,7 +278,10 @@ impl Render for TerminalView {
                     let cols = ((bounds.size.width / char_width).floor() as usize).clamp(10, 500);
                     let rows =
                         ((bounds.size.height / px(line_height)).floor() as usize).clamp(4, 200);
-                    let _ = weak.update(cx, |view, cx| view.resize(rows, cols, cx));
+                    let _ = weak.update(cx, |view, cx| {
+                        view.layout = Some((bounds, char_width, px(line_height)));
+                        view.resize(rows, cols, cx);
+                    });
                 }
                 char_width
             }
@@ -190,8 +300,10 @@ impl Render for TerminalView {
                 let base_font = gpui::font(font_family.clone());
                 let (quads, lines) = {
                     let view = entity.read(cx);
+                    let selection = view.selection.map(|s| s.range());
                     build_paint(
                         &view.grid,
+                        selection,
                         bounds,
                         char_width,
                         px(line_height),
@@ -225,12 +337,148 @@ impl Render for TerminalView {
                 view.backend.write_input(b"\x1b[Z");
                 cx.notify();
             }))
+            .on_action(cx.listener(|view, _: &CopySelection, _window, cx| {
+                if let Some(text) = view.selected_text() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }))
+            .on_action(cx.listener(|view, _: &PasteClipboard, _window, cx| {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    view.paste(&text);
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|view, _event, window, cx| {
+                cx.listener(|view, event: &MouseDownEvent, window, cx| {
                     view.focus_handle.focus(window, cx);
+                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
+                        if let Some((row, col)) = view.cell_at(event.position, false) {
+                            view.send_mouse(0, row, col, true, false);
+                        }
+                        view.selection = None;
+                    } else {
+                        view.selection =
+                            view.cell_at(event.position, false).map(|cell| Selection {
+                                anchor: cell,
+                                head: cell,
+                                dragging: true,
+                            });
+                    }
+                    cx.notify();
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|view, event: &MouseDownEvent, _window, _cx| {
+                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
+                        if let Some((row, col)) = view.cell_at(event.position, false) {
+                            view.send_mouse(1, row, col, true, false);
+                        }
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|view, event: &MouseDownEvent, _window, _cx| {
+                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
+                        if let Some((row, col)) = view.cell_at(event.position, false) {
+                            view.send_mouse(2, row, col, true, false);
+                        }
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, event: &MouseUpEvent, _window, cx| {
+                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
+                        if let Some((row, col)) = view.cell_at(event.position, true) {
+                            view.send_mouse(0, row, col, false, false);
+                        }
+                    }
+                    view.end_drag();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|view, event: &MouseUpEvent, _window, _cx| {
+                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
+                        if let Some((row, col)) = view.cell_at(event.position, true) {
+                            view.send_mouse(1, row, col, false, false);
+                        }
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(|view, event: &MouseUpEvent, _window, _cx| {
+                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
+                        if let Some((row, col)) = view.cell_at(event.position, true) {
+                            view.send_mouse(2, row, col, false, false);
+                        }
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|view, _event: &MouseUpEvent, _window, cx| {
+                    view.end_drag();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _window, cx| {
+                if event.pressed_button == Some(MouseButton::Left) {
+                    let cell = view.cell_at(event.position, true);
+                    if let (Some(cell), Some(selection)) = (cell, view.selection.as_mut()) {
+                        if selection.dragging && selection.head != cell {
+                            selection.head = cell;
+                            cx.notify();
+                        }
+                    }
+                }
+                if view.grid.mouse_mode >= 1002 && !event.modifiers.shift {
+                    let code = match event.pressed_button {
+                        Some(MouseButton::Left) => 0,
+                        Some(MouseButton::Middle) => 1,
+                        Some(MouseButton::Right) => 2,
+                        _ => return,
+                    };
+                    if let Some((row, col)) = view.cell_at(event.position, true) {
+                        view.send_mouse(code, row, col, true, true);
+                    }
+                }
+            }))
+            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _window, cx| {
+                let Some((_, _, line_height)) = view.layout else {
+                    return;
+                };
+                let dy = event.delta.pixel_delta(line_height).y;
+                if dy == px(0.) {
+                    return;
+                }
+                let lines = ((dy.abs() / line_height).ceil() as usize).clamp(1, 5);
+                let up = dy > px(0.);
+                if view.grid.mouse_mode != 0 && !event.modifiers.shift {
+                    if let Some((row, col)) = view.cell_at(event.position, true) {
+                        let button = if up { 64 } else { 65 };
+                        for _ in 0..lines {
+                            view.send_mouse(button, row, col, true, false);
+                        }
+                    }
+                } else if view.grid.alt_active() {
+                    let seq: &[u8] = match (up, view.grid.application_cursor_keys) {
+                        (true, true) => b"\x1bOA",
+                        (true, false) => b"\x1b[A",
+                        (false, true) => b"\x1bOB",
+                        (false, false) => b"\x1b[B",
+                    };
+                    for _ in 0..lines {
+                        view.backend.write_input(seq);
+                    }
+                }
+                cx.notify();
+            }))
             .size_full()
             // Without `min_w_0`/`min_h_0`, a flex item's default min-size is
             // its content's natural size — this keeps the pane clipping
@@ -405,6 +653,7 @@ fn fmt_rate(bytes_per_sec: f64) -> String {
 
 fn build_paint(
     grid: &Grid,
+    selection: Option<((usize, usize), (usize, usize))>,
     bounds: Bounds<Pixels>,
     char_width: Pixels,
     line_height: Pixels,
@@ -426,6 +675,10 @@ fn build_paint(
             let cell = grid.cell(row, col);
             if cursor == Some((row, col)) {
                 Some(cell.fg.as_fg())
+            } else if selection
+                .is_some_and(|(start, end)| (row, col) >= start && (row, col) <= end)
+            {
+                Some(selection_bg())
             } else {
                 cell.bg.as_bg()
             }
