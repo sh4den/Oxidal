@@ -1,14 +1,15 @@
 use gpui::{
-    div, prelude::FluentBuilder as _, px, AppContext as _, Context, Entity, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window,
+    AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
+    ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     resizable::{h_resizable, resizable_panel},
     tab::{Tab, TabBar},
-    v_flex, ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar,
+    v_flex,
 };
 use uuid::Uuid;
 
@@ -107,14 +108,16 @@ impl OxidalApp {
         };
 
         let content = match target.kind {
-            SessionKind::Local => match terminal::local::spawn(TERM_ROWS as u16, TERM_COLS as u16) {
-                Ok(backend) => TabContent::Terminal(
-                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, None, window, cx)),
-                ),
-                Err(err) => TabContent::Message(
-                    format!("Failed to start local shell: {err}").into(),
-                ),
-            },
+            SessionKind::Local => {
+                match terminal::local::spawn(TERM_ROWS as u16, TERM_COLS as u16) {
+                    Ok(backend) => TabContent::Terminal(cx.new(|cx| {
+                        TerminalView::new(backend, TERM_ROWS, TERM_COLS, None, window, cx)
+                    })),
+                    Err(err) => {
+                        TabContent::Message(format!("Failed to start local shell: {err}").into())
+                    }
+                }
+            }
             SessionKind::Ssh => {
                 let (backend, stats) = terminal::ssh::spawn(
                     target.host.clone(),
@@ -141,12 +144,16 @@ impl OxidalApp {
                 });
                 TabContent::SshSession { sftp, terminal }
             }
-            SessionKind::Serial => match terminal::serial::spawn(target.host.clone(), target.baud_rate) {
-                Ok(backend) => TabContent::Terminal(
-                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, None, window, cx)),
-                ),
-                Err(err) => TabContent::Message(format!("Failed to open serial port: {err}").into()),
-            },
+            SessionKind::Serial => {
+                match terminal::serial::spawn(target.host.clone(), target.baud_rate) {
+                    Ok(backend) => TabContent::Terminal(cx.new(|cx| {
+                        TerminalView::new(backend, TERM_ROWS, TERM_COLS, None, window, cx)
+                    })),
+                    Err(err) => {
+                        TabContent::Message(format!("Failed to open serial port: {err}").into())
+                    }
+                }
+            }
             SessionKind::Sftp => TabContent::Sftp(cx.new(|cx| {
                 SftpPanel::new(
                     target.host.clone(),
@@ -181,9 +188,7 @@ impl OxidalApp {
         self.active_tab = match self.active_tab {
             Some(_active) if self.tabs.is_empty() => None,
             Some(active) if active > index => Some(active - 1),
-            Some(active) if active == index => {
-                Some(index.min(self.tabs.len().saturating_sub(1)))
-            }
+            Some(active) if active == index => Some(index.min(self.tabs.len().saturating_sub(1))),
             other => other,
         };
         if self.tabs.is_empty() {
@@ -206,6 +211,7 @@ impl OxidalApp {
                     .items_center()
                     .justify_end()
                     .gap_1()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         Button::new("new-session")
                             .ghost()
@@ -248,14 +254,16 @@ impl OxidalApp {
                     this.bg(cx.theme().sidebar_accent)
                         .text_color(cx.theme().sidebar_accent_foreground)
                 })
-                .on_click(cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
-                    if event.click_count() >= 2 {
-                        view.connect_session(id, window, cx);
-                    } else {
-                        view.selected_session = Some(id);
-                        cx.notify();
-                    }
-                }))
+                .on_click(
+                    cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                        if event.click_count() >= 2 {
+                            view.connect_session(id, window, cx);
+                        } else {
+                            view.selected_session = Some(id);
+                            cx.notify();
+                        }
+                    }),
+                )
                 .child(Icon::new(item.kind.icon()).small())
                 .child(
                     v_flex()
@@ -272,7 +280,9 @@ impl OxidalApp {
                 .child(
                     div()
                         .text_xs()
-                        .when(!supported, |this| this.text_color(cx.theme().muted_foreground))
+                        .when(!supported, |this| {
+                            this.text_color(cx.theme().muted_foreground)
+                        })
                         .child(item.kind.label()),
                 )
                 .child(
@@ -310,7 +320,12 @@ impl OxidalApp {
                     .justify_between()
                     .px_3()
                     .py_2()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Sessions"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Sessions"),
+                    )
                     .child(
                         Button::new("add")
                             .ghost()
@@ -390,7 +405,13 @@ impl OxidalApp {
                 .justify_center()
                 .gap_2()
                 .child(Icon::new(IconName::TriangleAlert).with_size(px(32.)))
-                .child(div().text_sm().max_w(px(420.)).text_center().child(msg.clone()))
+                .child(
+                    div()
+                        .text_sm()
+                        .max_w(px(420.))
+                        .text_center()
+                        .child(msg.clone()),
+                )
                 .into_any_element(),
         });
 
@@ -425,14 +446,21 @@ impl OxidalApp {
             .justify_center()
             .gap_3()
             .child(Icon::new(IconName::SquareTerminal).with_size(px(48.)))
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Oxidal Terminal"))
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Oxidal Terminal"),
+            )
             .child(
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(match selected {
                         Some(s) => SharedString::from(format!("Ready to connect: {}", s.detail())),
-                        None => SharedString::from("Select a session on the left, or add a new one"),
+                        None => {
+                            SharedString::from("Select a session on the left, or add a new one")
+                        }
                     }),
             )
             .when_some(selected.map(|s| s.id), |this, id| {
