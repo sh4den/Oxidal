@@ -109,14 +109,14 @@ impl OxidalApp {
         let content = match target.kind {
             SessionKind::Local => match terminal::local::spawn(TERM_ROWS as u16, TERM_COLS as u16) {
                 Ok(backend) => TabContent::Terminal(
-                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, window, cx)),
+                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, None, window, cx)),
                 ),
                 Err(err) => TabContent::Message(
                     format!("Failed to start local shell: {err}").into(),
                 ),
             },
             SessionKind::Ssh => {
-                let backend = terminal::ssh::spawn(
+                let (backend, stats) = terminal::ssh::spawn(
                     target.host.clone(),
                     target.port,
                     target.username.clone(),
@@ -125,8 +125,9 @@ impl OxidalApp {
                     TERM_ROWS as u16,
                     TERM_COLS as u16,
                 );
-                let terminal =
-                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, window, cx));
+                let terminal = cx.new(|cx| {
+                    TerminalView::new(backend, TERM_ROWS, TERM_COLS, Some(stats), window, cx)
+                });
                 let sftp = cx.new(|cx| {
                     SftpPanel::new(
                         target.host.clone(),
@@ -142,7 +143,7 @@ impl OxidalApp {
             }
             SessionKind::Serial => match terminal::serial::spawn(target.host.clone(), target.baud_rate) {
                 Ok(backend) => TabContent::Terminal(
-                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, window, cx)),
+                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, None, window, cx)),
                 ),
                 Err(err) => TabContent::Message(format!("Failed to open serial port: {err}").into()),
             },

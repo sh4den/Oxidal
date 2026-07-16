@@ -1,13 +1,20 @@
+use std::collections::VecDeque;
+
 use gpui::{
-    actions, canvas, div, fill, hsla, point, prelude::FluentBuilder as _, px, size, Bounds,
-    Context, FocusHandle, Font, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
-    MouseButton, PaintQuad, ParentElement as _, Pixels, Point, Render, ShapedLine, SharedString,
-    StrikethroughStyle, Styled as _, TextAlign, TextRun, UnderlineStyle, Window,
+    actions, canvas, div, fill, hsla, point, prelude::FluentBuilder as _, px, relative, size,
+    AnyElement, Bounds, Context, Div, FocusHandle, Font, Hsla, InteractiveElement as _,
+    IntoElement, KeyDownEvent, MouseButton, PaintQuad, ParentElement as _, Pixels, Point, Render,
+    ShapedLine, SharedString, StrikethroughStyle, Styled as _, TextAlign, TextRun, UnderlineStyle,
+    Window,
 };
+use gpui_component::{Icon, IconName, Sizable as _};
 
 use super::backend::{Backend, BackendEvent};
 use super::grid::{default_bg, Grid};
+use super::stats::RemoteStats;
 use crate::settings::AppSettings;
+
+const CPU_HISTORY_LEN: usize = 30;
 
 actions!(terminal, [SendTab, SendTabPrev]);
 
@@ -29,6 +36,9 @@ pub struct TerminalView {
     backend: Backend,
     focus_handle: FocusHandle,
     closed_message: Option<String>,
+    monitored: bool,
+    stats: Option<RemoteStats>,
+    cpu_history: VecDeque<f32>,
 }
 
 impl TerminalView {
@@ -36,6 +46,7 @@ impl TerminalView {
         backend: Backend,
         rows: usize,
         cols: usize,
+        stats_rx: Option<async_channel::Receiver<RemoteStats>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -74,11 +85,38 @@ impl TerminalView {
 
         cx.observe_global::<AppSettings>(|_, cx| cx.notify()).detach();
 
+        let monitored = stats_rx.is_some();
+        if let Some(rx) = stats_rx {
+            cx.spawn(async move |this, cx| {
+                while let Ok(stats) = rx.recv().await {
+                    if this
+                        .update(cx, |view: &mut Self, cx| {
+                            if let Some(cpu) = stats.cpu {
+                                view.cpu_history.push_back(cpu);
+                                while view.cpu_history.len() > CPU_HISTORY_LEN {
+                                    view.cpu_history.pop_front();
+                                }
+                            }
+                            view.stats = Some(stats);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+
         Self {
             grid: Grid::new(rows, cols),
             backend,
             focus_handle,
             closed_message: None,
+            monitored,
+            stats: None,
+            cpu_history: VecDeque::new(),
         }
     }
 
@@ -201,23 +239,168 @@ impl Render for TerminalView {
             .min_h_0()
             .bg(default_bg())
             .text_color(hsla(0., 0., 0.9, 1.))
-            .p_2()
             .font_family(font_family)
             .text_size(px(font_size))
             .line_height(px(line_height))
             .overflow_hidden()
             .flex()
             .flex_col()
-            .child(canvas(measure, paint).w_full().flex_1().min_h_0())
-            .when_some(closed_message, |this, msg| {
-                this.child(
-                    div()
-                        .mt_2()
-                        .text_color(hsla(0., 0.6, 0.6, 1.))
-                        .child(format!("[session ended: {}]", msg)),
-                )
-            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .child(canvas(measure, paint).w_full().flex_1().min_h_0())
+                    .when_some(closed_message, |this, msg| {
+                        this.child(
+                            div()
+                                .mt_2()
+                                .text_color(hsla(0., 0.6, 0.6, 1.))
+                                .child(format!("[session ended: {}]", msg)),
+                        )
+                    }),
+            )
+            .when(self.monitored, |this| this.child(self.render_monitor_bar()))
     }
+}
+
+impl TerminalView {
+    fn render_monitor_bar(&self) -> AnyElement {
+        let mut items: Vec<AnyElement> = Vec::new();
+        if let Some(stats) = &self.stats {
+            if let Some(sysname) = &stats.sysname {
+                items.push(segment(IconName::Globe).child(sysname.clone()).into_any_element());
+            }
+            items.push(
+                segment(IconName::Cpu)
+                    .child(cpu_chart(&self.cpu_history))
+                    .when_some(stats.cpu, |this, cpu| {
+                        this.child(format!("{:.0}%", cpu * 100.))
+                    })
+                    .into_any_element(),
+            );
+            if let Some((used, total)) = stats.mem {
+                let frac = used as f32 / total.max(1) as f32;
+                items.push(
+                    segment(IconName::MemoryStick)
+                        .child(meter_bar(frac))
+                        .child(format!("{}/{}", fmt_size(used), fmt_size(total)))
+                        .into_any_element(),
+                );
+            }
+            if let Some((rx, tx)) = stats.net {
+                items.push(segment(IconName::ArrowUp).child(fmt_rate(tx)).into_any_element());
+                items.push(segment(IconName::ArrowDown).child(fmt_rate(rx)).into_any_element());
+            }
+            if let Some(user) = &stats.user {
+                items.push(segment(IconName::User).child(user.clone()).into_any_element());
+            }
+            if let Some((used, total)) = stats.disk {
+                let frac = used as f32 / total.max(1) as f32;
+                items.push(
+                    segment(IconName::HardDrive)
+                        .child(meter_bar(frac))
+                        .child(format!("{:.0}%", frac * 100.))
+                        .into_any_element(),
+                );
+            }
+        }
+        if items.is_empty() {
+            items.push(
+                div()
+                    .text_color(hsla(0., 0., 0.45, 1.))
+                    .child(Icon::new(IconName::Loader).xsmall())
+                    .into_any_element(),
+            );
+        }
+
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_4()
+            .h(px(24.))
+            .px_2()
+            .text_xs()
+            .text_color(hsla(0., 0., 0.75, 1.))
+            .bg(hsla(0., 0., 0.11, 1.))
+            .border_t_1()
+            .border_color(hsla(0., 0., 0.2, 1.))
+            .overflow_hidden()
+            .children(items)
+            .into_any_element()
+    }
+}
+
+fn segment(icon: IconName) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(div().text_color(hsla(0., 0., 0.5, 1.)).child(Icon::new(icon).xsmall()))
+}
+
+fn cpu_chart(history: &VecDeque<f32>) -> AnyElement {
+    div()
+        .flex()
+        .items_end()
+        .justify_end()
+        .gap(px(1.))
+        .w(px(CPU_HISTORY_LEN as f32 * 3.))
+        .h(px(14.))
+        .rounded_sm()
+        .overflow_hidden()
+        .bg(hsla(0., 0., 0.16, 1.))
+        .children(history.iter().map(|&value| {
+            let value = value.clamp(0., 1.);
+            div()
+                .w(px(2.))
+                .h(px((13. * value).max(1.)))
+                .bg(meter_color(value))
+        }))
+        .into_any_element()
+}
+
+fn meter_bar(frac: f32) -> AnyElement {
+    let frac = frac.clamp(0., 1.);
+    div()
+        .w(px(40.))
+        .h(px(5.))
+        .rounded_full()
+        .overflow_hidden()
+        .bg(hsla(0., 0., 0.22, 1.))
+        .child(div().w(relative(frac)).h_full().bg(meter_color(frac)))
+        .into_any_element()
+}
+
+fn meter_color(frac: f32) -> Hsla {
+    if frac < 0.7 {
+        hsla(120. / 360., 0.45, 0.45, 1.)
+    } else if frac < 0.9 {
+        hsla(40. / 360., 0.6, 0.5, 1.)
+    } else {
+        hsla(0., 0.55, 0.5, 1.)
+    }
+}
+
+fn fmt_size(bytes: u64) -> String {
+    const G: f64 = 1024. * 1024. * 1024.;
+    const M: f64 = 1024. * 1024.;
+    let bytes = bytes as f64;
+    if bytes >= G {
+        format!("{:.1}G", bytes / G)
+    } else if bytes >= M {
+        format!("{:.0}M", bytes / M)
+    } else {
+        format!("{:.0}K", bytes / 1024.)
+    }
+}
+
+fn fmt_rate(bytes_per_sec: f64) -> String {
+    format!("{}/s", fmt_size(bytes_per_sec.max(0.) as u64))
 }
 
 fn build_paint(
