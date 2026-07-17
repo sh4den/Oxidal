@@ -1,4 +1,5 @@
 mod app;
+mod credentials;
 mod session;
 mod session_dialog;
 mod settings;
@@ -7,7 +8,10 @@ mod sftp;
 mod ssh_client;
 mod terminal;
 
-use gpui::{px, size, App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowOptions};
+use gpui::{
+    px, size, App, AppContext as _, Bounds, KeyBinding, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions,
+};
 use gpui_component::{Root, Theme, ThemeMode, TitleBar};
 
 use crate::app::OxidalApp;
@@ -28,6 +32,7 @@ fn main() {
         ]);
 
         let settings = settings::load_settings();
+        let opacity = settings.opacity;
         let mode = if settings.dark_mode {
             ThemeMode::Dark
         } else {
@@ -41,10 +46,16 @@ fn main() {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitleBar::title_bar_options()),
             window_min_size: Some(size(px(800.), px(560.))),
+            window_background: if opacity < 1.0 {
+                WindowBackgroundAppearance::Transparent
+            } else {
+                WindowBackgroundAppearance::Opaque
+            },
             ..Default::default()
         };
 
         cx.open_window(options, |window, cx| {
+            settings::apply_window_opacity(window, cx);
             let view = cx.new(|cx| OxidalApp::new(window, cx));
             // First level child of the window must be a Root.
             cx.new(|cx| Root::new(view, window, cx))

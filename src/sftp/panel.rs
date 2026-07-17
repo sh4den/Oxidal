@@ -1,20 +1,25 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash as _, Hasher as _};
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::FluentBuilder as _, px, AnyElement, AppContext as _, ClickEvent, Context,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _, px, Anchor, AnyElement, AppContext as _, ClickEvent, Context,
+    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
-    input::{Input, InputState},
-    menu::{ContextMenuExt as _, PopupMenuItem},
+    input::{Input, InputEvent, InputState},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     progress::Progress,
     h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
 };
 
-use super::{format_modified, format_size, join_remote, parent_remote, SftpEntry, SftpEvent};
+use super::{
+    format_modified, format_permissions, format_size, join_remote, parent_remote, SftpEntry,
+    SftpEvent,
+};
 
 struct TransferState {
     label: String,
@@ -41,6 +46,14 @@ pub struct SftpPanel {
     error: Option<String>,
     closed: Option<String>,
     transfer: Option<TransferState>,
+    show_hidden: bool,
+    /// Reports toggles of `show_hidden` so the owner can persist them.
+    on_show_hidden_changed: Box<dyn Fn(bool, &mut gpui::App)>,
+    /// Editable path bar; Enter navigates to the typed path.
+    path_input: gpui::Entity<InputState>,
+    /// The last `current_path` written into `path_input`, so the input is
+    /// only rewritten when a navigation actually changes the path.
+    synced_path: String,
 }
 
 impl SftpPanel {
@@ -50,10 +63,26 @@ impl SftpPanel {
         username: String,
         password: String,
         private_key_path: Option<String>,
-        _window: &mut Window,
+        show_hidden: bool,
+        on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + 'static,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let client = super::spawn(host, port, username, password, private_key_path, ".".to_string());
+
+        let path_input = cx.new(|cx| InputState::new(window, cx).placeholder("/"));
+        cx.subscribe(
+            &path_input,
+            |panel: &mut Self, input, event: &InputEvent, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let path = input.read(cx).value().trim().to_string();
+                    if !path.is_empty() {
+                        panel.navigate(path, cx);
+                    }
+                }
+            },
+        )
+        .detach();
 
         let events = client.events.clone();
         cx.spawn(async move |this, cx| loop {
@@ -147,6 +176,10 @@ impl SftpPanel {
             error: None,
             closed: None,
             transfer: None,
+            show_hidden,
+            on_show_hidden_changed: Box::new(on_show_hidden_changed),
+            path_input,
+            synced_path: String::new(),
         }
     }
 
@@ -174,8 +207,28 @@ impl SftpPanel {
             self.navigate(entry.path.clone(), cx);
         } else {
             self.selected = Some(entry.path.clone());
+            self.open_file(entry, cx);
             cx.notify();
         }
+    }
+
+    /// Fetch `entry` into a per-file temp folder, then launch it with the OS
+    /// default application for its extension. The folder is derived from the
+    /// remote path so re-opening the same file overwrites the previous copy
+    /// instead of piling up duplicates.
+    fn open_file(&mut self, entry: &SftpEntry, cx: &mut Context<Self>) {
+        let mut hasher = DefaultHasher::new();
+        entry.path.hash(&mut hasher);
+        let dir = std::env::temp_dir()
+            .join("Oxidal")
+            .join(format!("{:016x}", hasher.finish()));
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            self.error = Some(format!("Couldn't prepare temp folder: {err}"));
+            cx.notify();
+            return;
+        }
+        self.client
+            .download_and_open(entry.path.clone(), dir.join(&entry.name));
     }
 
     fn new_folder_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -313,6 +366,8 @@ impl SftpPanel {
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let view = cx.entity();
+        let show_hidden = self.show_hidden;
         h_flex()
             .items_center()
             .gap_1()
@@ -333,7 +388,8 @@ impl SftpPanel {
                 Button::new("sftp-refresh")
                     .ghost()
                     .xsmall()
-                    .label("Refresh")
+                    .icon(IconName::Redo2)
+                    .tooltip("Refresh")
                     .on_click(cx.listener(|panel, _, _, cx| panel.refresh(cx))),
             )
             .child(
@@ -341,7 +397,7 @@ impl SftpPanel {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Folder)
-                    .label("New Folder")
+                    .tooltip("New folder")
                     .on_click(cx.listener(|panel, _, window, cx| {
                         panel.new_folder_dialog(window, cx);
                     })),
@@ -354,16 +410,51 @@ impl SftpPanel {
                     .label("Upload")
                     .on_click(cx.listener(|panel, _, _, cx| panel.upload(cx))),
             )
+            .child(div().flex_1())
+            .child(
+                Button::new("sftp-more")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Ellipsis)
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, _cx| {
+                        menu.item(
+                            PopupMenuItem::new("Show hidden files")
+                                .checked(show_hidden)
+                                .on_click(window.listener_for(&view, |panel, _, _, cx| {
+                                    panel.show_hidden = !panel.show_hidden;
+                                    (panel.on_show_hidden_changed)(panel.show_hidden, cx);
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// Column headers matching `render_row`'s layout.
+    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(cx.theme().muted_foreground)
+            .whitespace_nowrap()
+            .child(div().w(px(16.)).flex_none())
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(self.current_path.clone())),
+                    .child("Name"),
             )
+            .child(div().w(px(56.)).flex_none().text_right().child("Size"))
+            .child(div().w(px(100.)).flex_none().overflow_hidden().child("Modified"))
+            .child(div().w(px(64.)).flex_none().overflow_hidden().child("Access"))
             .into_any_element()
     }
 
@@ -385,6 +476,9 @@ impl SftpPanel {
                 this.bg(cx.theme().sidebar_accent)
                     .text_color(cx.theme().sidebar_accent_foreground)
             })
+            .when(!selected, |this| {
+                this.hover(|this| this.bg(cx.theme().accent))
+            })
             .on_click(cx.listener(move |panel, event: &ClickEvent, _, cx| {
                 if event.click_count() >= 2 {
                     panel.open_entry(&row_entry_click, cx);
@@ -393,11 +487,15 @@ impl SftpPanel {
                     cx.notify();
                 }
             }))
-            .child(Icon::new(if entry.is_dir {
-                IconName::Folder
+            .child(div().w(px(16.)).flex_none().child(if entry.is_dir {
+                Icon::new(IconName::Folder)
+                    .small()
+                    .text_color(cx.theme().warning)
             } else {
-                IconName::File
-            }).small())
+                Icon::new(IconName::File)
+                    .small()
+                    .text_color(cx.theme().muted_foreground)
+            }))
             .child(
                 div()
                     .flex_1()
@@ -409,9 +507,12 @@ impl SftpPanel {
             )
             .child(
                 div()
-                    .w(px(72.))
+                    .w(px(56.))
                     .flex_none()
+                    .text_right()
                     .text_xs()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
                     .text_color(cx.theme().muted_foreground)
                     .child(if entry.is_dir {
                         String::new()
@@ -421,16 +522,35 @@ impl SftpPanel {
             )
             .child(
                 div()
-                    .w(px(120.))
+                    .w(px(100.))
                     .flex_none()
                     .text_xs()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
                     .text_color(cx.theme().muted_foreground)
                     .child(entry.modified.map(format_modified).unwrap_or_default()),
+            )
+            .child(
+                div()
+                    .w(px(64.))
+                    .flex_none()
+                    .text_xs()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format_permissions(entry.is_dir, entry.permissions)),
             )
             .context_menu(move |menu, window, _cx| {
                 let entry = row_entry.clone();
                 let mut menu = menu;
                 if !is_dir {
+                    let open_entry = entry.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new("Open").on_click(window.listener_for(
+                            &view,
+                            move |panel, _, _, cx| panel.open_file(&open_entry, cx),
+                        )),
+                    );
                     let entry = entry.clone();
                     menu = menu.item(
                         PopupMenuItem::new("Download").on_click(window.listener_for(
@@ -457,7 +577,7 @@ impl SftpPanel {
 }
 
 impl Render for SftpPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(closed) = &self.closed {
             return v_flex()
                 .size_full()
@@ -476,10 +596,24 @@ impl Render for SftpPanel {
                 .into_any_element();
         }
 
+        // Reflect the latest navigation in the path bar, leaving it alone
+        // otherwise so typing isn't clobbered by re-renders.
+        if self.synced_path != self.current_path {
+            self.synced_path = self.current_path.clone();
+            let value = self.current_path.clone();
+            self.path_input
+                .update(cx, |state, cx| state.set_value(value, window, cx));
+        }
+
         let view = cx.entity();
-        let rows = self
+        let visible: Vec<&SftpEntry> = self
             .entries
             .iter()
+            .filter(|entry| self.show_hidden || !entry.name.starts_with('.'))
+            .collect();
+        let no_rows = visible.is_empty();
+        let rows = visible
+            .into_iter()
             .map(|entry| self.render_row(entry, cx))
             .collect::<Vec<_>>();
 
@@ -487,6 +621,15 @@ impl Render for SftpPanel {
             .size_full()
             .bg(cx.theme().sidebar)
             .child(self.render_toolbar(cx))
+            .child(
+                div()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(Input::new(&self.path_input).small()),
+            )
             .when_some(self.error.clone(), |this, message| {
                 this.child(
                     h_flex()
@@ -500,6 +643,7 @@ impl Render for SftpPanel {
                         .child(SharedString::from(message)),
                 )
             })
+            .child(self.render_header(cx))
             .child(
                 div()
                     .id("sftp-entries")
@@ -507,7 +651,7 @@ impl Render for SftpPanel {
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(
-                        v_flex().children(rows).when(self.entries.is_empty(), |this| {
+                        v_flex().children(rows).when(no_rows, |this| {
                             this.child(
                                 div()
                                     .p_4()
@@ -516,8 +660,10 @@ impl Render for SftpPanel {
                                     .text_color(cx.theme().muted_foreground)
                                     .child(if self.loading {
                                         "Loading..."
-                                    } else {
+                                    } else if self.entries.is_empty() {
                                         "Empty directory"
+                                    } else {
+                                        "Only hidden files here"
                                     }),
                             )
                         }),
