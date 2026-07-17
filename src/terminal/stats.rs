@@ -1,8 +1,17 @@
 use std::time::Instant;
 
-pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; uname -n 2>/dev/null; echo @user; whoami 2>/dev/null; echo @stat; cat /proc/stat 2>/dev/null; echo @mem; cat /proc/meminfo 2>/dev/null; echo @net; cat /proc/net/dev 2>/dev/null; echo @df; df -kP / 2>/dev/null; sleep 2; done";
+pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; uname -n 2>/dev/null; echo @user; whoami 2>/dev/null; echo @stat; cat /proc/stat 2>/dev/null; echo @mem; cat /proc/meminfo 2>/dev/null; echo @net; cat /proc/net/dev 2>/dev/null; echo @df; df -kP 2>/dev/null; sleep 2; done";
 
 const MARKER: &[u8] = b"@@OXIDAL@@";
+
+/// One mounted filesystem reported by `df`.
+#[derive(Clone)]
+pub struct DiskInfo {
+    pub filesystem: String,
+    pub mount: String,
+    pub used: u64,
+    pub total: u64,
+}
 
 #[derive(Clone, Default)]
 pub struct RemoteStats {
@@ -10,8 +19,11 @@ pub struct RemoteStats {
     pub user: Option<String>,
     pub cpu: Option<f32>,
     pub mem: Option<(u64, u64)>,
+    /// The root filesystem (or the first real one when `/` isn't listed),
+    /// shown in the monitor bar; `disks` has the full breakdown.
     pub disk: Option<(u64, u64)>,
     pub net: Option<(f64, f64)>,
+    pub disks: Vec<DiskInfo>,
 }
 
 #[derive(Default)]
@@ -114,17 +126,36 @@ impl StatsParser {
                     }
                 }
                 "df" => {
+                    // POSIX format: Filesystem 1024-blocks Used Available
+                    // Capacity Mounted-on. The header row fails the numeric
+                    // parses and is skipped naturally.
                     let fields: Vec<&str> = line.split_whitespace().collect();
-                    if fields.len() >= 4 {
-                        if let (Ok(total), Ok(used)) =
+                    if fields.len() >= 6
+                        && let (Ok(total), Ok(used)) =
                             (fields[1].parse::<u64>(), fields[2].parse::<u64>())
-                        {
-                            stats.disk = Some((used * 1024, total * 1024));
-                        }
+                        && total > 0
+                        && !is_pseudo_fs(fields[0])
+                    {
+                        stats.disks.push(DiskInfo {
+                            filesystem: fields[0].to_string(),
+                            mount: fields[5..].join(" "),
+                            used: used * 1024,
+                            total: total * 1024,
+                        });
                     }
                 }
                 _ => {}
             }
+        }
+
+        stats.disks.sort_by(|a, b| a.mount.cmp(&b.mount));
+        if let Some(disk) = stats
+            .disks
+            .iter()
+            .find(|d| d.mount == "/")
+            .or_else(|| stats.disks.first())
+        {
+            stats.disk = Some((disk.used, disk.total));
         }
 
         if let (Some(total), Some(available)) = (mem_total, mem_available) {
@@ -158,4 +189,24 @@ impl StatsParser {
 
         stats
     }
+}
+
+/// Virtual filesystems that would clutter the disk breakdown.
+fn is_pseudo_fs(filesystem: &str) -> bool {
+    matches!(
+        filesystem,
+        "tmpfs"
+            | "devtmpfs"
+            | "udev"
+            | "none"
+            | "overlay"
+            | "squashfs"
+            | "efivarfs"
+            | "devfs"
+            | "map"
+            | "shm"
+            | "cgroup"
+            | "proc"
+            | "sysfs"
+    )
 }

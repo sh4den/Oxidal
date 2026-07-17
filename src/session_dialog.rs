@@ -15,7 +15,7 @@ use gpui_component::{
     dialog::DialogFooter,
     h_flex,
     input::{Input, InputState},
-    select::{Select, SelectItem, SelectState},
+    select::{SearchableVec, Select, SelectItem, SelectState},
     v_flex,
 };
 use serialport::SerialPortType;
@@ -79,6 +79,11 @@ impl SelectItem for KeyOption {
 
     fn value(&self) -> &Self::Value {
         &self.path
+    }
+
+    fn matches(&self, query: &str) -> bool {
+        let query = query.to_lowercase();
+        self.label.to_lowercase().contains(&query) || self.path.to_lowercase().contains(&query)
     }
 
     fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -234,11 +239,12 @@ fn open_session_dialog(
         .unwrap_or(0);
     let private_key = cx.new(|cx| {
         SelectState::new(
-            key_choices,
+            SearchableVec::new(key_choices),
             Some(IndexPath::default().row(key_index)),
             window,
             cx,
         )
+        .searchable(true)
     });
 
     let existing_port = existing
@@ -404,7 +410,11 @@ fn open_session_dialog(
                     v_flex().gap_1().child("Private Key (optional)").child(
                         h_flex()
                             .gap_2()
-                            .child(Select::new(&private_key).flex_1())
+                            .child(
+                                Select::new(&private_key)
+                                    .search_placeholder("Search keys...")
+                                    .flex_1(),
+                            )
                             .child(
                                 Button::new("browse-key")
                                     .outline()
@@ -435,7 +445,9 @@ fn open_session_dialog(
                                                         cx,
                                                         |state, window, cx| {
                                                             state.set_items(
-                                                                key_options(Some(value.as_ref())),
+                                                                SearchableVec::new(key_options(
+                                                                    Some(value.as_ref()),
+                                                                )),
                                                                 window,
                                                                 cx,
                                                             );

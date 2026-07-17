@@ -21,6 +21,7 @@ russh = "0.51"
 russh-sftp = "2"
 serialport = "4"
 chrono = "0.4"
+open = "5"
 tokio = { version = "1", features = ["rt", "net", "io-util", "time", "fs"] }
 
 [profile.release]
