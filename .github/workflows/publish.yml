@@ -62,6 +62,8 @@ jobs:
             libfontconfig1-dev \
             libfreetype6-dev \
             libwayland-dev \
+            libpython3-dev \
+            libdbus-1-dev \
             libxkbcommon-x11-dev \
             libxcb1-dev \
             libxcb-render0-dev \
