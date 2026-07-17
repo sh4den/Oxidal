@@ -56,7 +56,8 @@ pub struct Session {
     pub port: u16,
     #[serde(default)]
     pub username: String,
-    /// Transient only: never written to disk. Re-entered each app run.
+    /// Never written to `sessions.json`. Persisted separately in the OS
+    /// credential vault (see `credentials`) and re-attached on load.
     #[serde(skip)]
     pub password: String,
     #[serde(default = "default_baud_rate")]
@@ -156,10 +157,16 @@ fn folders_path() -> PathBuf {
 
 pub fn load_sessions() -> Vec<Session> {
     let path = sessions_path();
-    match fs::read_to_string(&path) {
+    let mut sessions: Vec<Session> = match fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => default_sessions(),
+    };
+    for session in &mut sessions {
+        if let Some(password) = crate::credentials::load_password(session.id) {
+            session.password = password;
+        }
     }
+    sessions
 }
 
 pub fn save_sessions(sessions: &[Session]) {
