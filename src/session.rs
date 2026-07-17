@@ -56,7 +56,8 @@ pub struct Session {
     pub port: u16,
     #[serde(default)]
     pub username: String,
-    /// Transient only: never written to disk. Re-entered each app run.
+    /// Never written to `sessions.json`. Persisted separately in the OS
+    /// credential vault (see `credentials`) and re-attached on load.
     #[serde(skip)]
     pub password: String,
     #[serde(default = "default_baud_rate")]
@@ -68,6 +69,10 @@ pub struct Session {
     /// The folder this session is filed under in the sidebar, if any.
     #[serde(default)]
     pub folder_id: Option<Uuid>,
+    /// Whether the SFTP explorer for this session shows dotfiles. Toggled
+    /// from the explorer's "…" menu and remembered per session.
+    #[serde(default)]
+    pub show_hidden_files: bool,
 }
 
 /// A group of sessions shown together in the sidebar.
@@ -103,6 +108,7 @@ impl Session {
             baud_rate: default_baud_rate(),
             private_key_path: None,
             folder_id: None,
+            show_hidden_files: false,
         }
     }
 
@@ -156,10 +162,16 @@ fn folders_path() -> PathBuf {
 
 pub fn load_sessions() -> Vec<Session> {
     let path = sessions_path();
-    match fs::read_to_string(&path) {
+    let mut sessions: Vec<Session> = match fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => default_sessions(),
+    };
+    for session in &mut sessions {
+        if let Some(password) = crate::credentials::load_password(session.id) {
+            session.password = password;
+        }
     }
+    sessions
 }
 
 pub fn save_sessions(sessions: &[Session]) {

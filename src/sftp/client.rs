@@ -118,15 +118,26 @@ async fn run(
                 }
                 list_and_send(&sftp, current_dir.clone(), &out_tx).await;
             }
-            SftpCommand::Download { remote, local } => {
-                if let Err(err) = do_download(&sftp, &remote, &local, &out_tx).await {
+            SftpCommand::Download {
+                remote,
+                local,
+                open_when_done,
+            } => match do_download(&sftp, &remote, &local, &out_tx).await {
+                Ok(()) if open_when_done => {
+                    if let Err(err) = open::that_detached(&local) {
+                        send_error(&out_tx, format!("Couldn't open {}: {err}", local.display()))
+                            .await;
+                    }
+                }
+                Ok(()) => {}
+                Err(err) => {
                     let _ = out_tx
                         .send(SftpEvent::TransferFinished {
                             error: Some(err.to_string()),
                         })
                         .await;
                 }
-            }
+            },
         }
     }
 
@@ -157,6 +168,7 @@ async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntr
                 is_dir: matches!(entry.file_type(), FileType::Dir),
                 size: metadata.len(),
                 modified: metadata.mtime.map(|t| t as u64),
+                permissions: metadata.permissions,
             }
         })
         .collect();

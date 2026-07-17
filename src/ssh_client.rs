@@ -32,7 +32,12 @@ pub async fn connect(
     private_key_path: Option<String>,
 ) -> anyhow::Result<client::Handle<Handler>> {
     let config = Arc::new(client::Config {
-        inactivity_timeout: Some(Duration::from_secs(60)),
+        // No inactivity timeout: an idle SFTP panel or quiet shell must stay
+        // connected indefinitely. Dead peers are detected by keepalives
+        // instead (disconnect after 3 unanswered ones, ~90s).
+        inactivity_timeout: None,
+        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_max: 3,
         ..Default::default()
     });
 
