@@ -69,6 +69,10 @@ pub struct Session {
     /// The folder this session is filed under in the sidebar, if any.
     #[serde(default)]
     pub folder_id: Option<Uuid>,
+    /// Whether the SFTP explorer for this session shows dotfiles. Toggled
+    /// from the explorer's "…" menu and remembered per session.
+    #[serde(default)]
+    pub show_hidden_files: bool,
 }
 
 /// A group of sessions shown together in the sidebar.
@@ -104,6 +108,7 @@ impl Session {
             baud_rate: default_baud_rate(),
             private_key_path: None,
             folder_id: None,
+            show_hidden_files: false,
         }
     }
 
