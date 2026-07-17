@@ -822,7 +822,7 @@ impl OxidalApp {
                 self.sessions.len(),
                 self.tabs.len()
             ))
-            .child(div().child("Oxidal 0.2.2"))
+            .child(div().child("Oxidal 0.3.0"))
     }
 }
 
@@ -859,8 +859,7 @@ impl Render for OxidalApp {
                     );
                 } else {
                     if !self.sidebar_collapsed {
-                        content =
-                            content.child(self.render_sessions_panel(cx).into_any_element());
+                        content = content.child(self.render_sessions_panel(cx).into_any_element());
                     }
                     content = content.child(self.render_workspace(cx).into_any_element());
                 }
