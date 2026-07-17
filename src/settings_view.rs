@@ -1,40 +1,93 @@
 use gpui::{
     div, prelude::FluentBuilder as _, px, AppContext as _, Context, FontWeight, IntoElement,
-    ParentElement as _, Render, Styled as _, Window,
+    ParentElement as _, Render, SharedString, Styled as _, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
-    v_flex, ActiveTheme as _, IconName, Theme, ThemeMode, WindowExt as _,
+    select::{SearchableVec, Select, SelectState},
+    slider::{Slider, SliderEvent, SliderState},
+    v_flex, ActiveTheme as _, IconName, IndexPath, Theme, ThemeMode, WindowExt as _,
 };
 
 use crate::settings::{self, AppSettings};
 
 /// The "Settings" tab: terminal font and appearance (light/dark) preferences.
 pub struct SettingsView {
-    font_family_input: gpui::Entity<InputState>,
+    font_select: gpui::Entity<SelectState<SearchableVec<SharedString>>>,
     font_size_input: gpui::Entity<InputState>,
+    opacity_slider: gpui::Entity<SliderState>,
 }
 
 impl SettingsView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let current = cx.global::<AppSettings>().clone();
-        let font_family_input =
-            cx.new(|cx| InputState::new(window, cx).default_value(current.font_family.clone()));
+
+        // Every font family the OS reports (DirectWrite on Windows, CoreText
+        // on macOS, fontconfig on Linux), searchable in the dropdown. The
+        // saved family is kept selectable even if it's no longer installed.
+        let mut fonts: Vec<SharedString> = cx
+            .text_system()
+            .all_font_names()
+            .into_iter()
+            .map(SharedString::from)
+            .collect();
+        fonts.sort_by_key(|name| name.to_lowercase());
+        fonts.dedup();
+        let current_font = SharedString::from(current.font_family.clone());
+        if !fonts.contains(&current_font) {
+            fonts.insert(0, current_font.clone());
+        }
+        let selected = fonts
+            .iter()
+            .position(|font| *font == current_font)
+            .map(|ix| IndexPath::default().row(ix));
+        let font_select = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(fonts), selected, window, cx).searchable(true)
+        });
+
         let font_size_input = cx
             .new(|cx| InputState::new(window, cx).default_value(current.font_size.to_string()));
+
+        let opacity_slider = cx.new(|_| {
+            SliderState::new()
+                .min(0.3)
+                .max(1.0)
+                .step(0.05)
+                .default_value(current.opacity.clamp(0.3, 1.0))
+        });
+        cx.subscribe_in(
+            &opacity_slider,
+            window,
+            |_view, _, event: &SliderEvent, window, cx| match event {
+                SliderEvent::Change(value) => {
+                    cx.global_mut::<AppSettings>().opacity = value.start();
+                    settings::apply_window_opacity(window, cx);
+                }
+                SliderEvent::Release(_) => {
+                    settings::save_settings(cx.global::<AppSettings>());
+                }
+            },
+        )
+        .detach();
 
         cx.observe_global::<AppSettings>(|_, cx| cx.notify()).detach();
 
         Self {
-            font_family_input,
+            font_select,
             font_size_input,
+            opacity_slider,
         }
     }
 
     fn apply_font(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let family = self.font_family_input.read(cx).value().to_string();
+        let family = self
+            .font_select
+            .read(cx)
+            .selected_value()
+            .map(|font| font.to_string())
+            .unwrap_or_default();
         let size: f32 = self
             .font_size_input
             .read(cx)
@@ -64,6 +117,8 @@ impl SettingsView {
             cx,
         );
         cx.global_mut::<AppSettings>().dark_mode = dark;
+        // Theme::change rebuilt the colors, dropping the translucency tint.
+        settings::apply_window_opacity(window, cx);
         settings::save_settings(cx.global::<AppSettings>());
     }
 }
@@ -104,6 +159,32 @@ impl Render for SettingsView {
                                         view.set_dark_mode(true, window, cx);
                                     })),
                             ),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .max_w(px(360.))
+                            .pt_2()
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Window Opacity"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!(
+                                                "{:.0}%",
+                                                cx.global::<AppSettings>().opacity * 100.0
+                                            )),
+                                    ),
+                            )
+                            .child(Slider::new(&self.opacity_slider)),
                     ),
             )
             .child(
@@ -115,7 +196,11 @@ impl Render for SettingsView {
                         v_flex()
                             .gap_1()
                             .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Font Family"))
-                            .child(Input::new(&self.font_family_input)),
+                            .child(
+                                Select::new(&self.font_select)
+                                    .placeholder("Select a font")
+                                    .search_placeholder("Search fonts..."),
+                            ),
                     )
                     .child(
                         v_flex()
