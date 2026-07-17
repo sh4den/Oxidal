@@ -88,6 +88,7 @@ impl OxidalApp {
     }
 
     pub fn add_session(&mut self, new_session: Session, cx: &mut Context<Self>) {
+        crate::credentials::store_password(new_session.id, &new_session.password);
         self.sessions.push(new_session);
         session::save_sessions(&self.sessions);
         cx.notify();
@@ -95,6 +96,7 @@ impl OxidalApp {
 
     pub fn update_session(&mut self, updated: Session, cx: &mut Context<Self>) {
         if let Some(existing) = self.sessions.iter_mut().find(|s| s.id == updated.id) {
+            crate::credentials::store_password(updated.id, &updated.password);
             *existing = updated;
             session::save_sessions(&self.sessions);
             cx.notify();
@@ -102,6 +104,7 @@ impl OxidalApp {
     }
 
     fn delete_session(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        crate::credentials::delete_password(id);
         self.sessions.retain(|s| s.id != id);
         session::save_sessions(&self.sessions);
         if self.selected_session == Some(id) {

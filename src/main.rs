@@ -1,4 +1,5 @@
 mod app;
+mod credentials;
 mod session;
 mod session_dialog;
 mod settings;
