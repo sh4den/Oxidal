@@ -13,6 +13,8 @@ pub struct SftpEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<u64>,
+    /// Unix mode bits as reported by the server, when available.
+    pub permissions: Option<u32>,
 }
 
 /// A request sent to the SFTP background worker.
@@ -22,8 +24,17 @@ enum SftpCommand {
     Rename { from: String, to: String },
     RemoveFile { path: String },
     RemoveDir { path: String },
-    Upload { local: PathBuf, remote: String },
-    Download { remote: String, local: PathBuf },
+    Upload {
+        local: PathBuf,
+        remote: String,
+    },
+    Download {
+        remote: String,
+        local: PathBuf,
+        /// Launch the file with the OS default application once the
+        /// download completes (used by double-click "open").
+        open_when_done: bool,
+    },
 }
 
 /// A message produced by the SFTP background worker.
@@ -98,6 +109,17 @@ impl SftpClient {
         let _ = self.commands.send_blocking(SftpCommand::Download {
             remote: remote.into(),
             local,
+            open_when_done: false,
+        });
+    }
+
+    /// Download to `local`, then open it with the OS default application
+    /// for its extension.
+    pub fn download_and_open(&self, remote: impl Into<String>, local: PathBuf) {
+        let _ = self.commands.send_blocking(SftpCommand::Download {
+            remote: remote.into(),
+            local,
+            open_when_done: true,
         });
     }
 }
@@ -150,4 +172,20 @@ pub fn format_modified(unix_secs: u64) -> String {
         Some(dt) => dt.format("%Y-%m-%d %H:%M").to_string(),
         None => String::new(),
     }
+}
+
+/// Unix-style permission string, e.g. `"drwxr-xr-x"`.
+pub fn format_permissions(is_dir: bool, mode: Option<u32>) -> String {
+    let Some(mode) = mode else {
+        return String::new();
+    };
+    let mut out = String::with_capacity(10);
+    out.push(if is_dir { 'd' } else { '-' });
+    for shift in [6u32, 3, 0] {
+        let bits = (mode >> shift) & 0o7;
+        out.push(if bits & 0o4 != 0 { 'r' } else { '-' });
+        out.push(if bits & 0o2 != 0 { 'w' } else { '-' });
+        out.push(if bits & 0o1 != 0 { 'x' } else { '-' });
+    }
+    out
 }

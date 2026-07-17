@@ -1,18 +1,19 @@
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use gpui::{
     actions, canvas, div, fill, hsla, point, prelude::FluentBuilder as _, px, relative, size,
-    AnyElement, Bounds, ClipboardItem, Context, Div, FocusHandle, Font, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    Anchor, AnyElement, App, Bounds, ClipboardItem, Context, Div, FocusHandle, Font, FontWeight,
+    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement as _, Pixels, Point, Render,
     ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, TextAlign,
     TextRun, UnderlineStyle, Window,
 };
-use gpui_component::{Icon, IconName, Sizable as _};
+use gpui_component::{hover_card::HoverCard, ActiveTheme as _, Icon, IconName, Sizable as _};
 
 use super::backend::{Backend, BackendEvent};
 use super::grid::{default_bg, Grid};
-use super::stats::RemoteStats;
+use super::stats::{DiskInfo, RemoteStats};
 use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
@@ -251,6 +252,21 @@ impl Render for TerminalView {
         let line_height = font_size * 1.43;
         let closed_message = self.closed_message.clone();
 
+        // Window-opacity treatment for the terminal's dark surfaces (main
+        // background and monitor bar): in dark mode let the window's
+        // translucent base show through instead of stacking a second dark
+        // layer on top, which would compound back toward opaque; in light
+        // mode keep the dark layer, since light glass behind light terminal
+        // text would be unreadable.
+        let surface_opacity = {
+            let opacity = settings.opacity.clamp(0.3, 1.0);
+            if opacity < 1.0 && cx.theme().mode.is_dark() {
+                0.
+            } else {
+                opacity
+            }
+        };
+
         let measure = {
             let weak = cx.entity().downgrade();
             let font_family = font_family.clone();
@@ -485,7 +501,7 @@ impl Render for TerminalView {
             // instead of growing when a child measures wide.
             .min_w_0()
             .min_h_0()
-            .bg(default_bg())
+            .bg(default_bg().opacity(surface_opacity))
             .text_color(hsla(0., 0., 0.9, 1.))
             .font_family(font_family)
             .text_size(px(font_size))
@@ -511,12 +527,14 @@ impl Render for TerminalView {
                         )
                     }),
             )
-            .when(self.monitored, |this| this.child(self.render_monitor_bar()))
+            .when(self.monitored, |this| {
+                this.child(self.render_monitor_bar(surface_opacity, cx))
+            })
     }
 }
 
 impl TerminalView {
-    fn render_monitor_bar(&self) -> AnyElement {
+    fn render_monitor_bar(&self, surface_opacity: f32, cx: &App) -> AnyElement {
         let mut items: Vec<AnyElement> = Vec::new();
         if let Some(stats) = &self.stats {
             if let Some(sysname) = &stats.sysname {
@@ -549,9 +567,15 @@ impl TerminalView {
             if let Some((used, total)) = stats.disk {
                 let frac = used as f32 / total.max(1) as f32;
                 items.push(
-                    segment(IconName::HardDrive)
-                        .child(meter_bar(frac))
-                        .child(format!("{:.0}%", frac * 100.))
+                    HoverCard::new("monitor-disks")
+                        .anchor(Anchor::BottomLeft)
+                        .open_delay(Duration::from_millis(250))
+                        .trigger(
+                            segment(IconName::HardDrive)
+                                .child(meter_bar(frac))
+                                .child(format!("{:.0}%", frac * 100.)),
+                        )
+                        .child(disk_details(&stats.disks, cx))
                         .into_any_element(),
                 );
             }
@@ -574,7 +598,7 @@ impl TerminalView {
             .px_2()
             .text_xs()
             .text_color(hsla(0., 0., 0.75, 1.))
-            .bg(hsla(0., 0., 0.11, 1.))
+            .bg(hsla(0., 0., 0.11, 1.).opacity(surface_opacity))
             .border_t_1()
             .border_color(hsla(0., 0., 0.2, 1.))
             .overflow_hidden()
@@ -609,6 +633,122 @@ fn cpu_chart(history: &VecDeque<f32>) -> AnyElement {
                 .h(px((13. * value).max(1.)))
                 .bg(meter_color(value))
         }))
+        .into_any_element()
+}
+
+/// Per-filesystem breakdown shown when hovering the disk segment.
+fn disk_details(disks: &[DiskInfo], cx: &App) -> AnyElement {
+    const MAX_ROWS: usize = 8;
+    let muted = cx.theme().muted_foreground;
+    let track = cx.theme().muted;
+
+    let mut rows: Vec<AnyElement> = vec![
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .pb_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .text_color(muted)
+            .child(Icon::new(IconName::HardDrive).xsmall())
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("Storage"))
+            .into_any_element(),
+    ];
+
+    for disk in disks.iter().take(MAX_ROWS) {
+        let frac = (disk.used as f32 / disk.total.max(1) as f32).clamp(0., 1.);
+        rows.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(disk.mount.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(meter_color(frac))
+                                .child(format!("{:.0}%", frac * 100.)),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(6.))
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(track)
+                        .child(
+                            div()
+                                .w(relative(frac))
+                                .h_full()
+                                .rounded_full()
+                                .bg(meter_color(frac)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_color(muted)
+                        .child(div().flex_none().child(format!(
+                            "{} of {}",
+                            fmt_size(disk.used),
+                            fmt_size(disk.total)
+                        )))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_right()
+                                .child(disk.filesystem.clone()),
+                        ),
+                )
+                .into_any_element(),
+        );
+    }
+
+    if disks.len() > MAX_ROWS {
+        rows.push(
+            div()
+                .text_color(muted)
+                .child(format!("+{} more filesystems", disks.len() - MAX_ROWS))
+                .into_any_element(),
+        );
+    }
+    if disks.is_empty() {
+        rows.push(
+            div()
+                .text_color(muted)
+                .child("No disk details reported")
+                .into_any_element(),
+        );
+    }
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .w(px(280.))
+        .text_xs()
+        .children(rows)
         .into_any_element()
 }
 

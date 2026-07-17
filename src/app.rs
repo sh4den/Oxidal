@@ -7,6 +7,7 @@ use gpui_component::{
     ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
+    resizable::{h_resizable, resizable_panel},
     tab::{Tab, TabBar},
     v_flex,
 };
@@ -96,10 +97,21 @@ impl OxidalApp {
 
     pub fn update_session(&mut self, updated: Session, cx: &mut Context<Self>) {
         if let Some(existing) = self.sessions.iter_mut().find(|s| s.id == updated.id) {
+            let mut updated = updated;
+            // Not editable in the session dialog; keep the stored value.
+            updated.show_hidden_files = existing.show_hidden_files;
             crate::credentials::store_password(updated.id, &updated.password);
             *existing = updated;
             session::save_sessions(&self.sessions);
             cx.notify();
+        }
+    }
+
+    /// Persist the explorer's "show hidden files" toggle for a session.
+    fn set_session_show_hidden(&mut self, id: Uuid, value: bool) {
+        if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
+            session.show_hidden_files = value;
+            session::save_sessions(&self.sessions);
         }
     }
 
@@ -208,6 +220,7 @@ impl OxidalApp {
                 let terminal = cx.new(|cx| {
                     TerminalView::new(backend, TERM_ROWS, TERM_COLS, Some(stats), window, cx)
                 });
+                let weak_app = cx.entity().downgrade();
                 let sftp = cx.new(|cx| {
                     SftpPanel::new(
                         target.host.clone(),
@@ -215,6 +228,11 @@ impl OxidalApp {
                         target.username.clone(),
                         target.password.clone(),
                         target.private_key_path.clone(),
+                        target.show_hidden_files,
+                        move |value, cx| {
+                            let _ = weak_app
+                                .update(cx, |app, _| app.set_session_show_hidden(id, value));
+                        },
                         window,
                         cx,
                     )
@@ -231,17 +249,25 @@ impl OxidalApp {
                     }
                 }
             }
-            SessionKind::Sftp => TabContent::Sftp(cx.new(|cx| {
-                SftpPanel::new(
-                    target.host.clone(),
-                    target.port,
-                    target.username.clone(),
-                    target.password.clone(),
-                    target.private_key_path.clone(),
-                    window,
-                    cx,
-                )
-            })),
+            SessionKind::Sftp => {
+                let weak_app = cx.entity().downgrade();
+                TabContent::Sftp(cx.new(|cx| {
+                    SftpPanel::new(
+                        target.host.clone(),
+                        target.port,
+                        target.username.clone(),
+                        target.password.clone(),
+                        target.private_key_path.clone(),
+                        target.show_hidden_files,
+                        move |value, cx| {
+                            let _ = weak_app
+                                .update(cx, |app, _| app.set_session_show_hidden(id, value));
+                        },
+                        window,
+                        cx,
+                    )
+                }))
+            }
             SessionKind::Rdp => TabContent::Message(
                 "RDP isn't implemented yet — only terminal sessions work so far.".into(),
             ),
@@ -491,9 +517,7 @@ impl OxidalApp {
         };
 
         v_flex()
-            .w(px(320.))
-            .flex_none()
-            .h_full()
+            .size_full()
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
@@ -727,7 +751,6 @@ impl OxidalApp {
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(cx.theme().background)
             .child(tab_bar)
             .child(
                 div()
@@ -749,7 +772,6 @@ impl OxidalApp {
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(cx.theme().background)
             .items_center()
             .justify_center()
             .gap_3()
@@ -808,26 +830,42 @@ impl Render for OxidalApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
-            .bg(cx.theme().background)
+            // No background here: gpui-component's Root already paints
+            // `tokens.background` across the window, and repainting it would
+            // stack a second alpha layer in glass mode.
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
-            .child(
-                h_flex()
+            .child({
+                let explorer_open =
+                    !self.sidebar_collapsed && self.sidebar_mode == SidebarMode::Explorer;
+                let mut content = h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_sidebar_rail(cx))
-                    .when(!self.sidebar_collapsed, |this| {
-                        this.child(match self.sidebar_mode {
-                            SidebarMode::Sessions => {
-                                self.render_sessions_panel(cx).into_any_element()
-                            }
-                            SidebarMode::Explorer => {
-                                self.render_explorer_panel(cx).into_any_element()
-                            }
-                        })
-                    })
-                    .child(self.render_workspace(cx)),
-            )
+                    .child(self.render_sidebar_rail(cx));
+                if explorer_open {
+                    // The explorer sits behind a drag handle so the file
+                    // list can be widened MobaXterm-style.
+                    content = content.child(
+                        div().flex_1().min_w_0().h_full().child(
+                            h_resizable("explorer-split")
+                                .child(
+                                    resizable_panel()
+                                        .size(px(380.))
+                                        .size_range(px(300.)..px(800.))
+                                        .child(self.render_explorer_panel(cx).into_any_element()),
+                                )
+                                .child(self.render_workspace(cx).into_any_element()),
+                        ),
+                    );
+                } else {
+                    if !self.sidebar_collapsed {
+                        content =
+                            content.child(self.render_sessions_panel(cx).into_any_element());
+                    }
+                    content = content.child(self.render_workspace(cx).into_any_element());
+                }
+                content
+            })
             .child(self.render_status_bar(cx))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
