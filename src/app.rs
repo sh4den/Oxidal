@@ -404,6 +404,7 @@ impl OxidalApp {
                     .items_center()
                     .justify_end()
                     .gap_1()
+                    .pr_2()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .when_some(update_button, |this, button| this.child(button))
                     .child(
@@ -425,7 +426,6 @@ impl OxidalApp {
                             })),
                     ),
             )
-            .pr_2()
     }
 
     fn render_session_row(
