@@ -1,3 +1,7 @@
+// GUI subsystem on Windows: without this the OS attaches a console window
+// to the process. Ignored on other platforms.
+#![windows_subsystem = "windows"]
+
 mod app;
 mod credentials;
 mod session;
