@@ -848,7 +848,7 @@ impl OxidalApp {
                 self.sessions.len(),
                 self.tabs.len()
             ))
-            .child(div().child("Oxidal 0.3.1"))
+            .child(div().child("Oxidal 0.3."))
     }
 }
 
