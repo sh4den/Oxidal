@@ -9,6 +9,7 @@ mod settings_view;
 mod sftp;
 mod ssh_client;
 mod terminal;
+mod update;
 
 use gpui::{
     App, AppContext as _, Bounds, KeyBinding, WindowBackgroundAppearance, WindowBounds,

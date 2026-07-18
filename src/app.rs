@@ -13,6 +13,7 @@ use gpui_component::{
     v_flex,
 };
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use uuid::Uuid;
 
@@ -49,6 +50,13 @@ enum SidebarMode {
     Explorer,
 }
 
+enum UpdateState {
+    Idle,
+    Available(crate::update::AvailableUpdate),
+    Downloading(crate::update::AvailableUpdate),
+    Ready(PathBuf),
+}
+
 pub struct OxidalApp {
     sessions: Vec<Session>,
     folders: Vec<SessionFolder>,
@@ -58,10 +66,22 @@ pub struct OxidalApp {
     active_tab: Option<usize>,
     sidebar_mode: SidebarMode,
     sidebar_collapsed: bool,
+    update_state: UpdateState,
 }
 
 impl OxidalApp {
-    pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let updates = crate::update::check();
+        cx.spawn(async move |this, cx| {
+            if let Ok(found) = updates.recv().await {
+                let _ = this.update(cx, |app, cx| {
+                    app.update_state = UpdateState::Available(found);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+
         Self {
             sessions: session::load_sessions(),
             folders: session::load_folders(),
@@ -71,6 +91,40 @@ impl OxidalApp {
             active_tab: None,
             sidebar_mode: SidebarMode::Sessions,
             sidebar_collapsed: false,
+            update_state: UpdateState::Idle,
+        }
+    }
+
+    fn start_update_download(&mut self, cx: &mut Context<Self>) {
+        let UpdateState::Available(found) = &self.update_state else {
+            return;
+        };
+        let found = found.clone();
+        let download = crate::update::download(found.clone());
+        self.update_state = UpdateState::Downloading(found);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            if let Ok(result) = download.recv().await {
+                let _ = this.update(cx, |app, cx| {
+                    let previous = std::mem::replace(&mut app.update_state, UpdateState::Idle);
+                    app.update_state = match (result, previous) {
+                        (Ok(path), _) => UpdateState::Ready(path),
+                        (Err(_), UpdateState::Downloading(found)) => UpdateState::Available(found),
+                        (Err(_), other) => other,
+                    };
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn restart_to_update(&mut self, cx: &mut Context<Self>) {
+        let UpdateState::Ready(path) = &self.update_state else {
+            return;
+        };
+        if crate::update::apply_and_restart(path).is_ok() {
+            cx.quit();
         }
     }
 
@@ -297,6 +351,38 @@ impl OxidalApp {
     }
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let update_button = match &self.update_state {
+            UpdateState::Idle => None,
+            UpdateState::Available(found) => Some(
+                Button::new("update")
+                    .primary()
+                    .small()
+                    .icon(IconName::ArrowDown)
+                    .label("Download update")
+                    .tooltip(format!("Version {}", found.version))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.start_update_download(cx);
+                    })),
+            ),
+            UpdateState::Downloading(_) => Some(
+                Button::new("update")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Loader)
+                    .label("Downloading update"),
+            ),
+            UpdateState::Ready(_) => Some(
+                Button::new("update")
+                    .primary()
+                    .small()
+                    .icon(IconName::Redo2)
+                    .label("Restart to update")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.restart_to_update(cx);
+                    })),
+            ),
+        };
+
         TitleBar::new()
             .child(
                 h_flex()
@@ -311,17 +397,7 @@ impl OxidalApp {
                     .justify_end()
                     .gap_1()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(
-                        Button::new("new-session")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Plus)
-                            .label("Session")
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                let folders = view.folders.clone();
-                                session_dialog::open_new_session_dialog(folders, window, cx);
-                            })),
-                    )
+                    .when_some(update_button, |this, button| this.child(button))
                     .child(
                         Button::new("settings")
                             .ghost()
