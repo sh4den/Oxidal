@@ -320,6 +320,10 @@ impl OxidalApp {
             ),
         };
 
+        let has_explorer = matches!(
+            content,
+            TabContent::SshSession { .. } | TabContent::Sftp(_)
+        );
         self.tabs.push(OpenTab {
             session_id: Some(id),
             title: SharedString::from(target.name.clone()),
@@ -327,6 +331,10 @@ impl OxidalApp {
             content,
         });
         self.active_tab = Some(self.tabs.len() - 1);
+        if has_explorer {
+            self.sidebar_mode = SidebarMode::Explorer;
+            self.sidebar_collapsed = false;
+        }
         cx.notify();
     }
 
@@ -398,6 +406,15 @@ impl OxidalApp {
                     .gap_1()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .when_some(update_button, |this, button| this.child(button))
+                    .child(
+                        Button::new("about")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Info)
+                            .on_click(cx.listener(|_view, _, window, cx| {
+                                open_about_dialog(window, cx);
+                            })),
+                    )
                     .child(
                         Button::new("settings")
                             .ghost()
@@ -907,25 +924,6 @@ impl OxidalApp {
                 )
             })
     }
-
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .items_center()
-            .justify_between()
-            .h(px(24.))
-            .px_3()
-            .bg(cx.theme().sidebar)
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .child(format!(
-                "{} sessions · {} open",
-                self.sessions.len(),
-                self.tabs.len()
-            ))
-            .child(div().child("Oxidal 0.3."))
-    }
 }
 
 impl Render for OxidalApp {
@@ -962,9 +960,101 @@ impl Render for OxidalApp {
                 }
                 content
             })
-            .child(self.render_status_bar(cx))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
     }
+}
+
+fn open_about_dialog(window: &mut Window, cx: &mut gpui::App) {
+    window.open_dialog(cx, |dialog, _window, cx| {
+        let muted = cx.theme().muted_foreground;
+        dialog
+            .title("About")
+            .child(
+                v_flex()
+                    .w(px(380.))
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(Icon::new(IconName::SquareTerminal).small())
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child("Oxidal"))
+                            .child(
+                                div()
+                                    .text_color(muted)
+                                    .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_full()
+                                    .bg(cx.theme().muted)
+                                    .text_xs()
+                                    .child("Community Edition"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .child("Cross-platform SSH, SFTP and serial terminal client."),
+                    )
+                    .child(
+                        h_flex()
+                            .id("about-repo")
+                            .items_center()
+                            .gap_2()
+                            .cursor_pointer()
+                            .text_sm()
+                            .text_color(cx.theme().primary)
+                            .child(Icon::new(IconName::Github).xsmall())
+                            .child(div().underline().child("github.com/sh4den/Oxidal"))
+                            .on_click(|_, _, _| {
+                                let _ = open::that_detached("https://github.com/sh4den/Oxidal");
+                            }),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Core maintainers"),
+                            )
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child(Icon::new(IconName::User).xsmall())
+                                    .child("𝑺𝒉𝒂𝒅𝒆𝒏")
+                                    .child(
+                                        div()
+                                            .id("about-maintainer")
+                                            .cursor_pointer()
+                                            .underline()
+                                            .text_color(cx.theme().primary)
+                                            .child("@sh4den")
+                                            .on_click(|_, _, _| {
+                                                let _ = open::that_detached(
+                                                    "https://github.com/sh4den",
+                                                );
+                                            }),
+                                    ),
+                            ),
+                    ),
+            )
+            .footer(
+                DialogFooter::new().child(Button::new("close-about").label("Close").on_click(
+                    |_, window, cx| {
+                        window.close_dialog(cx);
+                    },
+                )),
+            )
+    });
 }
