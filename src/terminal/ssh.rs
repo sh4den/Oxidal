@@ -1,4 +1,5 @@
 use russh::{Channel, ChannelMsg};
+use secrecy::SecretString;
 
 use super::backend::{Backend, BackendEvent};
 use super::stats::{self, RemoteStats};
@@ -14,7 +15,7 @@ pub fn spawn(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     rows: u16,
     cols: u16,
@@ -59,7 +60,7 @@ async fn run(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     rows: u16,
     cols: u16,

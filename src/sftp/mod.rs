@@ -126,6 +126,29 @@ impl SftpClient {
 
 pub use client::spawn;
 
+/// Reduce a server-supplied file name to a single safe local path component.
+///
+/// SFTP names are arbitrary strings chosen by the server; one containing
+/// separators or `..` would let `PathBuf::join` escape the target directory
+/// (an absolute name would even replace it wholesale) and write anywhere on
+/// the local machine — the scp CVE-2019-6111 class of attack.
+fn safe_local_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '\0' => '_',
+            c => c,
+        })
+        .collect();
+    // "", ".", ".." and all-dot/space names collapse into the parent or a
+    // special entry; give them a harmless placeholder instead.
+    if sanitized.chars().all(|c| c == '.' || c == ' ') {
+        "_".to_string()
+    } else {
+        sanitized
+    }
+}
+
 /// Join a remote (POSIX-style) directory path with a child name.
 fn join_remote(dir: &str, name: &str) -> String {
     if dir.is_empty() {
