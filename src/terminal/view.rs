@@ -645,20 +645,30 @@ impl TerminalView {
             }
             if let Some((rx, tx)) = stats.net {
                 items.push(
-                    segment(IconName::ArrowUp)
-                        .child(fmt_rate(tx))
+                    segment_colored(IconName::ArrowUp, hsla(0.75, 0.6, 0.65, 1.))
+                        .child(rate_cell(tx))
                         .into_any_element(),
                 );
                 items.push(
-                    segment(IconName::ArrowDown)
-                        .child(fmt_rate(rx))
+                    segment_colored(IconName::ArrowDown, hsla(0.36, 0.55, 0.5, 1.))
+                        .child(rate_cell(rx))
+                        .into_any_element(),
+                );
+            }
+            if let Some((count, port)) = stats.connections {
+                items.push(
+                    segment(IconName::Network)
+                        .child(format!("Connections: {count} (port {port})"))
                         .into_any_element(),
                 );
             }
             if let Some(user) = &stats.user {
                 items.push(
-                    segment(IconName::User)
-                        .child(user.clone())
+                    HoverCard::new("monitor-who")
+                        .anchor(Anchor::BottomLeft)
+                        .open_delay(Duration::from_millis(250))
+                        .trigger(segment(IconName::User).child(user.clone()))
+                        .child(who_details(&stats.who, cx))
                         .into_any_element(),
                 );
             }
@@ -706,11 +716,25 @@ impl TerminalView {
 }
 
 fn segment(icon: IconName) -> Div {
-    div().flex().items_center().gap_1().child(
-        div()
-            .text_color(hsla(0., 0., 0.5, 1.))
-            .child(Icon::new(icon).xsmall()),
-    )
+    segment_colored(icon, hsla(0., 0., 0.5, 1.))
+}
+
+fn segment_colored(icon: IconName, color: Hsla) -> Div {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(div().text_color(color).child(Icon::new(icon).xsmall()))
+}
+
+fn rate_cell(bytes_per_sec: f64) -> Div {
+    div()
+        .flex_none()
+        .w(px(72.))
+        .whitespace_nowrap()
+        .text_right()
+        .child(fmt_rate(bytes_per_sec))
 }
 
 fn cpu_chart(history: &VecDeque<f32>) -> AnyElement {
@@ -731,6 +755,86 @@ fn cpu_chart(history: &VecDeque<f32>) -> AnyElement {
                 .h(px((13. * value).max(1.)))
                 .bg(meter_color(value))
         }))
+        .into_any_element()
+}
+
+fn who_details(who: &[String], cx: &App) -> AnyElement {
+    const MAX_ROWS: usize = 10;
+    let muted = cx.theme().muted_foreground;
+
+    let mut rows: Vec<AnyElement> = vec![
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .pb_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .text_color(muted)
+            .child(Icon::new(IconName::User).xsmall())
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Logged in users"),
+            )
+            .into_any_element(),
+    ];
+
+    for line in who.iter().take(MAX_ROWS) {
+        let mut fields = line.split_whitespace();
+        let name = fields.next().unwrap_or_default().to_string();
+        let tty = fields.next().unwrap_or_default().to_string();
+        let rest = fields.collect::<Vec<_>>().join(" ");
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(name),
+                )
+                .child(div().flex_none().text_color(muted).child(tty))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_right()
+                        .text_color(muted)
+                        .child(rest),
+                )
+                .into_any_element(),
+        );
+    }
+
+    if who.len() > MAX_ROWS {
+        rows.push(
+            div()
+                .text_color(muted)
+                .child(format!("+{} more sessions", who.len() - MAX_ROWS))
+                .into_any_element(),
+        );
+    }
+    if who.is_empty() {
+        rows.push(
+            div()
+                .text_color(muted)
+                .child("No sessions reported")
+                .into_any_element(),
+        );
+    }
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .w(px(300.))
+        .text_xs()
+        .children(rows)
         .into_any_element()
 }
 
@@ -885,7 +989,16 @@ fn fmt_size(bytes: u64) -> String {
 }
 
 fn fmt_rate(bytes_per_sec: f64) -> String {
-    format!("{}/s", fmt_size(bytes_per_sec.max(0.) as u64))
+    let mbps = bytes_per_sec.max(0.) * 8. / 1_000_000.;
+    if mbps >= 1000. {
+        format!("{:.2} Gb/s", mbps / 1000.)
+    } else if mbps >= 100. {
+        format!("{mbps:.0} Mb/s")
+    } else if mbps >= 10. {
+        format!("{mbps:.1} Mb/s")
+    } else {
+        format!("{mbps:.2} Mb/s")
+    }
 }
 
 fn build_paint(

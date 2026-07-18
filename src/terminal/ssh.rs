@@ -79,7 +79,7 @@ async fn run(
         Err(_) => None,
     };
     let mut frames = stats::FrameSplitter::default();
-    let mut parser = stats::StatsParser::default();
+    let mut parser = stats::StatsParser::new(port);
 
     loop {
         tokio::select! {

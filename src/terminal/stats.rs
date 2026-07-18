@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; uname -n 2>/dev/null; echo @user; whoami 2>/dev/null; echo @stat; cat /proc/stat 2>/dev/null; echo @mem; cat /proc/meminfo 2>/dev/null; echo @net; cat /proc/net/dev 2>/dev/null; echo @df; df -kP 2>/dev/null; sleep 2; done";
+pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; uname -n 2>/dev/null; echo @user; whoami 2>/dev/null; echo @who; who 2>/dev/null; echo @stat; cat /proc/stat 2>/dev/null; echo @mem; cat /proc/meminfo 2>/dev/null; echo @net; cat /proc/net/dev 2>/dev/null; echo @conn; netstat -tn 2>/dev/null; echo @df; df -kP 2>/dev/null; sleep 1; done";
 
 const MARKER: &[u8] = b"@@OXIDAL@@";
 
@@ -21,6 +21,8 @@ pub struct RemoteStats {
     pub disk: Option<(u64, u64)>,
     pub net: Option<(f64, f64)>,
     pub disks: Vec<DiskInfo>,
+    pub who: Vec<String>,
+    pub connections: Option<(u32, u16)>,
 }
 
 #[derive(Default)]
@@ -55,13 +57,21 @@ impl FrameSplitter {
     }
 }
 
-#[derive(Default)]
 pub struct StatsParser {
+    port: u16,
     prev_cpu: Option<(u64, u64)>,
     prev_net: Option<(u64, u64, Instant)>,
 }
 
 impl StatsParser {
+    pub fn new(port: u16) -> Self {
+        Self {
+            port,
+            prev_cpu: None,
+            prev_net: None,
+        }
+    }
+
     pub fn parse_frame(&mut self, frame: &str) -> RemoteStats {
         let mut stats = RemoteStats::default();
         let mut section = "";
@@ -69,6 +79,9 @@ impl StatsParser {
         let mut mem_total = None;
         let mut mem_available = None;
         let mut net_sample: Option<(u64, u64)> = None;
+        let mut conn_output = false;
+        let mut conn_count = 0u32;
+        let port_str = self.port.to_string();
 
         for line in frame.lines() {
             let line = line.trim_end();
@@ -85,6 +98,11 @@ impl StatsParser {
                 "user" => {
                     if stats.user.is_none() && !line.trim().is_empty() {
                         stats.user = Some(line.trim().to_string());
+                    }
+                }
+                "who" => {
+                    if !line.trim().is_empty() {
+                        stats.who.push(line.trim().to_string());
                     }
                 }
                 "stat" => {
@@ -109,6 +127,19 @@ impl StatsParser {
                         (Some("MemTotal:"), Some(kb)) => mem_total = Some(kb * 1024),
                         (Some("MemAvailable:"), Some(kb)) => mem_available = Some(kb * 1024),
                         _ => {}
+                    }
+                }
+                "conn" => {
+                    if !line.trim().is_empty() {
+                        conn_output = true;
+                        let fields: Vec<&str> = line.split_whitespace().collect();
+                        if line.starts_with("tcp")
+                            && fields.len() >= 6
+                            && fields[5] == "ESTABLISHED"
+                            && fields[3].rsplit(':').next() == Some(port_str.as_str())
+                        {
+                            conn_count += 1;
+                        }
                     }
                 }
                 "net" => {
@@ -168,6 +199,10 @@ impl StatsParser {
                 }
             }
             self.prev_cpu = Some((idle, total));
+        }
+
+        if conn_output {
+            stats.connections = Some((conn_count, self.port));
         }
 
         if let Some((rx, tx)) = net_sample {
