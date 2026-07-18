@@ -22,28 +22,6 @@ MobaXterm nailed the idea of one window for every remote session, but it only ru
 
 Your sessions live in a plain JSON file you can read, diff and back up yourself. Passwords go to your operating system's credential vault, not to that file. There is no Electron runtime underneath, just a Rust binary drawing through the GPU.
 
-## Features
-
-**Tabbed sessions.** SSH, SFTP, serial and local shells, open side by side in one window, organized into folders in the sidebar.
-
-**SSH with a file browser attached.** Opening an SSH session docks an SFTP panel next to the terminal, the way MobaXterm does it. Each side runs over its own connection, so a slow file transfer never blocks your shell. The panel is resizable, shows size, modified date and permissions columns, has an editable path bar, and can show or hide dotfiles per session. Double clicking a remote file downloads it and opens it with whatever your OS uses for that extension.
-
-**A real terminal emulator.** Built directly on `vte` rather than shelling out to one. It handles 256 color and truecolor, scroll regions, line and character insert or delete, and the alternate screen buffer, so vim, htop and less all behave.
-
-**Live remote monitoring.** SSH sessions get a status strip with CPU, memory, network and disk usage sampled over the same connection. Hovering the disk segment breaks it down per filesystem.
-
-**A session dialog that helps.** Session kinds as tiles across the top, a Test Connection button that actually authenticates, a private key picker that finds the keys in your `~/.ssh`, and a dropdown of the serial ports currently plugged in, with the device names next to them.
-
-**SFTP that does the boring parts.** Browse, upload, download, rename, delete and create folders, with live transfer progress.
-
-**Serial console.** Pick a detected port from the list, any baud rate, defaulting to 115200.
-
-**Keys or passwords.** Point a session at a private key and it gets tried first, with password auth as the fallback. Connections send keepalives, so an idle shell or file browser stays up.
-
-**Make it yours.** Light and dark themes, a searchable picker over every font your system has, and a window opacity slider if you like your terminal glassy.
-
-**Small in memory.** Every terminal cell is packed into 12 bytes, so screen buffers stay cheap even with a stack of tabs open.
-
 ## Screenshots
 <table width="100%">
   <tr>
@@ -64,7 +42,20 @@ Your sessions live in a plain JSON file you can read, diff and back up yourself.
   </tr>
 </table>
 
+## Features
 
+| Feature | What it does |
+|---|---|
+| **Tabbed sessions** | SSH, SFTP, serial and local shells open side by side in one window, organized into folders in the sidebar. |
+| **SSH with a file browser attached** | Opening an SSH session docks an SFTP panel next to the terminal, the way MobaXterm does it. Each side runs over its own connection, so a slow file transfer never blocks your shell. Resizable, with size, modified date and permissions columns, an editable path bar, and per-session dotfile visibility. Double clicking a remote file downloads it and opens it with whatever your OS uses for that extension. |
+| **A real terminal emulator** | Built directly on `vte` rather than shelling out to one. Handles 256 color and truecolor, scroll regions, line and character insert or delete, and the alternate screen buffer, so vim, htop and less all behave. |
+| **Live remote monitoring** | SSH sessions get a status strip with CPU, memory, network and disk usage, sampled over the same connection. Hovering the disk segment breaks it down per filesystem. |
+| **A session dialog that helps** | Session kinds as tiles across the top, a Test Connection button that actually authenticates, a private key picker that finds the keys in your `~/.ssh`, and a dropdown of the serial ports currently plugged in, with the device names next to them. |
+| **SFTP that does the boring parts** | Browse, upload, download, rename, delete and create folders, with live transfer progress. |
+| **Serial console** | Pick a detected port from the list, any baud rate, defaulting to 115200. |
+| **Keys or passwords** | Point a session at a private key and it gets tried first, with password auth as the fallback. Connections send keepalives, so an idle shell or file browser stays up. |
+| **Make it yours** | Light and dark themes, a searchable picker over every font your system has, and a window opacity slider if you like your terminal glassy. |
+| **Small in memory** | Every terminal cell is packed into 12 bytes, so screen buffers stay cheap even with a stack of tabs open. |
 
 ## Getting Started
 
