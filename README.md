@@ -45,8 +45,26 @@ Your sessions live in a plain JSON file you can read, diff and back up yourself.
 **Small in memory.** Every terminal cell is packed into 12 bytes, so screen buffers stay cheap even with a stack of tabs open.
 
 ## Screenshots
+<table width="100%">
+  <tr>
+    <td align="center" width="50%" valign="top">
+      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/a8b83009-8c80-4976-9ed0-8af504cb098c" />
+    </td>
+    <td align="center" width="50%" valign="top">
+      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/e0ced512-64f3-497a-a21d-79bdb21e6bc8" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%" valign="top">
+      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/6d22d50a-92fe-4217-96fc-466d9f48268d" />
+    </td>
+    <td align="center" width="50%" valign="top">
+      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/df845866-8f5f-4ef0-ab9a-7cd87ca53ebb" />
+    </td>
+  </tr>
+</table>
 
-COMING SOON
+
 
 ## Getting Started
 
