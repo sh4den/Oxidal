@@ -1,9 +1,8 @@
 use std::collections::VecDeque;
 
-use gpui::{hsla, Hsla};
+use gpui::{Hsla, hsla};
 use vte::{Params, Perform};
 
-/// Maximum number of lines kept in the scrollback buffer.
 const SCROLLBACK_MAX: usize = 5000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -134,7 +133,6 @@ pub fn default_bg() -> Hsla {
     hsla(0., 0., 0.07, 1.)
 }
 
-/// ANSI 16-color palette rendered as approximate terminal colors.
 fn ansi_color(code: u16, bright: bool) -> Hsla {
     let (h, s, l): (f32, f32, f32) = match code {
         0 => (0., 0., if bright { 0.45 } else { 0.15 }),
@@ -174,26 +172,16 @@ pub struct Grid {
     pub cursor_visible: bool,
     attrs: Attrs,
     saved_cursor: (usize, usize),
-    /// Parked in an `Option` so `feed` can move it out and pass `self` as the
-    /// `Perform` sink without building a throwaway parser on every call.
     parser: Option<vte::Parser>,
-    /// Inclusive scroll region rows (DECSTBM). Defaults to the whole screen.
     scroll_top: usize,
     scroll_bottom: usize,
     autowrap: bool,
-    /// DECCKM: arrow keys send `ESC O x` instead of `ESC [ x` when set.
     pub application_cursor_keys: bool,
-    /// Mouse reporting mode (0 = off, else 1000/1002/1003) and whether the
-    /// SGR (1006) coordinate encoding is active.
     pub mouse_mode: u16,
     pub mouse_sgr: bool,
     pub bracketed_paste: bool,
     alt_screen: Option<SavedPrimaryScreen>,
-    /// Lines scrolled off the top of the primary screen, oldest first.
-    /// Lines keep whatever width they had when they scrolled off.
     scrollback: VecDeque<Box<[Cell]>>,
-    /// Lines ever dropped from the front of `scrollback` (cap trims and
-    /// clears), so line ids stay stable as history fills up.
     scrollback_trimmed: usize,
     responses: Vec<u8>,
     last_printed: Option<char>,
@@ -241,16 +229,10 @@ impl Grid {
         self.scrollback.len()
     }
 
-    /// Stable id of the line at the top of the live screen. Ids count every
-    /// line ever pushed into scrollback, so they keep identifying the same
-    /// content while new output scrolls more lines off (they only go stale
-    /// once the line is trimmed out of the retained history).
     pub fn screen_top_line(&self) -> usize {
         self.scrollback_trimmed + self.scrollback.len()
     }
 
-    /// Cells of a line by id: retained scrollback first, then the live
-    /// screen. Trimmed-away or out-of-range lines return `None`.
     pub fn line_cells(&self, line: usize) -> Option<&[Cell]> {
         let index = line.checked_sub(self.scrollback_trimmed)?;
         match index.checked_sub(self.scrollback.len()) {
@@ -270,18 +252,10 @@ impl Grid {
     }
 
     fn clear_scrollback(&mut self) {
-        // Keep ids monotonic so stored line references go stale instead of
-        // silently pointing at different content.
         self.scrollback_trimmed += self.scrollback.len();
         self.scrollback.clear();
     }
 
-    /// Resize the grid to fill however much space is actually available,
-    /// growing/shrinking rows at the bottom (keeping the most recent content
-    /// visible) and columns on the right. Also resizes the stashed alt-screen
-    /// buffer if one exists, so switching back stays consistent. The scroll
-    /// region is reset to the full screen, since an old region may no longer
-    /// make sense at the new size.
     pub fn resize(&mut self, rows: usize, cols: usize) {
         let rows = rows.max(1);
         let cols = cols.max(1);
@@ -289,8 +263,6 @@ impl Grid {
             return;
         }
 
-        // Rows dropped off the top of a shrinking primary screen become
-        // history instead of vanishing.
         if self.alt_screen.is_none() {
             self.push_scrollback(self.cells.len().saturating_sub(rows));
         }
@@ -334,16 +306,11 @@ impl Grid {
         }
     }
 
-    /// Move `rows` within the scroll region up or down by `n`, blanking the
-    /// rows that wrap around. Rotating the row handles recycles the existing
-    /// row buffers, so scrolling never touches the allocator.
     fn scroll_region(&mut self, n: usize, up: bool) {
         if self.scroll_top > self.scroll_bottom || self.scroll_bottom >= self.rows {
             return;
         }
         let n = n.min(self.scroll_bottom - self.scroll_top + 1);
-        // Only full-screen scrolls on the primary screen feed the scrollback;
-        // a TUI scrolling a sub-region isn't history.
         if up
             && self.alt_screen.is_none()
             && self.scroll_top == 0
@@ -443,10 +410,6 @@ impl Grid {
         self.cursor_col = 0;
     }
 
-    /// Enter or leave the alternate screen buffer (used by full-screen TUIs
-    /// like vim, htop, less). Also resets scroll region / cursor-key /
-    /// autowrap modes so a TUI that exits uncleanly can't leave the shell
-    /// in a broken state.
     fn set_alt_screen(&mut self, enable: bool) {
         if enable {
             if self.alt_screen.is_none() {
@@ -543,8 +506,6 @@ impl Grid {
                 for row in self.cells.iter_mut() {
                     row.fill(blank);
                 }
-                // ED 3 (xterm): also wipe the saved-lines buffer, so
-                // `clear -x`-style full clears behave as users expect.
                 if mode == 3 {
                     self.clear_scrollback();
                 }
@@ -673,7 +634,11 @@ fn rgb_to_hsla(r: f32, g: f32, b: f32) -> Hsla {
         return hsla(0., 0., l, 1.);
     }
     let d = max - min;
-    let s = if l > 0.5 { d / (2. - max - min) } else { d / (max + min) };
+    let s = if l > 0.5 {
+        d / (2. - max - min)
+    } else {
+        d / (max + min)
+    };
     let h = if max == r {
         ((g - b) / d) % 6.
     } else if max == g {
@@ -715,7 +680,11 @@ impl Perform for Grid {
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
         let n = |default: u16| -> u16 {
-            let first = params.iter().next().and_then(|p| p.first().copied()).unwrap_or(0);
+            let first = params
+                .iter()
+                .next()
+                .and_then(|p| p.first().copied())
+                .unwrap_or(0);
             if first == 0 { default } else { first }
         };
         match action {
@@ -725,8 +694,16 @@ impl Perform for Grid {
             'D' => self.cursor_col = self.cursor_col.saturating_sub(n(1) as usize),
             'H' | 'f' => {
                 let mut it = params.iter();
-                let row = it.next().and_then(|p| p.first().copied()).unwrap_or(1).max(1);
-                let col = it.next().and_then(|p| p.first().copied()).unwrap_or(1).max(1);
+                let row = it
+                    .next()
+                    .and_then(|p| p.first().copied())
+                    .unwrap_or(1)
+                    .max(1);
+                let col = it
+                    .next()
+                    .and_then(|p| p.first().copied())
+                    .unwrap_or(1)
+                    .max(1);
                 self.cursor_row = (row - 1) as usize;
                 self.cursor_col = (col - 1) as usize;
                 self.clamp_cursor();

@@ -4,7 +4,6 @@ pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; una
 
 const MARKER: &[u8] = b"@@OXIDAL@@";
 
-/// One mounted filesystem reported by `df`.
 #[derive(Clone)]
 pub struct DiskInfo {
     pub filesystem: String,
@@ -19,8 +18,6 @@ pub struct RemoteStats {
     pub user: Option<String>,
     pub cpu: Option<f32>,
     pub mem: Option<(u64, u64)>,
-    /// The root filesystem (or the first real one when `/` isn't listed),
-    /// shown in the monitor bar; `disks` has the full breakdown.
     pub disk: Option<(u64, u64)>,
     pub net: Option<(f64, f64)>,
     pub disks: Vec<DiskInfo>,
@@ -105,7 +102,10 @@ impl StatsParser {
                 }
                 "mem" => {
                     let mut parts = line.split_whitespace();
-                    match (parts.next(), parts.next().and_then(|v| v.parse::<u64>().ok())) {
+                    match (
+                        parts.next(),
+                        parts.next().and_then(|v| v.parse::<u64>().ok()),
+                    ) {
                         (Some("MemTotal:"), Some(kb)) => mem_total = Some(kb * 1024),
                         (Some("MemAvailable:"), Some(kb)) => mem_available = Some(kb * 1024),
                         _ => {}
@@ -126,9 +126,6 @@ impl StatsParser {
                     }
                 }
                 "df" => {
-                    // POSIX format: Filesystem 1024-blocks Used Available
-                    // Capacity Mounted-on. The header row fails the numeric
-                    // parses and is skipped naturally.
                     let fields: Vec<&str> = line.split_whitespace().collect();
                     if fields.len() >= 6
                         && let (Ok(total), Ok(used)) =
@@ -191,7 +188,6 @@ impl StatsParser {
     }
 }
 
-/// Virtual filesystems that would clutter the disk breakdown.
 fn is_pseudo_fs(filesystem: &str) -> bool {
     matches!(
         filesystem,

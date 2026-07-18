@@ -1,19 +1,19 @@
 use gpui::{
-    div, prelude::FluentBuilder as _, px, AppContext as _, Context, FontWeight, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window,
+    AppContext as _, Context, FontWeight, IntoElement, ParentElement as _, Render, SharedString,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
+    ActiveTheme as _, IconName, IndexPath, Theme, ThemeMode, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
     select::{SearchableVec, Select, SelectState},
     slider::{Slider, SliderEvent, SliderState},
-    v_flex, ActiveTheme as _, IconName, IndexPath, Theme, ThemeMode, WindowExt as _,
+    v_flex,
 };
 
 use crate::settings::{self, AppSettings};
 
-/// The "Settings" tab: terminal font and appearance (light/dark) preferences.
 pub struct SettingsView {
     font_select: gpui::Entity<SelectState<SearchableVec<SharedString>>>,
     font_size_input: gpui::Entity<InputState>,
@@ -24,9 +24,6 @@ impl SettingsView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let current = cx.global::<AppSettings>().clone();
 
-        // Every font family the OS reports (DirectWrite on Windows, CoreText
-        // on macOS, fontconfig on Linux), searchable in the dropdown. The
-        // saved family is kept selectable even if it's no longer installed.
         let mut fonts: Vec<SharedString> = cx
             .text_system()
             .all_font_names()
@@ -47,8 +44,8 @@ impl SettingsView {
             SelectState::new(SearchableVec::new(fonts), selected, window, cx).searchable(true)
         });
 
-        let font_size_input = cx
-            .new(|cx| InputState::new(window, cx).default_value(current.font_size.to_string()));
+        let font_size_input =
+            cx.new(|cx| InputState::new(window, cx).default_value(current.font_size.to_string()));
 
         let opacity_slider = cx.new(|_| {
             SliderState::new()
@@ -72,7 +69,8 @@ impl SettingsView {
         )
         .detach();
 
-        cx.observe_global::<AppSettings>(|_, cx| cx.notify()).detach();
+        cx.observe_global::<AppSettings>(|_, cx| cx.notify())
+            .detach();
 
         Self {
             font_select,
@@ -112,12 +110,15 @@ impl SettingsView {
 
     fn set_dark_mode(&self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
         Theme::change(
-            if dark { ThemeMode::Dark } else { ThemeMode::Light },
+            if dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            },
             Some(window),
             cx,
         );
         cx.global_mut::<AppSettings>().dark_mode = dark;
-        // Theme::change rebuilt the colors, dropping the translucency tint.
         settings::apply_window_opacity(window, cx);
         settings::save_settings(cx.global::<AppSettings>());
     }
@@ -131,11 +132,21 @@ impl Render for SettingsView {
             .size_full()
             .p_6()
             .gap_6()
-            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Settings"))
+            .child(
+                div()
+                    .text_xl()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Settings"),
+            )
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Appearance"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Appearance"),
+                    )
                     .child(
                         h_flex()
                             .gap_2()
@@ -191,11 +202,21 @@ impl Render for SettingsView {
                 v_flex()
                     .gap_2()
                     .max_w(px(360.))
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Terminal Font"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Terminal Font"),
+                    )
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Font Family"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Font Family"),
+                            )
                             .child(
                                 Select::new(&self.font_select)
                                     .placeholder("Select a font")
@@ -205,17 +226,19 @@ impl Render for SettingsView {
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Font Size (px)"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Font Size (px)"),
+                            )
                             .child(Input::new(&self.font_size_input)),
                     )
-                    .child(
-                        Button::new("apply-font")
-                            .primary()
-                            .label("Apply")
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.apply_font(window, cx);
-                            })),
-                    ),
+                    .child(Button::new("apply-font").primary().label("Apply").on_click(
+                        cx.listener(|view, _, window, cx| {
+                            view.apply_font(window, cx);
+                        }),
+                    )),
             )
     }
 }
