@@ -1,5 +1,3 @@
-// GUI subsystem on Windows: without this the OS attaches a console window
-// to the process. Ignored on other platforms.
 #![windows_subsystem = "windows"]
 
 mod app;
@@ -13,8 +11,8 @@ mod ssh_client;
 mod terminal;
 
 use gpui::{
-    px, size, App, AppContext as _, Bounds, KeyBinding, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions,
+    App, AppContext as _, Bounds, KeyBinding, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions, px, size,
 };
 use gpui_component::{Root, Theme, ThemeMode, TitleBar};
 
@@ -25,7 +23,6 @@ fn main() {
     let application = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
     application.run(move |cx: &mut App| {
-        // Must be called before using any GPUI Component features.
         gpui_component::init(cx);
 
         cx.bind_keys([
@@ -61,7 +58,6 @@ fn main() {
         cx.open_window(options, |window, cx| {
             settings::apply_window_opacity(window, cx);
             let view = cx.new(|cx| OxidalApp::new(window, cx));
-            // First level child of the window must be a Root.
             cx.new(|cx| Root::new(view, window, cx))
         })
         .expect("failed to open window");

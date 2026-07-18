@@ -5,7 +5,6 @@ pub use panel::SftpPanel;
 
 use std::path::PathBuf;
 
-/// One entry in a remote directory listing.
 #[derive(Clone, Debug)]
 pub struct SftpEntry {
     pub name: String,
@@ -13,17 +12,26 @@ pub struct SftpEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<u64>,
-    /// Unix mode bits as reported by the server, when available.
     pub permissions: Option<u32>,
 }
 
-/// A request sent to the SFTP background worker.
 enum SftpCommand {
-    List { path: String },
-    CreateDir { name: String },
-    Rename { from: String, to: String },
-    RemoveFile { path: String },
-    RemoveDir { path: String },
+    List {
+        path: String,
+    },
+    CreateDir {
+        name: String,
+    },
+    Rename {
+        from: String,
+        to: String,
+    },
+    RemoveFile {
+        path: String,
+    },
+    RemoveDir {
+        path: String,
+    },
     Upload {
         local: PathBuf,
         remote: String,
@@ -31,13 +39,10 @@ enum SftpCommand {
     Download {
         remote: String,
         local: PathBuf,
-        /// Launch the file with the OS default application once the
-        /// download completes (used by double-click "open").
         open_when_done: bool,
     },
 }
 
-/// A message produced by the SFTP background worker.
 enum SftpEvent {
     Listing {
         path: String,
@@ -57,11 +62,6 @@ enum SftpEvent {
     Closed(Option<String>),
 }
 
-/// Handle to a running SFTP session: send commands, receive events. The
-/// connection runs on a dedicated background thread with its own tokio
-/// runtime, mirroring `terminal::ssh`'s backend pattern, except SFTP is
-/// request/response rather than a raw byte stream so it gets its own
-/// command/event shape instead of reusing `terminal::backend::Backend`.
 #[derive(Clone)]
 pub struct SftpClient {
     events: async_channel::Receiver<SftpEvent>,
@@ -70,7 +70,9 @@ pub struct SftpClient {
 
 impl SftpClient {
     pub fn list(&self, path: impl Into<String>) {
-        let _ = self.commands.send_blocking(SftpCommand::List { path: path.into() });
+        let _ = self
+            .commands
+            .send_blocking(SftpCommand::List { path: path.into() });
     }
 
     pub fn create_dir(&self, name: impl Into<String>) {
@@ -113,8 +115,6 @@ impl SftpClient {
         });
     }
 
-    /// Download to `local`, then open it with the OS default application
-    /// for its extension.
     pub fn download_and_open(&self, remote: impl Into<String>, local: PathBuf) {
         let _ = self.commands.send_blocking(SftpCommand::Download {
             remote: remote.into(),
@@ -126,7 +126,21 @@ impl SftpClient {
 
 pub use client::spawn;
 
-/// Join a remote (POSIX-style) directory path with a child name.
+fn safe_local_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '\0' => '_',
+            c => c,
+        })
+        .collect();
+    if sanitized.chars().all(|c| c == '.' || c == ' ') {
+        "_".to_string()
+    } else {
+        sanitized
+    }
+}
+
 fn join_remote(dir: &str, name: &str) -> String {
     if dir.is_empty() {
         name.to_string()
@@ -137,7 +151,6 @@ fn join_remote(dir: &str, name: &str) -> String {
     }
 }
 
-/// The parent of a remote path, `/` if already at the root.
 fn parent_remote(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
     match trimmed.rsplit_once('/') {
@@ -147,7 +160,6 @@ fn parent_remote(path: &str) -> String {
     }
 }
 
-/// Human-readable file size, e.g. `"1.3 MB"`.
 pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if bytes == 0 {
@@ -166,7 +178,6 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Human-readable modification date, e.g. `"2026-07-15 09:30"`.
 pub fn format_modified(unix_secs: u64) -> String {
     match chrono::DateTime::from_timestamp(unix_secs as i64, 0) {
         Some(dt) => dt.format("%Y-%m-%d %H:%M").to_string(),
@@ -174,7 +185,6 @@ pub fn format_modified(unix_secs: u64) -> String {
     }
 }
 
-/// Unix-style permission string, e.g. `"drwxr-xr-x"`.
 pub fn format_permissions(is_dir: bool, mode: Option<u32>) -> String {
     let Some(mode) = mode else {
         return String::new();

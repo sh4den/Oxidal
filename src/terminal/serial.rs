@@ -3,8 +3,6 @@ use std::time::Duration;
 
 use super::backend::{Backend, BackendEvent};
 
-/// Open a serial port and expose it as a terminal backend. Resize requests
-/// are ignored (serial links have no notion of terminal dimensions).
 pub fn spawn(port_name: String, baud_rate: u32) -> anyhow::Result<Backend> {
     let mut writer = serialport::new(&port_name, baud_rate)
         .timeout(Duration::from_millis(50))

@@ -1,21 +1,19 @@
+use secrecy::SecretString;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::FileType;
 
-use super::{join_remote, SftpClient, SftpCommand, SftpEntry, SftpEvent};
+use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote};
 use crate::ssh_client;
 
 const CHUNK_SIZE: usize = 64 * 1024;
 
-/// Connect to an SSH server and open an SFTP subsystem channel. The
-/// connection runs on a dedicated background thread with its own tokio
-/// runtime, mirroring `terminal::ssh::spawn`.
 pub fn spawn(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     initial_path: String,
 ) -> SftpClient {
@@ -57,7 +55,7 @@ async fn run(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     initial_path: String,
     out_tx: async_channel::Sender<SftpEvent>,
@@ -148,7 +146,11 @@ async fn send_error(out_tx: &async_channel::Sender<SftpEvent>, message: String) 
     let _ = out_tx.send(SftpEvent::Error(message)).await;
 }
 
-async fn list_and_send(sftp: &SftpSession, path: String, out_tx: &async_channel::Sender<SftpEvent>) {
+async fn list_and_send(
+    sftp: &SftpSession,
+    path: String,
+    out_tx: &async_channel::Sender<SftpEvent>,
+) {
     match read_dir(sftp, &path).await {
         Ok(entries) => {
             let _ = out_tx.send(SftpEvent::Listing { path, entries }).await;
@@ -160,6 +162,10 @@ async fn list_and_send(sftp: &SftpSession, path: String, out_tx: &async_channel:
 async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntry>> {
     let read_dir = sftp.read_dir(path).await?;
     let mut entries: Vec<SftpEntry> = read_dir
+        .filter(|entry| {
+            let name = entry.file_name();
+            name != "." && name != ".."
+        })
         .map(|entry| {
             let metadata = entry.metadata();
             SftpEntry {
@@ -212,11 +218,15 @@ async fn do_upload(
         }
         remote_file.write_all(&buf[..n]).await?;
         transferred += n as u64;
-        let _ = out_tx.send(SftpEvent::TransferProgress { transferred }).await;
+        let _ = out_tx
+            .send(SftpEvent::TransferProgress { transferred })
+            .await;
     }
     remote_file.shutdown().await?;
 
-    let _ = out_tx.send(SftpEvent::TransferFinished { error: None }).await;
+    let _ = out_tx
+        .send(SftpEvent::TransferFinished { error: None })
+        .await;
     Ok(())
 }
 
@@ -250,11 +260,15 @@ async fn do_download(
         }
         local_file.write_all(&buf[..n]).await?;
         transferred += n as u64;
-        let _ = out_tx.send(SftpEvent::TransferProgress { transferred }).await;
+        let _ = out_tx
+            .send(SftpEvent::TransferProgress { transferred })
+            .await;
     }
     remote_file.shutdown().await?;
     local_file.flush().await?;
 
-    let _ = out_tx.send(SftpEvent::TransferFinished { error: None }).await;
+    let _ = out_tx
+        .send(SftpEvent::TransferFinished { error: None })
+        .await;
     Ok(())
 }
