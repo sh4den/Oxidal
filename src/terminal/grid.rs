@@ -1,5 +1,10 @@
+use std::collections::VecDeque;
+
 use gpui::{hsla, Hsla};
 use vte::{Params, Perform};
+
+/// Maximum number of lines kept in the scrollback buffer.
+const SCROLLBACK_MAX: usize = 5000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Color {
@@ -44,7 +49,7 @@ pub struct Cell {
 const _: () = assert!(std::mem::size_of::<Cell>() == 12);
 
 impl Cell {
-    const BLANK: Cell = Cell {
+    pub const BLANK: Cell = Cell {
         ch_flags: ' ' as u32,
         fg: Color::Default,
         bg: Color::Default,
@@ -184,6 +189,12 @@ pub struct Grid {
     pub mouse_sgr: bool,
     pub bracketed_paste: bool,
     alt_screen: Option<SavedPrimaryScreen>,
+    /// Lines scrolled off the top of the primary screen, oldest first.
+    /// Lines keep whatever width they had when they scrolled off.
+    scrollback: VecDeque<Box<[Cell]>>,
+    /// Lines ever dropped from the front of `scrollback` (cap trims and
+    /// clears), so line ids stay stable as history fills up.
+    scrollback_trimmed: usize,
     responses: Vec<u8>,
     last_printed: Option<char>,
     g0_graphics: bool,
@@ -212,6 +223,8 @@ impl Grid {
             mouse_sgr: false,
             bracketed_paste: false,
             alt_screen: None,
+            scrollback: VecDeque::new(),
+            scrollback_trimmed: 0,
             responses: Vec::new(),
             last_printed: None,
             g0_graphics: false,
@@ -220,12 +233,47 @@ impl Grid {
         }
     }
 
-    pub fn cell(&self, row: usize, col: usize) -> Cell {
-        self.cells[row][col]
-    }
-
     pub fn alt_active(&self) -> bool {
         self.alt_screen.is_some()
+    }
+
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// Stable id of the line at the top of the live screen. Ids count every
+    /// line ever pushed into scrollback, so they keep identifying the same
+    /// content while new output scrolls more lines off (they only go stale
+    /// once the line is trimmed out of the retained history).
+    pub fn screen_top_line(&self) -> usize {
+        self.scrollback_trimmed + self.scrollback.len()
+    }
+
+    /// Cells of a line by id: retained scrollback first, then the live
+    /// screen. Trimmed-away or out-of-range lines return `None`.
+    pub fn line_cells(&self, line: usize) -> Option<&[Cell]> {
+        let index = line.checked_sub(self.scrollback_trimmed)?;
+        match index.checked_sub(self.scrollback.len()) {
+            None => Some(&self.scrollback[index]),
+            Some(row) => self.cells.get(row).map(|cells| &cells[..]),
+        }
+    }
+
+    fn push_scrollback(&mut self, count: usize) {
+        for row in self.cells.iter().take(count) {
+            self.scrollback.push_back(row.clone());
+        }
+        while self.scrollback.len() > SCROLLBACK_MAX {
+            self.scrollback.pop_front();
+            self.scrollback_trimmed += 1;
+        }
+    }
+
+    fn clear_scrollback(&mut self) {
+        // Keep ids monotonic so stored line references go stale instead of
+        // silently pointing at different content.
+        self.scrollback_trimmed += self.scrollback.len();
+        self.scrollback.clear();
     }
 
     /// Resize the grid to fill however much space is actually available,
@@ -241,6 +289,11 @@ impl Grid {
             return;
         }
 
+        // Rows dropped off the top of a shrinking primary screen become
+        // history instead of vanishing.
+        if self.alt_screen.is_none() {
+            self.push_scrollback(self.cells.len().saturating_sub(rows));
+        }
         let old_cells = std::mem::take(&mut self.cells);
         self.cells = resized_cells(old_cells, rows, cols);
         if let Some(alt) = &mut self.alt_screen {
@@ -289,6 +342,15 @@ impl Grid {
             return;
         }
         let n = n.min(self.scroll_bottom - self.scroll_top + 1);
+        // Only full-screen scrolls on the primary screen feed the scrollback;
+        // a TUI scrolling a sub-region isn't history.
+        if up
+            && self.alt_screen.is_none()
+            && self.scroll_top == 0
+            && self.scroll_bottom == self.rows - 1
+        {
+            self.push_scrollback(n);
+        }
         let blank = self.blank_cell();
         let region = &mut self.cells[self.scroll_top..=self.scroll_bottom];
         if up {
@@ -480,6 +542,11 @@ impl Grid {
             2 | 3 => {
                 for row in self.cells.iter_mut() {
                     row.fill(blank);
+                }
+                // ED 3 (xterm): also wipe the saved-lines buffer, so
+                // `clear -x`-style full clears behave as users expect.
+                if mode == 3 {
+                    self.clear_scrollback();
                 }
             }
             _ => {}

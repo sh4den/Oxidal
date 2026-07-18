@@ -4,8 +4,9 @@ use gpui::{
     div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar,
+    ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _},
+    dialog::DialogFooter,
     h_flex,
     resizable::{h_resizable, resizable_panel},
     tab::{Tab, TabBar},
@@ -353,6 +354,7 @@ impl OxidalApp {
         let group_name = SharedString::from(format!("session-{id}"));
         let folders = self.folders.clone();
         let session = item.clone();
+        let name = SharedString::from(item.name.clone());
 
         h_flex()
             .id(SharedString::from(format!("session-{id}")))
@@ -420,8 +422,40 @@ impl OxidalApp {
                             .xsmall()
                             .icon(IconName::Delete)
                             .tooltip("Delete")
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                view.delete_session(id, cx);
+                            .on_click(cx.listener(move |_view, _, window, cx| {
+                                let weak_app = cx.weak_entity();
+                                let name = name.clone();
+                                window.open_dialog(cx, move |dialog, _window, _cx| {
+                                    let weak_app = weak_app.clone();
+                                    dialog
+                                        .title("Delete Session")
+                                        .child(div().w(px(360.)).child(format!(
+                                            "Delete \"{name}\"? This also removes its saved \
+                                             password and closes any open tabs for it."
+                                        )))
+                                        .footer(
+                                            DialogFooter::new()
+                                                .child(
+                                                    Button::new("cancel").label("Cancel").on_click(
+                                                        |_, window, cx| {
+                                                            window.close_dialog(cx);
+                                                        },
+                                                    ),
+                                                )
+                                                .child(
+                                                    Button::new("delete")
+                                                        .danger()
+                                                        .label("Delete")
+                                                        .on_click(move |_, window, cx| {
+                                                            let _ =
+                                                                weak_app.update(cx, |app, cx| {
+                                                                    app.delete_session(id, cx);
+                                                                });
+                                                            window.close_dialog(cx);
+                                                        }),
+                                                ),
+                                        )
+                                });
                             })),
                     ),
             )
