@@ -17,8 +17,8 @@ use gpui_component::{
 };
 
 use super::{
-    format_modified, format_permissions, format_size, join_remote, parent_remote, SftpEntry,
-    SftpEvent,
+    format_modified, format_permissions, format_size, join_remote, parent_remote, safe_local_name,
+    SftpEntry, SftpEvent,
 };
 
 struct TransferState {
@@ -61,7 +61,7 @@ impl SftpPanel {
         host: String,
         port: u16,
         username: String,
-        password: String,
+        password: secrecy::SecretString,
         private_key_path: Option<String>,
         show_hidden: bool,
         on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + 'static,
@@ -228,7 +228,7 @@ impl SftpPanel {
             return;
         }
         self.client
-            .download_and_open(entry.path.clone(), dir.join(&entry.name));
+            .download_and_open(entry.path.clone(), dir.join(safe_local_name(&entry.name)));
     }
 
     fn new_folder_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -355,7 +355,8 @@ impl SftpPanel {
         let start_dir = dirs::download_dir()
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
-        let rx = cx.prompt_for_new_path(&start_dir, Some(&entry.name));
+        let suggested = safe_local_name(&entry.name);
+        let rx = cx.prompt_for_new_path(&start_dir, Some(&suggested));
         let client = self.client.clone();
         cx.spawn(async move |_this, _cx| {
             if let Ok(Ok(Some(local))) = rx.await {

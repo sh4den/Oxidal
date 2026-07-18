@@ -18,6 +18,7 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectItem, SelectState},
     v_flex,
 };
+use secrecy::{ExposeSecret as _, SecretString};
 use serialport::SerialPortType;
 use uuid::Uuid;
 
@@ -214,9 +215,12 @@ fn open_session_dialog(
     let password = cx.new(|cx| {
         InputState::new(window, cx)
             .default_value(
+                // The edit dialog needs the plaintext to seed the masked
+                // input; this copy lives in the input widget until the
+                // dialog closes.
                 existing
                     .as_ref()
-                    .map(|s| s.password.clone())
+                    .map(|s| s.password.expose_secret().to_string())
                     .unwrap_or_default(),
             )
             .masked(true)
@@ -583,7 +587,8 @@ fn open_session_dialog(
                             .parse()
                             .unwrap_or_else(|_| kind.default_port());
                         let username_value = username.read(cx).value().to_string();
-                        let password_value = password.read(cx).value().to_string();
+                        let password_value =
+                            SecretString::from(password.read(cx).value().to_string());
                         let key_value = private_key
                             .read(cx)
                             .selected_value()
@@ -656,7 +661,7 @@ fn open_session_dialog(
                     .parse()
                     .unwrap_or_else(|_| kind.default_port());
                 session.username = username.read(cx).value().to_string();
-                session.password = password.read(cx).value().to_string();
+                session.password = SecretString::from(password.read(cx).value().to_string());
                 session.baud_rate = baud.read(cx).value().to_string().parse().unwrap_or(115_200);
                 session.private_key_path = private_key
                     .read(cx)
@@ -798,7 +803,7 @@ fn run_connection_test(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     baud_rate: u32,
 ) -> async_channel::Receiver<Result<String, String>> {
@@ -843,7 +848,7 @@ fn ssh_check(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
 ) -> Result<String, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()

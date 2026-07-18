@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use gpui_component::IconName;
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -57,9 +58,11 @@ pub struct Session {
     #[serde(default)]
     pub username: String,
     /// Never written to `sessions.json`. Persisted separately in the OS
-    /// credential vault (see `credentials`) and re-attached on load.
+    /// credential vault (see `credentials`) and re-attached on load. Held
+    /// as a [`SecretString`] so it's redacted from `Debug` output and
+    /// zeroized in memory on drop.
     #[serde(skip)]
-    pub password: String,
+    pub password: SecretString,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
     /// Path to a private key file for SSH public-key authentication. Tried
@@ -104,7 +107,7 @@ impl Session {
             host: String::new(),
             port: kind.default_port(),
             username: String::new(),
-            password: String::new(),
+            password: SecretString::default(),
             baud_rate: default_baud_rate(),
             private_key_path: None,
             folder_id: None,

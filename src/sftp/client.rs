@@ -1,3 +1,4 @@
+use secrecy::SecretString;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use russh_sftp::client::SftpSession;
@@ -15,7 +16,7 @@ pub fn spawn(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     initial_path: String,
 ) -> SftpClient {
@@ -57,7 +58,7 @@ async fn run(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     initial_path: String,
     out_tx: async_channel::Sender<SftpEvent>,
@@ -160,6 +161,12 @@ async fn list_and_send(sftp: &SftpSession, path: String, out_tx: &async_channel:
 async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntry>> {
     let read_dir = sftp.read_dir(path).await?;
     let mut entries: Vec<SftpEntry> = read_dir
+        // Some servers include the `.`/`..` entries; listing them would give
+        // the panel bogus rows whose paths point outside the directory.
+        .filter(|entry| {
+            let name = entry.file_name();
+            name != "." && name != ".."
+        })
         .map(|entry| {
             let metadata = entry.metadata();
             SftpEntry {

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use russh::client;
+use secrecy::{ExposeSecret as _, SecretString};
 
 /// Trust-on-first-use host key handler shared by the terminal and SFTP SSH
 /// backends. Both need an authenticated `client::Handle` before opening their
@@ -28,7 +29,7 @@ pub async fn connect(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
 ) -> anyhow::Result<client::Handle<Handler>> {
     let config = Arc::new(client::Config {
@@ -58,7 +59,11 @@ pub async fn connect(
     }
 
     if !authenticated {
-        let auth = session.authenticate_password(username, password).await?;
+        // The secret is only unwrapped at the moment it goes into the
+        // protocol layer.
+        let auth = session
+            .authenticate_password(username, password.expose_secret())
+            .await?;
         if !auth.success() {
             anyhow::bail!("SSH authentication failed");
         }
