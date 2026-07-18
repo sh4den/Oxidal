@@ -17,7 +17,7 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "sync-s
 async-channel = "2"
 vte = "0.13"
 portable-pty = "0.8"
-russh = "0.61.1"
+russh = "0.51"
 russh-sftp = "2"
 serialport = "4"
 chrono = "0.4"

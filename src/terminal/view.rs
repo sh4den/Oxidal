@@ -12,7 +12,7 @@ use gpui::{
 use gpui_component::{hover_card::HoverCard, ActiveTheme as _, Icon, IconName, Sizable as _};
 
 use super::backend::{Backend, BackendEvent};
-use super::grid::{default_bg, Grid};
+use super::grid::{default_bg, Cell, Grid};
 use super::stats::{DiskInfo, RemoteStats};
 use crate::settings::AppSettings;
 
@@ -33,6 +33,9 @@ struct RunStyle {
     strike: bool,
 }
 
+/// Selection endpoints are (line id, column) — see [`Grid::line_cells`] —
+/// so a selection keeps pointing at the same text while the view scrolls
+/// or new output arrives.
 #[derive(Clone, Copy)]
 struct Selection {
     anchor: (usize, usize),
@@ -64,6 +67,8 @@ pub struct TerminalView {
     cpu_history: VecDeque<f32>,
     selection: Option<Selection>,
     layout: Option<(Bounds<Pixels>, Pixels, Pixels)>,
+    /// Lines scrolled up into history; 0 means pinned to the live screen.
+    scroll_offset: usize,
 }
 
 impl TerminalView {
@@ -84,9 +89,18 @@ impl TerminalView {
                 Ok(BackendEvent::Data(bytes)) => {
                     if this
                         .update(cx, |view: &mut Self, cx| {
+                            let top_before = view.grid.screen_top_line();
                             let replies = view.grid.feed(&bytes);
                             if !replies.is_empty() {
                                 view.backend.write_input(&replies);
+                            }
+                            // Keep a scrolled-back view anchored on the same
+                            // content while new output pushes lines into
+                            // history underneath it.
+                            if view.scroll_offset > 0 {
+                                let pushed = view.grid.screen_top_line() - top_before;
+                                view.scroll_offset = (view.scroll_offset + pushed)
+                                    .min(view.grid.scrollback_len());
                             }
                             cx.notify();
                         })
@@ -144,13 +158,45 @@ impl TerminalView {
             cpu_history: VecDeque::new(),
             selection: None,
             layout: None,
+            scroll_offset: 0,
         }
     }
 
     fn handle_key(&mut self, event: &KeyDownEvent) {
+        if event.keystroke.modifiers.shift && !self.grid.alt_active() {
+            let page = self.grid.rows.max(1);
+            match event.keystroke.key.as_str() {
+                "pageup" => {
+                    self.scroll_lines(page as isize);
+                    return;
+                }
+                "pagedown" => {
+                    self.scroll_lines(-(page as isize));
+                    return;
+                }
+                _ => {}
+            }
+        }
         if let Some(bytes) = translate_key(event, self.grid.application_cursor_keys) {
+            // Typing snaps the view back to the live screen.
+            self.scroll_offset = 0;
             self.backend.write_input(&bytes);
         }
+    }
+
+    /// Scroll the view through history: positive is up (older), negative is
+    /// down (toward the live screen).
+    fn scroll_lines(&mut self, delta: isize) {
+        self.scroll_offset = self
+            .scroll_offset
+            .saturating_add_signed(delta)
+            .min(self.grid.scrollback_len());
+    }
+
+    /// Line id (see [`Grid::line_cells`]) shown at a visual row under the
+    /// current scroll offset.
+    fn line_at(&self, visual_row: usize) -> usize {
+        (self.grid.screen_top_line() + visual_row).saturating_sub(self.scroll_offset)
     }
 
     fn resize(&mut self, rows: usize, cols: usize, cx: &mut Context<Self>) {
@@ -183,6 +229,9 @@ impl TerminalView {
         if self.grid.mouse_mode == 0 {
             return;
         }
+        // `row` is a visual row; when scrolled back the live screen sits
+        // `scroll_offset` rows lower, and scrollback rows clamp to the top.
+        let row = row.saturating_sub(self.scroll_offset);
         let code = button + if drag { 32 } else { 0 };
         let bytes = if self.grid.mouse_sgr {
             format!(
@@ -205,16 +254,23 @@ impl TerminalView {
     fn selected_text(&self) -> Option<String> {
         let (start, end) = self.selection.as_ref()?.range();
         let mut out = String::new();
-        for row in start.0..=end.0.min(self.grid.rows - 1) {
-            let from = if row == start.0 { start.1 } else { 0 };
-            let to = if row == end.0 { end.1 } else { self.grid.cols - 1 };
-            let mut line: String = (from..=to.min(self.grid.cols - 1))
-                .map(|col| self.grid.cell(row, col).ch())
+        for line_id in start.0..=end.0 {
+            let Some(cells) = self.grid.line_cells(line_id) else {
+                continue;
+            };
+            let last = cells.len().saturating_sub(1);
+            let from = if line_id == start.0 { start.1 } else { 0 };
+            let to = if line_id == end.0 { end.1.min(last) } else { last };
+            let mut line: String = cells
+                .get(from..=to)
+                .unwrap_or_default()
+                .iter()
+                .map(|cell| cell.ch())
                 .collect();
             while line.ends_with(' ') {
                 line.pop();
             }
-            if row != start.0 {
+            if line_id != start.0 {
                 out.push('\n');
             }
             out.push_str(&line);
@@ -223,6 +279,7 @@ impl TerminalView {
     }
 
     fn paste(&mut self, text: &str) {
+        self.scroll_offset = 0;
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         if self.grid.bracketed_paste {
             let mut bytes = b"\x1b[200~".to_vec();
@@ -251,6 +308,13 @@ impl Render for TerminalView {
         let font_size = settings.font_size.clamp(8.0, 32.0);
         let line_height = font_size * 1.43;
         let closed_message = self.closed_message.clone();
+
+        // Full-screen TUIs own the whole screen — no history to show there.
+        if self.grid.alt_active() {
+            self.scroll_offset = 0;
+        }
+        self.scroll_offset = self.scroll_offset.min(self.grid.scrollback_len());
+        let scroll_offset = self.scroll_offset;
 
         // Window-opacity treatment for the terminal's dark surfaces (main
         // background and monitor bar): in dark mode let the window's
@@ -319,6 +383,7 @@ impl Render for TerminalView {
                     let selection = view.selection.map(|s| s.range());
                     build_paint(
                         &view.grid,
+                        view.scroll_offset.min(view.grid.scrollback_len()),
                         selection,
                         bounds,
                         char_width,
@@ -346,10 +411,12 @@ impl Render for TerminalView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SendTab, _window, cx| {
+                view.scroll_offset = 0;
                 view.backend.write_input(b"\t");
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SendTabPrev, _window, cx| {
+                view.scroll_offset = 0;
                 view.backend.write_input(b"\x1b[Z");
                 cx.notify();
             }))
@@ -375,10 +442,13 @@ impl Render for TerminalView {
                         view.selection = None;
                     } else {
                         view.selection =
-                            view.cell_at(event.position, false).map(|cell| Selection {
-                                anchor: cell,
-                                head: cell,
-                                dragging: true,
+                            view.cell_at(event.position, false).map(|(row, col)| {
+                                let cell = (view.line_at(row), col);
+                                Selection {
+                                    anchor: cell,
+                                    head: cell,
+                                    dragging: true,
+                                }
                             });
                     }
                     cx.notify();
@@ -445,7 +515,9 @@ impl Render for TerminalView {
             )
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _window, cx| {
                 if event.pressed_button == Some(MouseButton::Left) {
-                    let cell = view.cell_at(event.position, true);
+                    let cell = view
+                        .cell_at(event.position, true)
+                        .map(|(row, col)| (view.line_at(row), col));
                     if let (Some(cell), Some(selection)) = (cell, view.selection.as_mut()) {
                         if selection.dragging && selection.head != cell {
                             selection.head = cell;
@@ -492,6 +564,9 @@ impl Render for TerminalView {
                     for _ in 0..lines {
                         view.backend.write_input(seq);
                     }
+                } else {
+                    let lines = lines as isize;
+                    view.scroll_lines(if up { lines } else { -lines });
                 }
                 cx.notify();
             }))
@@ -517,7 +592,27 @@ impl Render for TerminalView {
                     .p_2()
                     .flex()
                     .flex_col()
+                    .relative()
                     .child(canvas(measure, paint).w_full().flex_1().min_h_0())
+                    .when(scroll_offset > 0, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(px(6.))
+                                .right(px(14.))
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .bg(hsla(0., 0., 0.16, 0.9))
+                                .text_xs()
+                                .text_color(hsla(0., 0., 0.7, 1.))
+                                .child(if scroll_offset == 1 {
+                                    "1 line up".to_string()
+                                } else {
+                                    format!("{scroll_offset} lines up")
+                                }),
+                        )
+                    })
                     .when_some(closed_message, |this, msg| {
                         this.child(
                             div()
@@ -793,6 +888,7 @@ fn fmt_rate(bytes_per_sec: f64) -> String {
 
 fn build_paint(
     grid: &Grid,
+    scroll_offset: usize,
     selection: Option<((usize, usize), (usize, usize))>,
     bounds: Bounds<Pixels>,
     char_width: Pixels,
@@ -804,19 +900,28 @@ fn build_paint(
     let mut quads = Vec::new();
     let mut lines = Vec::new();
 
+    // Cursor and selection live in line-id space; scrolling up simply moves
+    // the cursor's line below the visible window.
+    let top_line = grid.screen_top_line().saturating_sub(scroll_offset);
     let cursor = grid
         .cursor_visible
-        .then_some((grid.cursor_row, grid.cursor_col));
+        .then_some((grid.screen_top_line() + grid.cursor_row, grid.cursor_col));
 
     for row in 0..grid.rows {
+        let line_id = top_line + row;
+        let Some(cells) = grid.line_cells(line_id) else {
+            continue;
+        };
         let y = bounds.origin.y + line_height * row as f32;
+        // Scrollback lines keep their original width; pad short ones.
+        let cell = |col: usize| -> Cell { cells.get(col).copied().unwrap_or(Cell::BLANK) };
 
         let cell_bg = |col: usize| -> Option<Hsla> {
-            let cell = grid.cell(row, col);
-            if cursor == Some((row, col)) {
+            let cell = cell(col);
+            if cursor == Some((line_id, col)) {
                 Some(cell.fg.as_fg())
             } else if selection
-                .is_some_and(|(start, end)| (row, col) >= start && (row, col) <= end)
+                .is_some_and(|(start, end)| (line_id, col) >= start && (line_id, col) <= end)
             {
                 Some(selection_bg())
             } else {
@@ -887,8 +992,8 @@ fn build_paint(
         };
 
         for col in 0..grid.cols {
-            let cell = grid.cell(row, col);
-            let is_cursor = cursor == Some((row, col));
+            let cell = cell(col);
+            let is_cursor = cursor == Some((line_id, col));
             let mut color = if is_cursor {
                 cell.bg.as_bg().unwrap_or(cursor_fg())
             } else {
