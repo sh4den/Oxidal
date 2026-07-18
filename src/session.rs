@@ -6,7 +6,6 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// The kind of a session, mirroring MobaXterm's session categories.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionKind {
     Ssh,
@@ -45,7 +44,6 @@ impl SessionKind {
     }
 }
 
-/// A saved connection entry shown in the sessions sidebar.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: Uuid,
@@ -57,28 +55,18 @@ pub struct Session {
     pub port: u16,
     #[serde(default)]
     pub username: String,
-    /// Never written to `sessions.json`. Persisted separately in the OS
-    /// credential vault (see `credentials`) and re-attached on load. Held
-    /// as a [`SecretString`] so it's redacted from `Debug` output and
-    /// zeroized in memory on drop.
     #[serde(skip)]
     pub password: SecretString,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
-    /// Path to a private key file for SSH public-key authentication. Tried
-    /// before falling back to password auth. Optional.
     #[serde(default)]
     pub private_key_path: Option<String>,
-    /// The folder this session is filed under in the sidebar, if any.
     #[serde(default)]
     pub folder_id: Option<Uuid>,
-    /// Whether the SFTP explorer for this session shows dotfiles. Toggled
-    /// from the explorer's "…" menu and remembered per session.
     #[serde(default)]
     pub show_hidden_files: bool,
 }
 
-/// A group of sessions shown together in the sidebar.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionFolder {
     pub id: Uuid,
@@ -115,7 +103,6 @@ impl Session {
         }
     }
 
-    /// A short human-readable summary shown under the session name.
     pub fn detail(&self) -> String {
         match self.kind {
             SessionKind::Local => "Local shell".to_string(),

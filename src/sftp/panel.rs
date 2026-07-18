@@ -3,22 +3,24 @@ use std::hash::{Hash as _, Hasher as _};
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::FluentBuilder as _, px, Anchor, AnyElement, AppContext as _, ClickEvent, Context,
-    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    Anchor, AnyElement, AppContext as _, ClickEvent, Context, FontWeight, InteractiveElement as _,
+    IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
+    h_flex,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     progress::Progress,
-    h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    v_flex,
 };
 
 use super::{
-    format_modified, format_permissions, format_size, join_remote, parent_remote, safe_local_name,
-    SftpEntry, SftpEvent,
+    SftpEntry, SftpEvent, format_modified, format_permissions, format_size, join_remote,
+    parent_remote, safe_local_name,
 };
 
 struct TransferState {
@@ -36,7 +38,6 @@ impl TransferState {
     }
 }
 
-/// A MobaXterm-style remote file browser backed by its own SFTP connection.
 pub struct SftpPanel {
     client: super::SftpClient,
     current_path: String,
@@ -47,12 +48,8 @@ pub struct SftpPanel {
     closed: Option<String>,
     transfer: Option<TransferState>,
     show_hidden: bool,
-    /// Reports toggles of `show_hidden` so the owner can persist them.
     on_show_hidden_changed: Box<dyn Fn(bool, &mut gpui::App)>,
-    /// Editable path bar; Enter navigates to the typed path.
     path_input: gpui::Entity<InputState>,
-    /// The last `current_path` written into `path_input`, so the input is
-    /// only rewritten when a navigation actually changes the path.
     synced_path: String,
 }
 
@@ -68,7 +65,14 @@ impl SftpPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let client = super::spawn(host, port, username, password, private_key_path, ".".to_string());
+        let client = super::spawn(
+            host,
+            port,
+            username,
+            password,
+            private_key_path,
+            ".".to_string(),
+        );
 
         let path_input = cx.new(|cx| InputState::new(window, cx).placeholder("/"));
         cx.subscribe(
@@ -85,84 +89,87 @@ impl SftpPanel {
         .detach();
 
         let events = client.events.clone();
-        cx.spawn(async move |this, cx| loop {
-            match events.recv().await {
-                Ok(SftpEvent::Listing { path, entries }) => {
-                    if this
-                        .update(cx, |panel, cx| {
-                            panel.current_path = path;
-                            panel.entries = entries;
-                            panel.loading = false;
-                            panel.error = None;
+        cx.spawn(async move |this, cx| {
+            loop {
+                match events.recv().await {
+                    Ok(SftpEvent::Listing { path, entries }) => {
+                        if this
+                            .update(cx, |panel, cx| {
+                                panel.current_path = path;
+                                panel.entries = entries;
+                                panel.loading = false;
+                                panel.error = None;
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(SftpEvent::Error(message)) => {
+                        if this
+                            .update(cx, |panel, cx| {
+                                panel.loading = false;
+                                panel.error = Some(message);
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(SftpEvent::TransferStarted { label, total }) => {
+                        if this
+                            .update(cx, |panel, cx| {
+                                panel.transfer = Some(TransferState {
+                                    label,
+                                    transferred: 0,
+                                    total,
+                                });
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(SftpEvent::TransferProgress { transferred }) => {
+                        if this
+                            .update(cx, |panel, cx| {
+                                if let Some(transfer) = panel.transfer.as_mut() {
+                                    transfer.transferred = transferred;
+                                }
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(SftpEvent::TransferFinished { error }) => {
+                        if this
+                            .update(cx, |panel, cx| {
+                                panel.transfer = None;
+                                if let Some(err) = error {
+                                    panel.error = Some(err);
+                                }
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(SftpEvent::Closed(message)) => {
+                        let _ = this.update(cx, |panel, cx| {
+                            panel.closed =
+                                Some(message.unwrap_or_else(|| "Connection closed".to_string()));
                             cx.notify();
-                        })
-                        .is_err()
-                    {
+                        });
                         break;
                     }
+                    Err(_) => break,
                 }
-                Ok(SftpEvent::Error(message)) => {
-                    if this
-                        .update(cx, |panel, cx| {
-                            panel.loading = false;
-                            panel.error = Some(message);
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Ok(SftpEvent::TransferStarted { label, total }) => {
-                    if this
-                        .update(cx, |panel, cx| {
-                            panel.transfer = Some(TransferState {
-                                label,
-                                transferred: 0,
-                                total,
-                            });
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Ok(SftpEvent::TransferProgress { transferred }) => {
-                    if this
-                        .update(cx, |panel, cx| {
-                            if let Some(transfer) = panel.transfer.as_mut() {
-                                transfer.transferred = transferred;
-                            }
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Ok(SftpEvent::TransferFinished { error }) => {
-                    if this
-                        .update(cx, |panel, cx| {
-                            panel.transfer = None;
-                            if let Some(err) = error {
-                                panel.error = Some(err);
-                            }
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Ok(SftpEvent::Closed(message)) => {
-                    let _ = this.update(cx, |panel, cx| {
-                        panel.closed = Some(message.unwrap_or_else(|| "Connection closed".to_string()));
-                        cx.notify();
-                    });
-                    break;
-                }
-                Err(_) => break,
             }
         })
         .detach();
@@ -212,10 +219,6 @@ impl SftpPanel {
         }
     }
 
-    /// Fetch `entry` into a per-file temp folder, then launch it with the OS
-    /// default application for its extension. The folder is derived from the
-    /// remote path so re-opening the same file overwrites the previous copy
-    /// instead of piling up duplicates.
     fn open_file(&mut self, entry: &SftpEntry, cx: &mut Context<Self>) {
         let mut hasher = DefaultHasher::new();
         entry.path.hash(&mut hasher);
@@ -244,9 +247,13 @@ impl SftpPanel {
                 .child(v_flex().gap_2().w(px(320.)).child(Input::new(&name)))
                 .footer(
                     DialogFooter::new()
-                        .child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }))
+                        .child(
+                            Button::new("cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
                         .child(Button::new("create").primary().label("Create").on_click(
                             move |_, window, cx| {
                                 let value = name.read(cx).value().to_string();
@@ -276,9 +283,13 @@ impl SftpPanel {
                 .child(v_flex().gap_2().w(px(320.)).child(Input::new(&name)))
                 .footer(
                     DialogFooter::new()
-                        .child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }))
+                        .child(
+                            Button::new("cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
                         .child(Button::new("rename").primary().label("Rename").on_click(
                             move |_, window, cx| {
                                 let value = name.read(cx).value().to_string();
@@ -308,9 +319,13 @@ impl SftpPanel {
                 ))
                 .footer(
                     DialogFooter::new()
-                        .child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }))
+                        .child(
+                            Button::new("cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
                         .child(Button::new("delete").danger().label("Delete").on_click(
                             move |_, window, cx| {
                                 if entry.is_dir {
@@ -432,7 +447,6 @@ impl SftpPanel {
             .into_any_element()
     }
 
-    /// Column headers matching `render_row`'s layout.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
             .items_center()
@@ -446,16 +460,22 @@ impl SftpPanel {
             .text_color(cx.theme().muted_foreground)
             .whitespace_nowrap()
             .child(div().w(px(16.)).flex_none())
+            .child(div().flex_1().min_w_0().overflow_hidden().child("Name"))
+            .child(div().w(px(56.)).flex_none().text_right().child("Size"))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
+                    .w(px(100.))
+                    .flex_none()
                     .overflow_hidden()
-                    .child("Name"),
+                    .child("Modified"),
             )
-            .child(div().w(px(56.)).flex_none().text_right().child("Size"))
-            .child(div().w(px(100.)).flex_none().overflow_hidden().child("Modified"))
-            .child(div().w(px(64.)).flex_none().overflow_hidden().child("Access"))
+            .child(
+                div()
+                    .w(px(64.))
+                    .flex_none()
+                    .overflow_hidden()
+                    .child("Access"),
+            )
             .into_any_element()
     }
 
@@ -546,27 +566,26 @@ impl SftpPanel {
                 let mut menu = menu;
                 if !is_dir {
                     let open_entry = entry.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new("Open").on_click(window.listener_for(
-                            &view,
-                            move |panel, _, _, cx| panel.open_file(&open_entry, cx),
-                        )),
-                    );
+                    menu = menu.item(PopupMenuItem::new("Open").on_click(
+                        window.listener_for(&view, move |panel, _, _, cx| {
+                            panel.open_file(&open_entry, cx)
+                        }),
+                    ));
                     let entry = entry.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new("Download").on_click(window.listener_for(
-                            &view,
-                            move |panel, _, _, cx| panel.download(entry.clone(), cx),
-                        )),
-                    );
+                    menu = menu.item(PopupMenuItem::new("Download").on_click(
+                        window.listener_for(&view, move |panel, _, _, cx| {
+                            panel.download(entry.clone(), cx)
+                        }),
+                    ));
                     menu = menu.separator();
                 }
-                menu = menu.item(
-                    PopupMenuItem::new("Rename").on_click(window.listener_for(&view, {
+                menu = menu.item(PopupMenuItem::new("Rename").on_click(window.listener_for(
+                    &view,
+                    {
                         let entry = entry.clone();
                         move |panel, _, window, cx| panel.rename_dialog(entry.clone(), window, cx)
-                    })),
-                );
+                    },
+                )));
                 menu.item(
                     PopupMenuItem::new("Delete").on_click(window.listener_for(&view, {
                         move |panel, _, window, cx| panel.delete_dialog(entry.clone(), window, cx)
@@ -597,8 +616,6 @@ impl Render for SftpPanel {
                 .into_any_element();
         }
 
-        // Reflect the latest navigation in the path bar, leaving it alone
-        // otherwise so typing isn't clobbered by re-renders.
         if self.synced_path != self.current_path {
             self.synced_path = self.current_path.clone();
             let value = self.current_path.clone();
@@ -651,40 +668,35 @@ impl Render for SftpPanel {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(
-                        v_flex().children(rows).when(no_rows, |this| {
-                            this.child(
-                                div()
-                                    .p_4()
-                                    .text_sm()
-                                    .text_center()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if self.loading {
-                                        "Loading..."
-                                    } else if self.entries.is_empty() {
-                                        "Empty directory"
-                                    } else {
-                                        "Only hidden files here"
-                                    }),
-                            )
-                        }),
-                    )
-                    .context_menu(move |menu, window, _cx| {
-                        menu.item(
-                            PopupMenuItem::new("New Folder").on_click(window.listener_for(
-                                &view,
-                                |panel, _, window, cx| panel.new_folder_dialog(window, cx),
-                            )),
+                    .child(v_flex().children(rows).when(no_rows, |this| {
+                        this.child(
+                            div()
+                                .p_4()
+                                .text_sm()
+                                .text_center()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(if self.loading {
+                                    "Loading..."
+                                } else if self.entries.is_empty() {
+                                    "Empty directory"
+                                } else {
+                                    "Only hidden files here"
+                                }),
                         )
-                        .item(PopupMenuItem::new("Upload").on_click(window.listener_for(
-                            &view,
-                            |panel, _, _, cx| panel.upload(cx),
-                        )))
+                    }))
+                    .context_menu(move |menu, window, _cx| {
+                        menu.item(PopupMenuItem::new("New Folder").on_click(
+                            window.listener_for(&view, |panel, _, window, cx| {
+                                panel.new_folder_dialog(window, cx)
+                            }),
+                        ))
+                        .item(PopupMenuItem::new("Upload").on_click(
+                            window.listener_for(&view, |panel, _, _, cx| panel.upload(cx)),
+                        ))
                         .separator()
-                        .item(PopupMenuItem::new("Refresh").on_click(window.listener_for(
-                            &view,
-                            |panel, _, _, cx| panel.refresh(cx),
-                        )))
+                        .item(PopupMenuItem::new("Refresh").on_click(
+                            window.listener_for(&view, |panel, _, _, cx| panel.refresh(cx)),
+                        ))
                     }),
             )
             .when_some(self.transfer.as_ref(), |this, transfer| {
@@ -702,7 +714,11 @@ impl Render for SftpPanel {
                                 .child(SharedString::from(transfer.label.clone()))
                                 .child(format!("{:.0}%", transfer.percent())),
                         )
-                        .child(Progress::new("sftp-transfer").value(transfer.percent()).small()),
+                        .child(
+                            Progress::new("sftp-transfer")
+                                .value(transfer.percent())
+                                .small(),
+                        ),
                 )
             })
             .into_any_element()

@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::sync::Mutex;
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use super::backend::{Backend, BackendEvent};
 
@@ -13,7 +13,6 @@ fn default_shell() -> String {
     }
 }
 
-/// Spawn the user's default shell inside a local pseudo-terminal.
 pub fn spawn(rows: u16, cols: u16) -> anyhow::Result<Backend> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {

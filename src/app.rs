@@ -27,8 +27,6 @@ const TERM_COLS: usize = 110;
 
 enum TabContent {
     Terminal(Entity<TerminalView>),
-    /// An SSH session pairs a terminal with a MobaXterm-style SFTP file
-    /// browser docked on the left, each over its own connection.
     SshSession {
         sftp: Entity<SftpPanel>,
         terminal: Entity<TerminalView>,
@@ -45,14 +43,12 @@ struct OpenTab {
     content: TabContent,
 }
 
-/// Which content the left sidebar panel currently shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SidebarMode {
     Sessions,
     Explorer,
 }
 
-/// Root application view: title bar, sessions sidebar, tabbed workspace and status bar.
 pub struct OxidalApp {
     sessions: Vec<Session>,
     folders: Vec<SessionFolder>,
@@ -99,7 +95,6 @@ impl OxidalApp {
     pub fn update_session(&mut self, updated: Session, cx: &mut Context<Self>) {
         if let Some(existing) = self.sessions.iter_mut().find(|s| s.id == updated.id) {
             let mut updated = updated;
-            // Not editable in the session dialog; keep the stored value.
             updated.show_hidden_files = existing.show_hidden_files;
             crate::credentials::store_password(updated.id, &updated.password);
             *existing = updated;
@@ -108,7 +103,6 @@ impl OxidalApp {
         }
     }
 
-    /// Persist the explorer's "show hidden files" toggle for a session.
     fn set_session_show_hidden(&mut self, id: Uuid, value: bool) {
         if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
             session.show_hidden_files = value;
@@ -151,8 +145,6 @@ impl OxidalApp {
     fn delete_folder(&mut self, id: Uuid, cx: &mut Context<Self>) {
         self.folders.retain(|f| f.id != id);
         session::save_folders(&self.folders);
-        // Sessions inside the deleted folder move back to the root level
-        // rather than being deleted along with it.
         for session in self.sessions.iter_mut() {
             if session.folder_id == Some(id) {
                 session.folder_id = None;
@@ -864,9 +856,6 @@ impl Render for OxidalApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
-            // No background here: gpui-component's Root already paints
-            // `tokens.background` across the window, and repainting it would
-            // stack a second alpha layer in glass mode.
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
             .child({
@@ -877,8 +866,6 @@ impl Render for OxidalApp {
                     .min_h_0()
                     .child(self.render_sidebar_rail(cx));
                 if explorer_open {
-                    // The explorer sits behind a drag handle so the file
-                    // list can be widened MobaXterm-style.
                     content = content.child(
                         div().flex_1().min_w_0().h_full().child(
                             h_resizable("explorer-split")
