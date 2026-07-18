@@ -61,7 +61,32 @@ pub fn apply_and_restart(downloaded: &Path) -> anyhow::Result<()> {
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    std::process::Command::new(&exe).spawn()?;
+    relaunch(&exe)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn relaunch(exe: &Path) -> anyhow::Result<()> {
+    let bundle = exe
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"));
+    match bundle {
+        Some(bundle) => {
+            std::process::Command::new("open")
+                .arg("-n")
+                .arg(bundle)
+                .spawn()?;
+        }
+        None => {
+            std::process::Command::new(exe).spawn()?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn relaunch(exe: &Path) -> anyhow::Result<()> {
+    std::process::Command::new(exe).spawn()?;
     Ok(())
 }
 
@@ -124,21 +149,36 @@ fn pick_asset(assets: &[Asset]) -> Option<&Asset> {
         _ => &["linux"],
     };
     let arch_keys: &[&str] = match std::env::consts::ARCH {
-        "x86_64" => &["x86_64", "amd64", "x64"],
-        "aarch64" => &["aarch64", "arm64"],
+        "x86_64" => &["x86_64", "amd64", "x64", "intel"],
+        "aarch64" => &["aarch64", "arm64", "silicon"],
         _ => &[],
     };
+    let skip_keys: &[&str] = &[
+        ".zip",
+        ".tar",
+        ".dmg",
+        ".deb",
+        ".msi",
+        ".appimage",
+        "setup",
+        "installer",
+    ];
     let matches_any = |name: &str, keys: &[&str]| {
         let name = name.to_lowercase();
         keys.iter().any(|key| name.contains(key))
     };
 
-    let mut candidates: Vec<&Asset> = assets
+    let updatable: Vec<&Asset> = assets
+        .iter()
+        .filter(|asset| !matches_any(&asset.name, skip_keys))
+        .collect();
+    let mut candidates: Vec<&Asset> = updatable
         .iter()
         .filter(|asset| matches_any(&asset.name, os_keys))
+        .copied()
         .collect();
-    if candidates.is_empty() && assets.len() == 1 {
-        candidates.push(&assets[0]);
+    if candidates.is_empty() && updatable.len() == 1 {
+        candidates.push(updatable[0]);
     }
     candidates
         .iter()

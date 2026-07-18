@@ -8,6 +8,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
     h_flex,
+    notification::Notification,
     resizable::{h_resizable, resizable_panel},
     tab::{Tab, TabBar},
     v_flex,
@@ -119,12 +120,15 @@ impl OxidalApp {
         .detach();
     }
 
-    fn restart_to_update(&mut self, cx: &mut Context<Self>) {
+    fn restart_to_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let UpdateState::Ready(path) = &self.update_state else {
             return;
         };
-        if crate::update::apply_and_restart(path).is_ok() {
-            cx.quit();
+        match crate::update::apply_and_restart(path) {
+            Ok(()) => cx.quit(),
+            Err(e) => {
+                window.push_notification(Notification::error(format!("Update failed: {e}")), cx);
+            }
         }
     }
 
@@ -385,8 +389,8 @@ impl OxidalApp {
                     .small()
                     .icon(IconName::Redo2)
                     .label("Restart to update")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.restart_to_update(cx);
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.restart_to_update(window, cx);
                     })),
             ),
         };
