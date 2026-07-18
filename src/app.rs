@@ -8,11 +8,13 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
     h_flex,
+    notification::Notification,
     resizable::{h_resizable, resizable_panel},
     tab::{Tab, TabBar},
     v_flex,
 };
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use uuid::Uuid;
 
@@ -49,6 +51,13 @@ enum SidebarMode {
     Explorer,
 }
 
+enum UpdateState {
+    Idle,
+    Available(crate::update::AvailableUpdate),
+    Downloading(crate::update::AvailableUpdate),
+    Ready(PathBuf),
+}
+
 pub struct OxidalApp {
     sessions: Vec<Session>,
     folders: Vec<SessionFolder>,
@@ -58,10 +67,22 @@ pub struct OxidalApp {
     active_tab: Option<usize>,
     sidebar_mode: SidebarMode,
     sidebar_collapsed: bool,
+    update_state: UpdateState,
 }
 
 impl OxidalApp {
-    pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let updates = crate::update::check();
+        cx.spawn(async move |this, cx| {
+            if let Ok(found) = updates.recv().await {
+                let _ = this.update(cx, |app, cx| {
+                    app.update_state = UpdateState::Available(found);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+
         Self {
             sessions: session::load_sessions(),
             folders: session::load_folders(),
@@ -71,6 +92,43 @@ impl OxidalApp {
             active_tab: None,
             sidebar_mode: SidebarMode::Sessions,
             sidebar_collapsed: false,
+            update_state: UpdateState::Idle,
+        }
+    }
+
+    fn start_update_download(&mut self, cx: &mut Context<Self>) {
+        let UpdateState::Available(found) = &self.update_state else {
+            return;
+        };
+        let found = found.clone();
+        let download = crate::update::download(found.clone());
+        self.update_state = UpdateState::Downloading(found);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            if let Ok(result) = download.recv().await {
+                let _ = this.update(cx, |app, cx| {
+                    let previous = std::mem::replace(&mut app.update_state, UpdateState::Idle);
+                    app.update_state = match (result, previous) {
+                        (Ok(path), _) => UpdateState::Ready(path),
+                        (Err(_), UpdateState::Downloading(found)) => UpdateState::Available(found),
+                        (Err(_), other) => other,
+                    };
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn restart_to_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let UpdateState::Ready(path) = &self.update_state else {
+            return;
+        };
+        match crate::update::apply_and_restart(path) {
+            Ok(()) => cx.quit(),
+            Err(e) => {
+                window.push_notification(Notification::error(format!("Update failed: {e}")), cx);
+            }
         }
     }
 
@@ -266,6 +324,10 @@ impl OxidalApp {
             ),
         };
 
+        let has_explorer = matches!(
+            content,
+            TabContent::SshSession { .. } | TabContent::Sftp(_)
+        );
         self.tabs.push(OpenTab {
             session_id: Some(id),
             title: SharedString::from(target.name.clone()),
@@ -273,6 +335,10 @@ impl OxidalApp {
             content,
         });
         self.active_tab = Some(self.tabs.len() - 1);
+        if has_explorer {
+            self.sidebar_mode = SidebarMode::Explorer;
+            self.sidebar_collapsed = false;
+        }
         cx.notify();
     }
 
@@ -297,6 +363,38 @@ impl OxidalApp {
     }
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let update_button = match &self.update_state {
+            UpdateState::Idle => None,
+            UpdateState::Available(found) => Some(
+                Button::new("update")
+                    .primary()
+                    .small()
+                    .icon(IconName::ArrowDown)
+                    .label("Download update")
+                    .tooltip(format!("Version {}", found.version))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.start_update_download(cx);
+                    })),
+            ),
+            UpdateState::Downloading(_) => Some(
+                Button::new("update")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Loader)
+                    .label("Downloading update"),
+            ),
+            UpdateState::Ready(_) => Some(
+                Button::new("update")
+                    .primary()
+                    .small()
+                    .icon(IconName::Redo2)
+                    .label("Restart to update")
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.restart_to_update(window, cx);
+                    })),
+            ),
+        };
+
         TitleBar::new()
             .child(
                 h_flex()
@@ -310,16 +408,16 @@ impl OxidalApp {
                     .items_center()
                     .justify_end()
                     .gap_1()
+                    .pr_2()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .when_some(update_button, |this, button| this.child(button))
                     .child(
-                        Button::new("new-session")
+                        Button::new("about")
                             .ghost()
                             .small()
-                            .icon(IconName::Plus)
-                            .label("Session")
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                let folders = view.folders.clone();
-                                session_dialog::open_new_session_dialog(folders, window, cx);
+                            .icon(IconName::Info)
+                            .on_click(cx.listener(|_view, _, window, cx| {
+                                open_about_dialog(window, cx);
                             })),
                     )
                     .child(
@@ -332,7 +430,6 @@ impl OxidalApp {
                             })),
                     ),
             )
-            .pr_2()
     }
 
     fn render_session_row(
@@ -831,25 +928,6 @@ impl OxidalApp {
                 )
             })
     }
-
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .items_center()
-            .justify_between()
-            .h(px(24.))
-            .px_3()
-            .bg(cx.theme().sidebar)
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .child(format!(
-                "{} sessions · {} open",
-                self.sessions.len(),
-                self.tabs.len()
-            ))
-            .child(div().child("Oxidal 0.3."))
-    }
 }
 
 impl Render for OxidalApp {
@@ -886,9 +964,101 @@ impl Render for OxidalApp {
                 }
                 content
             })
-            .child(self.render_status_bar(cx))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
     }
+}
+
+fn open_about_dialog(window: &mut Window, cx: &mut gpui::App) {
+    window.open_dialog(cx, |dialog, _window, cx| {
+        let muted = cx.theme().muted_foreground;
+        dialog
+            .title("About")
+            .child(
+                v_flex()
+                    .w(px(380.))
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(Icon::new(IconName::SquareTerminal).small())
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child("Oxidal"))
+                            .child(
+                                div()
+                                    .text_color(muted)
+                                    .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_full()
+                                    .bg(cx.theme().muted)
+                                    .text_xs()
+                                    .child("Community Edition"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .child("Cross-platform SSH, SFTP and serial terminal client."),
+                    )
+                    .child(
+                        h_flex()
+                            .id("about-repo")
+                            .items_center()
+                            .gap_2()
+                            .cursor_pointer()
+                            .text_sm()
+                            .text_color(cx.theme().primary)
+                            .child(Icon::new(IconName::Github).xsmall())
+                            .child(div().underline().child("github.com/sh4den/Oxidal"))
+                            .on_click(|_, _, _| {
+                                let _ = open::that_detached("https://github.com/sh4den/Oxidal");
+                            }),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Core maintainers"),
+                            )
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child(Icon::new(IconName::User).xsmall())
+                                    .child("𝑺𝒉𝒂𝒅𝒆𝒏")
+                                    .child(
+                                        div()
+                                            .id("about-maintainer")
+                                            .cursor_pointer()
+                                            .underline()
+                                            .text_color(cx.theme().primary)
+                                            .child("@sh4den")
+                                            .on_click(|_, _, _| {
+                                                let _ = open::that_detached(
+                                                    "https://github.com/sh4den",
+                                                );
+                                            }),
+                                    ),
+                            ),
+                    ),
+            )
+            .footer(
+                DialogFooter::new().child(Button::new("close-about").label("Close").on_click(
+                    |_, window, cx| {
+                        window.close_dialog(cx);
+                    },
+                )),
+            )
+    });
 }

@@ -89,23 +89,53 @@ jobs:
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
-          tar -czf "oxidal-v${{ needs.version.outputs.version }}-${{ matrix.name }}.tar.gz" \
+          mkdir -p dist
+          tar -czf "dist/oxidal-v${{ needs.version.outputs.version }}-${{ matrix.name }}.tar.gz" \
             -C "target/${{ matrix.target }}/release" Oxidal
+          cp "target/${{ matrix.target }}/release/Oxidal" "dist/Oxidal-${{ matrix.name }}"
 
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path "target/${{ matrix.target }}/release/Oxidal.exe" `
-            -DestinationPath "oxidal-v${{ needs.version.outputs.version }}-${{ matrix.name }}.zip"
+            -DestinationPath "dist/oxidal-v${{ needs.version.outputs.version }}-${{ matrix.name }}.zip"
+          Copy-Item "target/${{ matrix.target }}/release/Oxidal.exe" "dist/Oxidal-${{ matrix.name }}.exe"
+
+      - name: Build installer (linux)
+        if: runner.os == 'Linux'
+        run: |
+          arch="${{ matrix.name }}"
+          bash packaging/linux/make-deb.sh "${{ needs.version.outputs.version }}" \
+            "target/${{ matrix.target }}/release/Oxidal" "${arch#linux-}" dist
+
+      - name: Build installer (macos)
+        if: runner.os == 'macOS'
+        run: |
+          bash packaging/macos/make-dmg.sh "${{ needs.version.outputs.version }}" \
+            "target/${{ matrix.target }}/release/Oxidal" "${{ matrix.name }}" dist
+
+      - name: Build installer (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          $bin = (Resolve-Path "target/${{ matrix.target }}/release/Oxidal.exe").Path
+          $out = Join-Path (Get-Location) "dist"
+          $arch = "${{ matrix.name }}".Replace("windows-", "")
+          & $iscc "/DAppVersion=${{ needs.version.outputs.version }}" "/DArch=$arch" `
+            "/DBinPath=$bin" "/O$out" packaging/windows/oxidal.iss
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: oxidal-${{ matrix.name }}
-          path: |
-            *.tar.gz
-            *.zip
+          path: dist/*
           if-no-files-found: error
 
   release:
@@ -127,4 +157,4 @@ jobs:
           generate_release_notes: true
           files: dist/*
           body: |
-            Downloads for Windows (x86_64, arm64), Linux (amd64, arm64) and macOS (Intel, Apple Silicon) are attached below.
+            Installers (Windows setup, macOS dmg, Debian/Ubuntu deb) and portable builds for Windows (x86_64, arm64), Linux (amd64, arm64) and macOS (Intel, Apple Silicon) are attached below.
