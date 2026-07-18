@@ -1,20 +1,15 @@
 use russh::{Channel, ChannelMsg};
+use secrecy::SecretString;
 
 use super::backend::{Backend, BackendEvent};
 use super::stats::{self, RemoteStats};
 use crate::ssh_client;
 
-/// Connect to an SSH server and start an interactive shell over a PTY channel.
-/// The connection runs on a dedicated background thread with its own tokio
-/// runtime; connection failures surface as `BackendEvent::Closed(Some(..))`.
-///
-/// If `private_key_path` is set, public-key authentication is tried first;
-/// otherwise (or if that fails) password authentication is used.
 pub fn spawn(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     rows: u16,
     cols: u16,
@@ -59,7 +54,7 @@ async fn run(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     rows: u16,
     cols: u16,
@@ -130,9 +125,7 @@ async fn run(
     Ok(())
 }
 
-async fn wait_monitor(
-    monitor: &mut Option<Channel<russh::client::Msg>>,
-) -> Option<ChannelMsg> {
+async fn wait_monitor(monitor: &mut Option<Channel<russh::client::Msg>>) -> Option<ChannelMsg> {
     match monitor {
         Some(channel) => channel.wait().await,
         None => std::future::pending().await,

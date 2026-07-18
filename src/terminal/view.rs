@@ -2,23 +2,26 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use gpui::{
-    actions, canvas, div, fill, hsla, point, prelude::FluentBuilder as _, px, relative, size,
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, Div, FocusHandle, Font, FontWeight,
     Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement as _, Pixels, Point, Render,
     ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, TextAlign,
-    TextRun, UnderlineStyle, Window,
+    TextRun, UnderlineStyle, Window, actions, canvas, div, fill, hsla, point,
+    prelude::FluentBuilder as _, px, relative, size,
 };
-use gpui_component::{hover_card::HoverCard, ActiveTheme as _, Icon, IconName, Sizable as _};
+use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, hover_card::HoverCard};
 
 use super::backend::{Backend, BackendEvent};
-use super::grid::{default_bg, Cell, Grid};
+use super::grid::{Cell, Grid, default_bg};
 use super::stats::{DiskInfo, RemoteStats};
 use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
 
-actions!(terminal, [SendTab, SendTabPrev, CopySelection, PasteClipboard]);
+actions!(
+    terminal,
+    [SendTab, SendTabPrev, CopySelection, PasteClipboard]
+);
 
 fn cursor_fg() -> Hsla {
     hsla(0., 0., 0.08, 1.)
@@ -33,9 +36,6 @@ struct RunStyle {
     strike: bool,
 }
 
-/// Selection endpoints are (line id, column) — see [`Grid::line_cells`] —
-/// so a selection keeps pointing at the same text while the view scrolls
-/// or new output arrives.
 #[derive(Clone, Copy)]
 struct Selection {
     anchor: (usize, usize),
@@ -67,7 +67,6 @@ pub struct TerminalView {
     cpu_history: VecDeque<f32>,
     selection: Option<Selection>,
     layout: Option<(Bounds<Pixels>, Pixels, Pixels)>,
-    /// Lines scrolled up into history; 0 means pinned to the live screen.
     scroll_offset: usize,
 }
 
@@ -84,45 +83,45 @@ impl TerminalView {
         focus_handle.focus(window, cx);
 
         let events = backend.events.clone();
-        cx.spawn(async move |this, cx| loop {
-            match events.recv().await {
-                Ok(BackendEvent::Data(bytes)) => {
-                    if this
-                        .update(cx, |view: &mut Self, cx| {
-                            let top_before = view.grid.screen_top_line();
-                            let replies = view.grid.feed(&bytes);
-                            if !replies.is_empty() {
-                                view.backend.write_input(&replies);
-                            }
-                            // Keep a scrolled-back view anchored on the same
-                            // content while new output pushes lines into
-                            // history underneath it.
-                            if view.scroll_offset > 0 {
-                                let pushed = view.grid.screen_top_line() - top_before;
-                                view.scroll_offset = (view.scroll_offset + pushed)
-                                    .min(view.grid.scrollback_len());
-                            }
+        cx.spawn(async move |this, cx| {
+            loop {
+                match events.recv().await {
+                    Ok(BackendEvent::Data(bytes)) => {
+                        if this
+                            .update(cx, |view: &mut Self, cx| {
+                                let top_before = view.grid.screen_top_line();
+                                let replies = view.grid.feed(&bytes);
+                                if !replies.is_empty() {
+                                    view.backend.write_input(&replies);
+                                }
+                                if view.scroll_offset > 0 {
+                                    let pushed = view.grid.screen_top_line() - top_before;
+                                    view.scroll_offset = (view.scroll_offset + pushed)
+                                        .min(view.grid.scrollback_len());
+                                }
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(BackendEvent::Closed(message)) => {
+                        let _ = this.update(cx, |view: &mut Self, cx| {
+                            view.closed_message =
+                                Some(message.unwrap_or_else(|| "Connection closed".to_string()));
                             cx.notify();
-                        })
-                        .is_err()
-                    {
+                        });
                         break;
                     }
+                    Err(_) => break,
                 }
-                Ok(BackendEvent::Closed(message)) => {
-                    let _ = this.update(cx, |view: &mut Self, cx| {
-                        view.closed_message =
-                            Some(message.unwrap_or_else(|| "Connection closed".to_string()));
-                        cx.notify();
-                    });
-                    break;
-                }
-                Err(_) => break,
             }
         })
         .detach();
 
-        cx.observe_global::<AppSettings>(|_, cx| cx.notify()).detach();
+        cx.observe_global::<AppSettings>(|_, cx| cx.notify())
+            .detach();
 
         let monitored = stats_rx.is_some();
         if let Some(rx) = stats_rx {
@@ -178,14 +177,11 @@ impl TerminalView {
             }
         }
         if let Some(bytes) = translate_key(event, self.grid.application_cursor_keys) {
-            // Typing snaps the view back to the live screen.
             self.scroll_offset = 0;
             self.backend.write_input(&bytes);
         }
     }
 
-    /// Scroll the view through history: positive is up (older), negative is
-    /// down (toward the live screen).
     fn scroll_lines(&mut self, delta: isize) {
         self.scroll_offset = self
             .scroll_offset
@@ -193,8 +189,6 @@ impl TerminalView {
             .min(self.grid.scrollback_len());
     }
 
-    /// Line id (see [`Grid::line_cells`]) shown at a visual row under the
-    /// current scroll offset.
     fn line_at(&self, visual_row: usize) -> usize {
         (self.grid.screen_top_line() + visual_row).saturating_sub(self.scroll_offset)
     }
@@ -229,8 +223,6 @@ impl TerminalView {
         if self.grid.mouse_mode == 0 {
             return;
         }
-        // `row` is a visual row; when scrolled back the live screen sits
-        // `scroll_offset` rows lower, and scrollback rows clamp to the top.
         let row = row.saturating_sub(self.scroll_offset);
         let code = button + if drag { 32 } else { 0 };
         let bytes = if self.grid.mouse_sgr {
@@ -260,7 +252,11 @@ impl TerminalView {
             };
             let last = cells.len().saturating_sub(1);
             let from = if line_id == start.0 { start.1 } else { 0 };
-            let to = if line_id == end.0 { end.1.min(last) } else { last };
+            let to = if line_id == end.0 {
+                end.1.min(last)
+            } else {
+                last
+            };
             let mut line: String = cells
                 .get(from..=to)
                 .unwrap_or_default()
@@ -309,19 +305,12 @@ impl Render for TerminalView {
         let line_height = font_size * 1.43;
         let closed_message = self.closed_message.clone();
 
-        // Full-screen TUIs own the whole screen — no history to show there.
         if self.grid.alt_active() {
             self.scroll_offset = 0;
         }
         self.scroll_offset = self.scroll_offset.min(self.grid.scrollback_len());
         let scroll_offset = self.scroll_offset;
 
-        // Window-opacity treatment for the terminal's dark surfaces (main
-        // background and monitor bar): in dark mode let the window's
-        // translucent base show through instead of stacking a second dark
-        // layer on top, which would compound back toward opaque; in light
-        // mode keep the dark layer, since light glass behind light terminal
-        // text would be unreadable.
         let surface_opacity = {
             let opacity = settings.opacity.clamp(0.3, 1.0);
             if opacity < 1.0 && cx.theme().mode.is_dark() {
@@ -351,10 +340,6 @@ impl Render for TerminalView {
                 );
                 let char_width = shaped.width();
                 if char_width > px(0.) {
-                    // Hard backstop: a pane this size is never real, so
-                    // clamping here means a layout regression can misbehave
-                    // visually but can no longer runaway-grow every frame
-                    // into a crash.
                     let cols = ((bounds.size.width / char_width).floor() as usize).clamp(10, 500);
                     let rows =
                         ((bounds.size.height / px(line_height)).floor() as usize).clamp(4, 200);
@@ -397,8 +382,14 @@ impl Render for TerminalView {
                     window.paint_quad(quad);
                 }
                 for (line, origin) in lines {
-                    let _ =
-                        line.paint(origin, px(line_height), TextAlign::default(), None, window, cx);
+                    let _ = line.paint(
+                        origin,
+                        px(line_height),
+                        TextAlign::default(),
+                        None,
+                        window,
+                        cx,
+                    );
                 }
             }
         };
@@ -441,15 +432,14 @@ impl Render for TerminalView {
                         }
                         view.selection = None;
                     } else {
-                        view.selection =
-                            view.cell_at(event.position, false).map(|(row, col)| {
-                                let cell = (view.line_at(row), col);
-                                Selection {
-                                    anchor: cell,
-                                    head: cell,
-                                    dragging: true,
-                                }
-                            });
+                        view.selection = view.cell_at(event.position, false).map(|(row, col)| {
+                            let cell = (view.line_at(row), col);
+                            Selection {
+                                anchor: cell,
+                                head: cell,
+                                dragging: true,
+                            }
+                        });
                     }
                     cx.notify();
                 }),
@@ -571,9 +561,6 @@ impl Render for TerminalView {
                 cx.notify();
             }))
             .size_full()
-            // Without `min_w_0`/`min_h_0`, a flex item's default min-size is
-            // its content's natural size — this keeps the pane clipping
-            // instead of growing when a child measures wide.
             .min_w_0()
             .min_h_0()
             .bg(default_bg().opacity(surface_opacity))
@@ -633,7 +620,11 @@ impl TerminalView {
         let mut items: Vec<AnyElement> = Vec::new();
         if let Some(stats) = &self.stats {
             if let Some(sysname) = &stats.sysname {
-                items.push(segment(IconName::Globe).child(sysname.clone()).into_any_element());
+                items.push(
+                    segment(IconName::Globe)
+                        .child(sysname.clone())
+                        .into_any_element(),
+                );
             }
             items.push(
                 segment(IconName::Cpu)
@@ -653,11 +644,23 @@ impl TerminalView {
                 );
             }
             if let Some((rx, tx)) = stats.net {
-                items.push(segment(IconName::ArrowUp).child(fmt_rate(tx)).into_any_element());
-                items.push(segment(IconName::ArrowDown).child(fmt_rate(rx)).into_any_element());
+                items.push(
+                    segment(IconName::ArrowUp)
+                        .child(fmt_rate(tx))
+                        .into_any_element(),
+                );
+                items.push(
+                    segment(IconName::ArrowDown)
+                        .child(fmt_rate(rx))
+                        .into_any_element(),
+                );
             }
             if let Some(user) = &stats.user {
-                items.push(segment(IconName::User).child(user.clone()).into_any_element());
+                items.push(
+                    segment(IconName::User)
+                        .child(user.clone())
+                        .into_any_element(),
+                );
             }
             if let Some((used, total)) = stats.disk {
                 let frac = used as f32 / total.max(1) as f32;
@@ -703,11 +706,11 @@ impl TerminalView {
 }
 
 fn segment(icon: IconName) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .child(div().text_color(hsla(0., 0., 0.5, 1.)).child(Icon::new(icon).xsmall()))
+    div().flex().items_center().gap_1().child(
+        div()
+            .text_color(hsla(0., 0., 0.5, 1.))
+            .child(Icon::new(icon).xsmall()),
+    )
 }
 
 fn cpu_chart(history: &VecDeque<f32>) -> AnyElement {
@@ -731,7 +734,6 @@ fn cpu_chart(history: &VecDeque<f32>) -> AnyElement {
         .into_any_element()
 }
 
-/// Per-filesystem breakdown shown when hovering the disk segment.
 fn disk_details(disks: &[DiskInfo], cx: &App) -> AnyElement {
     const MAX_ROWS: usize = 8;
     let muted = cx.theme().muted_foreground;
@@ -900,8 +902,6 @@ fn build_paint(
     let mut quads = Vec::new();
     let mut lines = Vec::new();
 
-    // Cursor and selection live in line-id space; scrolling up simply moves
-    // the cursor's line below the visible window.
     let top_line = grid.screen_top_line().saturating_sub(scroll_offset);
     let cursor = grid
         .cursor_visible
@@ -913,7 +913,6 @@ fn build_paint(
             continue;
         };
         let y = bounds.origin.y + line_height * row as f32;
-        // Scrollback lines keep their original width; pad short ones.
         let cell = |col: usize| -> Cell { cells.get(col).copied().unwrap_or(Cell::BLANK) };
 
         let cell_bg = |col: usize| -> Option<Hsla> {
@@ -1026,10 +1025,6 @@ fn build_paint(
     (quads, lines)
 }
 
-/// Translate a raw key event into the bytes a shell/PTY expects to receive.
-/// `application_cursor_keys` mirrors DECCKM (`CSI ?1h`/`l`): full-screen TUIs
-/// like vim and htop switch arrow/home/end keys to the `ESC O x` form while
-/// they're active.
 fn translate_key(event: &KeyDownEvent, application_cursor_keys: bool) -> Option<Vec<u8>> {
     let keystroke = &event.keystroke;
 

@@ -18,20 +18,17 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectItem, SelectState},
     v_flex,
 };
+use secrecy::{ExposeSecret as _, SecretString};
 use serialport::SerialPortType;
 use uuid::Uuid;
 
 use crate::app::OxidalApp;
 use crate::session::{Session, SessionFolder, SessionKind};
 
-/// Transient dialog-only state for the folder picker: which folder (if any)
-/// the session-in-progress is currently assigned to.
 struct SelectedFolder(Option<Uuid>);
 
-/// Transient dialog-only state: which session kind tile is selected.
 struct SelectedKind(SessionKind);
 
-/// Outcome of the "Test Connection" button, shown as a status line.
 #[derive(Clone)]
 enum TestState {
     Idle,
@@ -42,8 +39,6 @@ enum TestState {
 
 struct TestStatus(TestState);
 
-/// One entry in the private-key picker: a key discovered in `~/.ssh`, a
-/// hand-picked file, or the "no key" placeholder (empty path).
 #[derive(Clone, PartialEq)]
 struct KeyOption {
     label: SharedString,
@@ -103,8 +98,6 @@ impl SelectItem for KeyOption {
     }
 }
 
-/// One entry in the serial-port picker: the port name plus a human-readable
-/// description of the device behind it, when the platform reports one.
 #[derive(Clone, PartialEq)]
 struct PortOption {
     name: SharedString,
@@ -137,7 +130,6 @@ impl SelectItem for PortOption {
     }
 }
 
-/// Open the MobaXterm-style session dialog: kind tiles on top, settings below.
 pub fn open_new_session_dialog(
     folders: Vec<SessionFolder>,
     window: &mut Window,
@@ -147,7 +139,6 @@ pub fn open_new_session_dialog(
     open_session_dialog(None, folders, weak_app, window, cx);
 }
 
-/// Open the session dialog pre-filled with an existing session's values.
 pub fn open_edit_session_dialog(
     session: Session,
     folders: Vec<SessionFolder>,
@@ -216,7 +207,7 @@ fn open_session_dialog(
             .default_value(
                 existing
                     .as_ref()
-                    .map(|s| s.password.clone())
+                    .map(|s| s.password.expose_secret().to_string())
                     .unwrap_or_default(),
             )
             .masked(true)
@@ -319,8 +310,6 @@ fn open_session_dialog(
                         if prev == tile_kind {
                             return;
                         }
-                        // Carry untouched defaults over to the new kind so
-                        // stale values from the previous kind don't linger.
                         if name.read(cx).value().to_string() == prev.label() {
                             name.update(cx, |state, cx| {
                                 state.set_value(tile_kind.label(), window, cx);
@@ -375,24 +364,27 @@ fn open_session_dialog(
                                     .placeholder("Select a port")
                                     .flex_1(),
                             )
-                            .child(Button::new("rescan-ports").outline().icon(IconName::Redo2).on_click({
-                                let serial_port = serial_port.clone();
-                                move |_, window, cx| {
-                                    serial_port.update(cx, |state, cx| {
-                                        // Keep the configured port selectable even
-                                        // if its device is currently unplugged.
-                                        let selected = state.selected_value().cloned();
-                                        state.set_items(
-                                            port_options(selected.as_deref()),
-                                            window,
-                                            cx,
-                                        );
-                                        if let Some(value) = selected {
-                                            state.set_selected_value(&value, window, cx);
+                            .child(
+                                Button::new("rescan-ports")
+                                    .outline()
+                                    .icon(IconName::Redo2)
+                                    .on_click({
+                                        let serial_port = serial_port.clone();
+                                        move |_, window, cx| {
+                                            serial_port.update(cx, |state, cx| {
+                                                let selected = state.selected_value().cloned();
+                                                state.set_items(
+                                                    port_options(selected.as_deref()),
+                                                    window,
+                                                    cx,
+                                                );
+                                                if let Some(value) = selected {
+                                                    state.set_selected_value(&value, window, cx);
+                                                }
+                                            });
                                         }
-                                    });
-                                }
-                            })),
+                                    }),
+                            ),
                     ),
                 )
                 .child(v_flex().gap_1().child("Baud Rate").child(Input::new(&baud))),
@@ -583,7 +575,8 @@ fn open_session_dialog(
                             .parse()
                             .unwrap_or_else(|_| kind.default_port());
                         let username_value = username.read(cx).value().to_string();
-                        let password_value = password.read(cx).value().to_string();
+                        let password_value =
+                            SecretString::from(password.read(cx).value().to_string());
                         let key_value = private_key
                             .read(cx)
                             .selected_value()
@@ -656,7 +649,7 @@ fn open_session_dialog(
                     .parse()
                     .unwrap_or_else(|_| kind.default_port());
                 session.username = username.read(cx).value().to_string();
-                session.password = password.read(cx).value().to_string();
+                session.password = SecretString::from(password.read(cx).value().to_string());
                 session.baud_rate = baud.read(cx).value().to_string().parse().unwrap_or(115_200);
                 session.private_key_path = private_key
                     .read(cx)
@@ -699,9 +692,6 @@ fn open_session_dialog(
             })
             .child(body)
             .footer(footer)
-            // Enter is bound to the dialog's confirm action; without this it
-            // would fall through to the default handler and close the dialog
-            // without saving.
             .on_ok({
                 let do_save = do_save.clone();
                 move |_, _window, cx| {
@@ -712,9 +702,6 @@ fn open_session_dialog(
     });
 }
 
-/// The choices for the private-key picker: "no key", every private key found
-/// in the user's `~/.ssh` directory, and `extra` (a previously saved or
-/// browsed path) if it isn't already among them.
 fn key_options(extra: Option<&str>) -> Vec<KeyOption> {
     let mut options = vec![KeyOption::none()];
     if let Some(ssh_dir) = dirs::home_dir().map(|home| home.join(".ssh"))
@@ -736,8 +723,6 @@ fn key_options(extra: Option<&str>) -> Vec<KeyOption> {
     options
 }
 
-/// Sniff whether `path` looks like a private key russh can load (OpenSSH or
-/// PEM format). Content-based so it works regardless of file naming.
 fn is_private_key(path: &Path) -> bool {
     if !path.is_file() {
         return false;
@@ -759,9 +744,6 @@ fn is_private_key(path: &Path) -> bool {
     head.starts_with("-----BEGIN") && head.contains("PRIVATE KEY")
 }
 
-/// The currently detected serial ports. `extra` (the port stored on the
-/// session being edited) is appended if missing so an unplugged device
-/// doesn't silently drop the configured port.
 fn port_options(extra: Option<&str>) -> Vec<PortOption> {
     let mut options: Vec<PortOption> = serialport::available_ports()
         .unwrap_or_default()
@@ -791,14 +773,12 @@ fn port_options(extra: Option<&str>) -> Vec<PortOption> {
     options
 }
 
-/// Run a connection test for `kind` on a background thread, reporting the
-/// outcome (success message or error text) over the returned channel.
 fn run_connection_test(
     kind: SessionKind,
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
     baud_rate: u32,
 ) -> async_channel::Receiver<Result<String, String>> {
@@ -821,7 +801,6 @@ fn run_connection_test(
     rx
 }
 
-/// Plain TCP reachability check (no protocol handshake).
 fn tcp_check(host: &str, port: u16) -> Result<String, String> {
     let addrs: Vec<_> = (host, port)
         .to_socket_addrs()
@@ -837,13 +816,11 @@ fn tcp_check(host: &str, port: u16) -> Result<String, String> {
     Err(last_err)
 }
 
-/// Full SSH connect + authenticate round-trip on a throwaway tokio runtime,
-/// mirroring how the real SSH backends run (dedicated thread + runtime).
 fn ssh_check(
     host: String,
     port: u16,
     username: String,
-    password: String,
+    password: SecretString,
     private_key_path: Option<String>,
 ) -> Result<String, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -853,10 +830,9 @@ fn ssh_check(
     runtime.block_on(async {
         let connect =
             crate::ssh_client::connect(host.clone(), port, username, password, private_key_path);
-        match tokio::time::timeout(Duration::from_secs(10), connect).await {
-            Err(_) => Err(format!("Timed out connecting to {host}:{port}")),
-            Ok(Err(e)) => Err(e.to_string()),
-            Ok(Ok(handle)) => {
+        match connect.await {
+            Err(e) => Err(e.to_string()),
+            Ok(handle) => {
                 let _ = handle
                     .disconnect(russh::Disconnect::ByApplication, "", "")
                     .await;
@@ -866,7 +842,6 @@ fn ssh_check(
     })
 }
 
-/// Open a small dialog to create a new session folder.
 pub fn open_new_folder_dialog(
     weak_app: gpui::WeakEntity<OxidalApp>,
     window: &mut Window,
@@ -909,7 +884,6 @@ pub fn open_new_folder_dialog(
     });
 }
 
-/// Open a small dialog to rename an existing session folder.
 pub fn open_edit_folder_dialog(
     folder: SessionFolder,
     weak_app: gpui::WeakEntity<OxidalApp>,
