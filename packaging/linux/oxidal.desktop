@@ -3,5 +3,6 @@ Type=Application
 Name=Oxidal
 Comment=Cross-platform SSH, SFTP and serial terminal client
 Exec=oxidal
+Icon=oxidal
 Terminal=false
 Categories=Network;RemoteAccess;
