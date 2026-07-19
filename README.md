@@ -4,6 +4,10 @@
   </a>
 </p>
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/3efd572a-183d-4fbb-b855-e32749f27640" alt="Logo" width="300">
+</p>
+
 <div align="center">
   <h1>Oxidal</h1>
   <p><b>Oxidal</b>: every session in one window. SSH, SFTP, serial and local shells in a single native app.</p>
