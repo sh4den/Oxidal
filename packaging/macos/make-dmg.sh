@@ -51,6 +51,8 @@ cat > "$app/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
+codesign --force --deep --sign - "$app"
+
 ln -s /Applications "$staging/Applications"
 hdiutil create -volname "Oxidal" -srcfolder "$staging" -ov -format UDZO "$out_dir/Oxidal-$version-$name.dmg"
 rm -rf "$staging"
