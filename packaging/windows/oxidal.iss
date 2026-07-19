@@ -23,6 +23,7 @@ OutputBaseFilename=Oxidal-{#AppVersion}-windows-{#Arch}-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\Oxidal.exe
 #if Arch == "arm64"
 ArchitecturesAllowed=arm64
