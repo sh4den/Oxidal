@@ -158,3 +158,8 @@ jobs:
           files: dist/*
           body: |
             Installers (Windows setup, macOS dmg, Debian/Ubuntu deb) and portable builds for Windows (x86_64, arm64), Linux (amd64, arm64) and macOS (Intel, Apple Silicon) are attached below.
+
+            **macOS first launch:** builds are not notarized. If macOS blocks the app, allow it in System Settings > Privacy & Security > "Open Anyway", or run:
+            ```
+            xattr -dr com.apple.quarantine /Applications/Oxidal.app
+            ```
