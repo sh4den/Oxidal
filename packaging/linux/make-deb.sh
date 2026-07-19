@@ -13,6 +13,12 @@ cp "$binary" "$root/usr/bin/oxidal"
 chmod 755 "$root/usr/bin/oxidal"
 cp "$(dirname "$0")/oxidal.desktop" "$root/usr/share/applications/oxidal.desktop"
 
+for size in 16 32 48 64 128 256 512; do
+  icon_dir="$root/usr/share/icons/hicolor/${size}x${size}/apps"
+  mkdir -p "$icon_dir"
+  cp "$(dirname "$0")/icons/${size}.png" "$icon_dir/oxidal.png"
+done
+
 cat > "$root/DEBIAN/control" <<EOF
 Package: oxidal
 Version: $version

@@ -8,9 +8,19 @@ out_dir="$4"
 
 staging="$(mktemp -d)"
 app="$staging/Oxidal.app"
-mkdir -p "$app/Contents/MacOS" "$out_dir"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$out_dir"
 cp "$binary" "$app/Contents/MacOS/Oxidal"
 chmod 755 "$app/Contents/MacOS/Oxidal"
+
+icon_src="$(dirname "$0")/../icon.png"
+iconset="$(mktemp -d)/Oxidal.iconset"
+mkdir -p "$iconset"
+for size in 16 32 64 128 256 512; do
+	sips -z "$size" "$size" "$icon_src" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+	sips -z "$((size * 2))" "$((size * 2))" "$icon_src" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/Oxidal.icns"
+rm -rf "$(dirname "$iconset")"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -24,6 +34,8 @@ cat > "$app/Contents/Info.plist" <<EOF
 	<key>CFBundleName</key>
 	<string>Oxidal</string>
 	<key>CFBundleDisplayName</key>
+	<string>Oxidal</string>
+	<key>CFBundleIconFile</key>
 	<string>Oxidal</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
