@@ -324,10 +324,7 @@ impl OxidalApp {
             ),
         };
 
-        let has_explorer = matches!(
-            content,
-            TabContent::SshSession { .. } | TabContent::Sftp(_)
-        );
+        let has_explorer = matches!(content, TabContent::SshSession { .. } | TabContent::Sftp(_));
         self.tabs.push(OpenTab {
             session_id: Some(id),
             title: SharedString::from(target.name.clone()),
@@ -395,41 +392,33 @@ impl OxidalApp {
             ),
         };
 
-        TitleBar::new()
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(Icon::new(IconName::SquareTerminal).small())
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Oxidal")),
-            )
-            .child(
-                h_flex()
-                    .items_center()
-                    .justify_end()
-                    .gap_1()
-                    .pr_2()
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .when_some(update_button, |this, button| this.child(button))
-                    .child(
-                        Button::new("about")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Info)
-                            .on_click(cx.listener(|_view, _, window, cx| {
-                                open_about_dialog(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("settings")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Settings)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.open_settings_tab(window, cx);
-                            })),
-                    ),
-            )
+        TitleBar::new().child(
+            h_flex()
+                .items_center()
+                .justify_end()
+                .gap_1()
+                .pr_2()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .when_some(update_button, |this, button| this.child(button))
+                .child(
+                    Button::new("about")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Info)
+                        .on_click(cx.listener(|_view, _, window, cx| {
+                            open_about_dialog(window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("settings")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Settings)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.open_settings_tab(window, cx);
+                        })),
+                ),
+        )
     }
 
     fn render_session_row(
