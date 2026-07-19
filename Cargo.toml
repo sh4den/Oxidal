@@ -1,6 +1,6 @@
 [package]
 name = "Oxidal"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 
 [dependencies]
@@ -26,6 +26,9 @@ chrono = "0.4"
 open = "5"
 tokio = { version = "1", features = ["rt", "net", "io-util", "time", "fs"] }
 ureq = { version = "2", features = ["json"] }
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 opt-level = 3
