@@ -20,7 +20,7 @@ const CPU_HISTORY_LEN: usize = 30;
 
 actions!(
     terminal,
-    [SendTab, SendTabPrev, CopySelection, PasteClipboard]
+    [SendTab, SendTabPrev, CopySelection, CutSelection, PasteClipboard]
 );
 
 fn cursor_fg() -> Hsla {
@@ -178,6 +178,7 @@ impl TerminalView {
         }
         if let Some(bytes) = translate_key(event, self.grid.application_cursor_keys) {
             self.scroll_offset = 0;
+            self.selection = None;
             self.backend.write_input(&bytes);
         }
     }
@@ -274,8 +275,18 @@ impl TerminalView {
         Some(out)
     }
 
+    fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(text) = self.selected_text().filter(|text| !text.is_empty()) else {
+            return false;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.selection = None;
+        true
+    }
+
     fn paste(&mut self, text: &str) {
         self.scroll_offset = 0;
+        self.selection = None;
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         if self.grid.bracketed_paste {
             let mut bytes = b"\x1b[200~".to_vec();
@@ -412,9 +423,18 @@ impl Render for TerminalView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CopySelection, _window, cx| {
-                if let Some(text) = view.selected_text() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                if !view.copy_selection(cx) {
+                    view.scroll_offset = 0;
+                    view.backend.write_input(b"\x03");
                 }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &CutSelection, _window, cx| {
+                if !view.copy_selection(cx) {
+                    view.scroll_offset = 0;
+                    view.backend.write_input(b"\x18");
+                }
+                cx.notify();
             }))
             .on_action(cx.listener(|view, _: &PasteClipboard, _window, cx| {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -456,12 +476,18 @@ impl Render for TerminalView {
             )
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(|view, event: &MouseDownEvent, _window, _cx| {
+                cx.listener(|view, event: &MouseDownEvent, window, cx| {
                     if view.grid.mouse_mode != 0 && !event.modifiers.shift {
                         if let Some((row, col)) = view.cell_at(event.position, false) {
                             view.send_mouse(2, row, col, true, false);
                         }
+                        return;
                     }
+                    view.focus_handle.focus(window, cx);
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        view.paste(&text);
+                    }
+                    cx.notify();
                 }),
             )
             .on_mouse_up(
@@ -1146,6 +1172,26 @@ fn translate_key(event: &KeyDownEvent, application_cursor_keys: bool) -> Option<
         if c.is_ascii_alphabetic() {
             let byte = (c.to_ascii_uppercase() as u8) - b'A' + 1;
             return Some(vec![byte]);
+        }
+    }
+
+    let modifiers = &keystroke.modifiers;
+    let modifier_code = 1
+        + u8::from(modifiers.shift)
+        + 2 * u8::from(modifiers.alt)
+        + 4 * u8::from(modifiers.control);
+    if modifier_code > 1 {
+        let final_byte = match keystroke.key.as_str() {
+            "up" => Some('A'),
+            "down" => Some('B'),
+            "right" => Some('C'),
+            "left" => Some('D'),
+            "end" => Some('F'),
+            "home" => Some('H'),
+            _ => None,
+        };
+        if let Some(final_byte) = final_byte {
+            return Some(format!("\x1b[1;{modifier_code}{final_byte}").into_bytes());
         }
     }
 

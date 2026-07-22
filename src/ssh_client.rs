@@ -1,21 +1,36 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::client;
 use secrecy::{ExposeSecret as _, SecretString};
+use tokio::net::TcpStream;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(150);
+const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub struct Handler;
+pub struct Handler {
+    host: String,
+    port: u16,
+    rejection: Arc<Mutex<Option<String>>>,
+}
 
 impl client::Handler for Handler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        match crate::host_keys::verify(&self.host, self.port, server_public_key).await {
+            Ok(()) => Ok(true),
+            Err(message) => {
+                if let Ok(mut rejection) = self.rejection.lock() {
+                    *rejection = Some(message);
+                }
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -33,9 +48,42 @@ pub async fn connect(
         ..Default::default()
     });
 
-    let attempt = async {
-        let mut session = client::connect(config, (host.as_str(), port), Handler).await?;
+    let rejection = Arc::new(Mutex::new(None));
+    let handler = Handler {
+        host: host.clone(),
+        port,
+        rejection: rejection.clone(),
+    };
 
+    let stream = match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        TcpStream::connect((host.as_str(), port)),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => anyhow::bail!("Could not reach {host}:{port}: {e}"),
+        Err(_) => anyhow::bail!("Timed out connecting to {host}:{port}"),
+    };
+
+    let mut session = match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        client::connect_stream(config, stream, handler),
+    )
+    .await
+    {
+        Ok(Ok(session)) => session,
+        Ok(Err(e)) => {
+            let rejected = rejection.lock().ok().and_then(|mut slot| slot.take());
+            match rejected {
+                Some(message) => anyhow::bail!(message),
+                None => return Err(e.into()),
+            }
+        }
+        Err(_) => anyhow::bail!("Timed out during the SSH handshake with {host}:{port}"),
+    };
+
+    let attempt = async {
         let mut authenticated = false;
         if let Some(key_path) = private_key_path.filter(|p| !p.trim().is_empty()) {
             let key_pair = russh::keys::load_secret_key(&key_path, None)
@@ -59,11 +107,13 @@ pub async fn connect(
             }
         }
 
-        Ok(session)
+        anyhow::Ok(())
     };
 
-    match tokio::time::timeout(CONNECT_TIMEOUT, attempt).await {
-        Ok(result) => result,
-        Err(_) => anyhow::bail!("Timed out connecting to {host}:{port}"),
+    match tokio::time::timeout(AUTH_TIMEOUT, attempt).await {
+        Ok(result) => result?,
+        Err(_) => anyhow::bail!("Timed out authenticating to {host}:{port}"),
     }
+
+    Ok(session)
 }

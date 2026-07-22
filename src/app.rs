@@ -1,11 +1,19 @@
+use crate::session::{self, Session, SessionFolder, SessionKind};
+use crate::session_dialog;
+use crate::settings_view::SettingsView;
+use crate::sftp::SftpPanel;
+use crate::terminal::{self, TerminalView};
 use gpui::{
-    AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
+    AppContext as _, Context, Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     div, prelude::FluentBuilder as _, px,
 };
+
+use gpui_component::button::Button;
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _, Icon, IconName, IconNamed as _, Root, Sizable as _, TitleBar, WindowExt as _,
+    button::ButtonVariants as _,
     dialog::DialogFooter,
     h_flex,
     notification::Notification,
@@ -15,14 +23,7 @@ use gpui_component::{
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
-
 use uuid::Uuid;
-
-use crate::session::{self, Session, SessionFolder, SessionKind};
-use crate::session_dialog;
-use crate::settings_view::SettingsView;
-use crate::sftp::SftpPanel;
-use crate::terminal::{self, TerminalView};
 
 const TERM_ROWS: usize = 32;
 const TERM_COLS: usize = 110;
@@ -41,7 +42,8 @@ enum TabContent {
 struct OpenTab {
     session_id: Option<Uuid>,
     title: SharedString,
-    icon: IconName,
+    icon: SharedString,
+    icon_color: Option<Hsla>,
     content: TabContent,
 }
 
@@ -71,7 +73,21 @@ pub struct OxidalApp {
 }
 
 impl OxidalApp {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let window_handle = window.window_handle();
+        cx.spawn(async move |_this, cx| {
+            let requests = crate::host_keys::requests();
+            while let Ok(request) = requests.recv().await {
+                let opened = cx.update_window(window_handle, |_, window, cx| {
+                    crate::host_keys::open_prompt(request, window, cx);
+                });
+                if opened.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         let updates = crate::update::check();
         cx.spawn(async move |this, cx| {
             if let Ok(found) = updates.recv().await {
@@ -192,9 +208,9 @@ impl OxidalApp {
         cx.notify();
     }
 
-    pub fn rename_folder(&mut self, id: Uuid, name: String, cx: &mut Context<Self>) {
-        if let Some(folder) = self.folders.iter_mut().find(|f| f.id == id) {
-            folder.name = name;
+    pub fn update_folder(&mut self, updated: SessionFolder, cx: &mut Context<Self>) {
+        if let Some(folder) = self.folders.iter_mut().find(|f| f.id == updated.id) {
+            *folder = updated;
             session::save_folders(&self.folders);
             cx.notify();
         }
@@ -235,7 +251,8 @@ impl OxidalApp {
         self.tabs.push(OpenTab {
             session_id: None,
             title: SharedString::from("Settings"),
-            icon: IconName::Settings,
+            icon: IconName::Settings.path(),
+            icon_color: None,
             content: TabContent::Settings(view),
         });
         self.active_tab = Some(self.tabs.len() - 1);
@@ -328,7 +345,8 @@ impl OxidalApp {
         self.tabs.push(OpenTab {
             session_id: Some(id),
             title: SharedString::from(target.name.clone()),
-            icon: target.kind.icon(),
+            icon: target.display_icon(),
+            icon_color: target.color.hsla(),
             content,
         });
         self.active_tab = Some(self.tabs.len() - 1);
@@ -392,33 +410,54 @@ impl OxidalApp {
             ),
         };
 
-        TitleBar::new().child(
-            h_flex()
-                .items_center()
-                .justify_end()
-                .gap_1()
-                .pr_2()
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .when_some(update_button, |this, button| this.child(button))
-                .child(
-                    Button::new("about")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Info)
-                        .on_click(cx.listener(|_view, _, window, cx| {
-                            open_about_dialog(window, cx);
-                        })),
-                )
-                .child(
-                    Button::new("settings")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Settings)
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.open_settings_tab(window, cx);
-                        })),
-                ),
-        )
+        let this = cx.entity();
+
+        TitleBar::new()
+            .child(
+                Button::new("application-menu")
+                    .icon(IconName::Menu)
+                    .ghost()
+                    .small()
+                    .dropdown_menu(move |menu, _window, _cx| {
+                        let this = this.clone();
+                        menu.item(
+                            PopupMenuItem::new("Settings")
+                                .disabled(false)
+                                .icon(IconName::Settings)
+                                .on_click(move |_, window, cx| {
+                                    this.update(cx, |view, cx| {
+                                        view.open_settings_tab(window, cx);
+                                    });
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new("About")
+                                .disabled(false)
+                                .icon(IconName::Info)
+                                .on_click(|_, window, cx| {
+                                    open_about_dialog(window, cx);
+                                }),
+                        )
+                        .separator()
+                        .item(
+                            PopupMenuItem::new("Exit")
+                                .disabled(false)
+                                .icon(IconName::WindowClose)
+                                .on_click(|_, _, cx| {
+                                    cx.quit();
+                                }),
+                        )
+                    }),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_1()
+                    .pr_2()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .when_some(update_button, |this, button| this.child(button)),
+            )
     }
 
     fn render_session_row(
@@ -459,7 +498,12 @@ impl OxidalApp {
                     }
                 }),
             )
-            .child(Icon::new(item.kind.icon()).small())
+            .child(
+                Icon::empty()
+                    .path(item.display_icon())
+                    .small()
+                    .when_some(item.color.hsla(), |this, color| this.text_color(color)),
+            )
             .child(
                 v_flex()
                     .flex_1()
@@ -556,11 +600,16 @@ impl OxidalApp {
             .border_color(cx.theme().sidebar_border)
             .child(
                 Button::new("sidebar-sessions")
+                    .ghost()
                     .large()
-                    .icon(IconName::SquareTerminal)
+                    .icon(
+                        Icon::new(IconName::SquareTerminal)
+                            .when(sessions_active, |this| this.text_color(cx.theme().primary)),
+                    )
                     .tooltip("Sessions")
-                    .when(sessions_active, |b| b.primary())
-                    .when(!sessions_active, |b| b.ghost())
+                    .when(sessions_active, |b| {
+                        b.bg(cx.theme().primary.opacity(0.12))
+                    })
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.set_sidebar_mode(SidebarMode::Sessions, cx);
                     })),
@@ -568,11 +617,16 @@ impl OxidalApp {
             .when(has_open_session, |this| {
                 this.child(
                     Button::new("sidebar-explorer")
+                        .ghost()
                         .large()
-                        .icon(IconName::Folder)
+                        .icon(
+                            Icon::new(IconName::Folder)
+                                .when(explorer_active, |this| this.text_color(cx.theme().primary)),
+                        )
                         .tooltip("File Explorer")
-                        .when(explorer_active, |b| b.primary())
-                        .when(!explorer_active, |b| b.ghost())
+                        .when(explorer_active, |b| {
+                            b.bg(cx.theme().primary.opacity(0.12))
+                        })
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.set_sidebar_mode(SidebarMode::Explorer, cx);
                         })),
@@ -674,7 +728,12 @@ impl OxidalApp {
                         })
                         .xsmall(),
                     )
-                    .child(Icon::new(IconName::Folder).small())
+                    .child(
+                        Icon::empty()
+                            .path(folder.display_icon())
+                            .small()
+                            .when_some(folder.color.hsla(), |this, color| this.text_color(color)),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -694,7 +753,7 @@ impl OxidalApp {
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Settings2)
-                                    .tooltip("Rename")
+                                    .tooltip("Edit")
                                     .on_click(cx.listener(move |_view, _, window, cx| {
                                         let weak_app = cx.weak_entity();
                                         session_dialog::open_edit_folder_dialog(
@@ -811,15 +870,26 @@ impl OxidalApp {
                 cx.notify();
             }))
             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
+                let group_name = SharedString::from(format!("tab-{index}"));
                 Tab::new()
-                    .prefix(Icon::new(tab.icon.clone()).xsmall())
+                    .group(group_name.clone())
+                    .prefix(
+                        Icon::empty()
+                            .path(tab.icon.clone())
+                            .xsmall()
+                            .when_some(tab.icon_color, |this, color| this.text_color(color)),
+                    )
                     .pl_3()
+                    .pr_2()
                     .label(tab.title.clone())
                     .suffix(
                         Button::new(SharedString::from(format!("close-tab-{index}")))
                             .ghost()
                             .xsmall()
-                            .icon(IconName::Close)
+                            .rounded(px(10.))
+                            .icon(Icon::new(IconName::Close).with_size(px(11.)))
+                            .when(index != active_index, |this| this.invisible())
+                            .group_hover(group_name, |this| this.visible())
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.close_tab(index, cx);
                             })),
@@ -916,7 +986,80 @@ impl OxidalApp {
                         })),
                 )
             })
+            .child(render_shortcuts(cx))
     }
+}
+
+fn render_shortcuts(cx: &gpui::App) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+
+    let section = |title: &'static str| {
+        div()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(muted)
+            .child(title)
+    };
+
+    v_flex()
+        .mt_4()
+        .p_4()
+        .gap_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().muted.opacity(0.35))
+        .child(
+            h_flex()
+                .items_start()
+                .gap_10()
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(section("CLIPBOARD"))
+                        .child(shortcut(&["Ctrl", "C"], "Copy selection, else interrupt", cx))
+                        .child(shortcut(&["Ctrl", "V"], "Paste", cx))
+                        .child(shortcut(&["Ctrl", "X"], "Cut selection", cx))
+                        .child(shortcut(&["Right click"], "Paste", cx)),
+                )
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(section("NAVIGATION"))
+                        .child(shortcut(&["Ctrl", "←/→"], "Move by word", cx))
+                        .child(shortcut(&["Shift", "PgUp/PgDn"], "Scroll history", cx))
+                        .child(shortcut(&["Drag"], "Select text", cx))
+                        .child(shortcut(&["Double click"], "Open a session", cx)),
+                ),
+        )
+}
+
+fn shortcut(keys: &[&str], label: &'static str, cx: &gpui::App) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+
+    let mut chips = h_flex().w(px(150.)).flex_none().items_center().gap_1();
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            chips = chips.child(div().text_xs().text_color(muted).child("+"));
+        }
+        chips = chips.child(
+            div()
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .text_xs()
+                .child(SharedString::from(key.to_string())),
+        );
+    }
+
+    h_flex()
+        .items_center()
+        .gap_3()
+        .child(chips)
+        .child(div().text_xs().text_color(muted).child(label))
 }
 
 impl Render for OxidalApp {
