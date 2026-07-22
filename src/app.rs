@@ -586,11 +586,16 @@ impl OxidalApp {
             .border_color(cx.theme().sidebar_border)
             .child(
                 Button::new("sidebar-sessions")
+                    .ghost()
                     .large()
-                    .icon(IconName::SquareTerminal)
+                    .icon(
+                        Icon::new(IconName::SquareTerminal)
+                            .when(sessions_active, |this| this.text_color(cx.theme().primary)),
+                    )
                     .tooltip("Sessions")
-                    .when(sessions_active, |b| b.primary())
-                    .when(!sessions_active, |b| b.ghost())
+                    .when(sessions_active, |b| {
+                        b.bg(cx.theme().primary.opacity(0.12))
+                    })
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.set_sidebar_mode(SidebarMode::Sessions, cx);
                     })),
@@ -598,11 +603,16 @@ impl OxidalApp {
             .when(has_open_session, |this| {
                 this.child(
                     Button::new("sidebar-explorer")
+                        .ghost()
                         .large()
-                        .icon(IconName::Folder)
+                        .icon(
+                            Icon::new(IconName::Folder)
+                                .when(explorer_active, |this| this.text_color(cx.theme().primary)),
+                        )
                         .tooltip("File Explorer")
-                        .when(explorer_active, |b| b.primary())
-                        .when(!explorer_active, |b| b.ghost())
+                        .when(explorer_active, |b| {
+                            b.bg(cx.theme().primary.opacity(0.12))
+                        })
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.set_sidebar_mode(SidebarMode::Explorer, cx);
                         })),
