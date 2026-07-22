@@ -100,11 +100,7 @@ Sessions and preferences are written as JSON under a per user config directory:
 
 ## Security
 
-Worth being straight with you about where this stands.
-
 **Passwords go to your OS credential vault.** Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux, one entry per session, keyed by the session's id. They are never written to `sessions.json`, and deleting a session deletes its entry. Private keys are read from the path you configure and never copied anywhere.
-
-**Host key verification is not implemented yet.** Oxidal currently accepts whatever host key a server presents instead of checking it against a known_hosts store. That leaves SSH and SFTP sessions open to a machine in the middle on a network you do not trust. It is the next thing on the list, but until it lands, plan accordingly.
 
 ## Status
 
