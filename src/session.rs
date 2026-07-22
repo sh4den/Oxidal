@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use gpui_component::IconName;
+use gpui::{Hsla, SharedString, rgb};
+use gpui_component::{IconName, IconNamed};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -44,6 +45,210 @@ impl SessionKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ItemIcon {
+    Terminal,
+    Code,
+    Server,
+    Cluster,
+    Container,
+    Database,
+    Drive,
+    Cpu,
+    Memory,
+    Usb,
+    Network,
+    Router,
+    Wifi,
+    Signal,
+    Globe,
+    Cloud,
+    Firewall,
+    Shield,
+    Lock,
+    Key,
+    Layers,
+    Package,
+    GitBranch,
+    Monitor,
+    Gauge,
+    Activity,
+    Zap,
+    Plug,
+    Clock,
+    Flask,
+    Wrench,
+    Bot,
+    Building,
+    User,
+    Folder,
+    FolderOpen,
+    Star,
+    Heart,
+    Bell,
+    Inbox,
+    Map,
+    Chart,
+    Github,
+    Book,
+    Dashboard,
+    Frame,
+    Palette,
+}
+
+impl ItemIcon {
+    pub const ALL: [ItemIcon; 47] = [
+        ItemIcon::Terminal,
+        ItemIcon::Code,
+        ItemIcon::Server,
+        ItemIcon::Cluster,
+        ItemIcon::Container,
+        ItemIcon::Database,
+        ItemIcon::Drive,
+        ItemIcon::Cpu,
+        ItemIcon::Memory,
+        ItemIcon::Usb,
+        ItemIcon::Network,
+        ItemIcon::Router,
+        ItemIcon::Wifi,
+        ItemIcon::Signal,
+        ItemIcon::Globe,
+        ItemIcon::Cloud,
+        ItemIcon::Firewall,
+        ItemIcon::Shield,
+        ItemIcon::Lock,
+        ItemIcon::Key,
+        ItemIcon::Layers,
+        ItemIcon::Package,
+        ItemIcon::GitBranch,
+        ItemIcon::Monitor,
+        ItemIcon::Gauge,
+        ItemIcon::Activity,
+        ItemIcon::Zap,
+        ItemIcon::Plug,
+        ItemIcon::Clock,
+        ItemIcon::Flask,
+        ItemIcon::Wrench,
+        ItemIcon::Bot,
+        ItemIcon::Building,
+        ItemIcon::User,
+        ItemIcon::Folder,
+        ItemIcon::FolderOpen,
+        ItemIcon::Star,
+        ItemIcon::Heart,
+        ItemIcon::Bell,
+        ItemIcon::Inbox,
+        ItemIcon::Map,
+        ItemIcon::Chart,
+        ItemIcon::Github,
+        ItemIcon::Book,
+        ItemIcon::Dashboard,
+        ItemIcon::Frame,
+        ItemIcon::Palette,
+    ];
+}
+
+impl IconNamed for ItemIcon {
+    fn path(self) -> SharedString {
+        let bundled = |name: &str| SharedString::from(format!("icons/oxidal/{name}.svg"));
+        match self {
+            ItemIcon::Terminal => IconName::SquareTerminal.path(),
+            ItemIcon::Code => bundled("code"),
+            ItemIcon::Server => bundled("server"),
+            ItemIcon::Cluster => bundled("cluster"),
+            ItemIcon::Container => bundled("container"),
+            ItemIcon::Database => bundled("database"),
+            ItemIcon::Drive => IconName::HardDrive.path(),
+            ItemIcon::Cpu => IconName::Cpu.path(),
+            ItemIcon::Memory => IconName::MemoryStick.path(),
+            ItemIcon::Usb => bundled("usb"),
+            ItemIcon::Network => IconName::Network.path(),
+            ItemIcon::Router => bundled("router"),
+            ItemIcon::Wifi => bundled("wifi"),
+            ItemIcon::Signal => bundled("signal"),
+            ItemIcon::Globe => IconName::Globe.path(),
+            ItemIcon::Cloud => bundled("cloud"),
+            ItemIcon::Firewall => bundled("firewall"),
+            ItemIcon::Shield => bundled("shield"),
+            ItemIcon::Lock => bundled("lock"),
+            ItemIcon::Key => bundled("key"),
+            ItemIcon::Layers => bundled("layers"),
+            ItemIcon::Package => bundled("package"),
+            ItemIcon::GitBranch => bundled("git-branch"),
+            ItemIcon::Monitor => bundled("monitor"),
+            ItemIcon::Gauge => bundled("gauge"),
+            ItemIcon::Activity => bundled("activity"),
+            ItemIcon::Zap => bundled("zap"),
+            ItemIcon::Plug => bundled("plug"),
+            ItemIcon::Clock => bundled("clock"),
+            ItemIcon::Flask => bundled("flask"),
+            ItemIcon::Wrench => bundled("wrench"),
+            ItemIcon::Bot => IconName::Bot.path(),
+            ItemIcon::Building => IconName::Building2.path(),
+            ItemIcon::User => IconName::User.path(),
+            ItemIcon::Folder => IconName::Folder.path(),
+            ItemIcon::FolderOpen => IconName::FolderOpen.path(),
+            ItemIcon::Star => IconName::Star.path(),
+            ItemIcon::Heart => IconName::Heart.path(),
+            ItemIcon::Bell => IconName::Bell.path(),
+            ItemIcon::Inbox => IconName::Inbox.path(),
+            ItemIcon::Map => IconName::Map.path(),
+            ItemIcon::Chart => IconName::ChartPie.path(),
+            ItemIcon::Github => IconName::Github.path(),
+            ItemIcon::Book => IconName::BookOpen.path(),
+            ItemIcon::Dashboard => IconName::LayoutDashboard.path(),
+            ItemIcon::Frame => IconName::Frame.path(),
+            ItemIcon::Palette => IconName::Palette.path(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ItemColor {
+    #[default]
+    Default,
+    Red,
+    Orange,
+    Amber,
+    Green,
+    Teal,
+    Blue,
+    Indigo,
+    Purple,
+    Pink,
+}
+
+impl ItemColor {
+    pub const ALL: [ItemColor; 10] = [
+        ItemColor::Default,
+        ItemColor::Red,
+        ItemColor::Orange,
+        ItemColor::Amber,
+        ItemColor::Green,
+        ItemColor::Teal,
+        ItemColor::Blue,
+        ItemColor::Indigo,
+        ItemColor::Purple,
+        ItemColor::Pink,
+    ];
+
+    pub fn hsla(self) -> Option<Hsla> {
+        let hex = match self {
+            ItemColor::Default => return None,
+            ItemColor::Red => 0xef4444,
+            ItemColor::Orange => 0xf97316,
+            ItemColor::Amber => 0xf59e0b,
+            ItemColor::Green => 0x22c55e,
+            ItemColor::Teal => 0x14b8a6,
+            ItemColor::Blue => 0x3b82f6,
+            ItemColor::Indigo => 0x6366f1,
+            ItemColor::Purple => 0xa855f7,
+            ItemColor::Pink => 0xec4899,
+        };
+        Some(rgb(hex).into())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: Uuid,
@@ -65,12 +270,20 @@ pub struct Session {
     pub folder_id: Option<Uuid>,
     #[serde(default)]
     pub show_hidden_files: bool,
+    #[serde(default)]
+    pub icon: Option<ItemIcon>,
+    #[serde(default)]
+    pub color: ItemColor,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionFolder {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
+    pub icon: Option<ItemIcon>,
+    #[serde(default)]
+    pub color: ItemColor,
 }
 
 impl SessionFolder {
@@ -78,6 +291,15 @@ impl SessionFolder {
         Self {
             id: Uuid::new_v4(),
             name: name.into(),
+            icon: None,
+            color: ItemColor::default(),
+        }
+    }
+
+    pub fn display_icon(&self) -> SharedString {
+        match self.icon {
+            Some(icon) => icon.path(),
+            None => IconName::Folder.path(),
         }
     }
 }
@@ -100,6 +322,15 @@ impl Session {
             private_key_path: None,
             folder_id: None,
             show_hidden_files: false,
+            icon: None,
+            color: ItemColor::default(),
+        }
+    }
+
+    pub fn display_icon(&self) -> SharedString {
+        match self.icon {
+            Some(icon) => icon.path(),
+            None => self.kind.icon().path(),
         }
     }
 

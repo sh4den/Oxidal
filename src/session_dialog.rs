@@ -5,12 +5,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
     PathPromptOptions, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed as _, IndexPath, Sizable as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
     h_flex,
@@ -23,11 +24,125 @@ use serialport::SerialPortType;
 use uuid::Uuid;
 
 use crate::app::OxidalApp;
-use crate::session::{Session, SessionFolder, SessionKind};
+use crate::session::{ItemColor, ItemIcon, Session, SessionFolder, SessionKind};
 
 struct SelectedFolder(Option<Uuid>);
 
 struct SelectedKind(SessionKind);
+
+struct SelectedIcon(Option<ItemIcon>);
+
+struct SelectedColor(ItemColor);
+
+fn icon_picker(state: &Entity<SelectedIcon>, cx: &App) -> impl IntoElement {
+    let current = state.read(cx).0;
+    let border = cx.theme().border;
+    let primary = cx.theme().primary;
+    let accent = cx.theme().accent;
+    let muted = cx.theme().muted_foreground;
+
+    let swatch = move |selected: bool| {
+        div()
+            .h(gpui::px(28.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .border_1()
+            .cursor_pointer()
+            .map(move |this| {
+                if selected {
+                    this.border_color(primary).bg(primary.opacity(0.12))
+                } else {
+                    this.border_color(border).hover(|this| this.bg(accent))
+                }
+            })
+    };
+
+    v_flex().gap_1().child("Icon").child(
+        h_flex()
+            .flex_wrap()
+            .gap_1()
+            .child({
+                let state = state.clone();
+                swatch(current.is_none())
+                    .id("icon-default")
+                    .px_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .when(current.is_some(), |this| this.text_color(muted))
+                            .child("Auto"),
+                    )
+                    .on_click(move |_, _, cx| {
+                        state.update(cx, |s, cx| {
+                            s.0 = None;
+                            cx.notify();
+                        });
+                    })
+            })
+            .children(ItemIcon::ALL.iter().map(|item| {
+                let item = *item;
+                let state = state.clone();
+                swatch(current == Some(item))
+                    .id(SharedString::from(format!("icon-{item:?}")))
+                    .w(gpui::px(28.))
+                    .child(Icon::empty().path(item.path()).small())
+                    .on_click(move |_, _, cx| {
+                        state.update(cx, |s, cx| {
+                            s.0 = Some(item);
+                            cx.notify();
+                        });
+                    })
+            })),
+    )
+}
+
+fn color_picker(state: &Entity<SelectedColor>, cx: &App) -> impl IntoElement {
+    let current = state.read(cx).0;
+    let border = cx.theme().border;
+    let primary = cx.theme().primary;
+    let foreground = cx.theme().foreground;
+
+    v_flex().gap_1().child("Color").child(
+        h_flex()
+            .flex_wrap()
+            .gap_1()
+            .children(ItemColor::ALL.iter().map(|color| {
+                let color = *color;
+                let selected = current == color;
+                let state = state.clone();
+                div()
+                    .id(SharedString::from(format!("color-{color:?}")))
+                    .size(gpui::px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_md()
+                    .border_1()
+                    .cursor_pointer()
+                    .map(|this| {
+                        if selected {
+                            this.border_color(primary).bg(primary.opacity(0.12))
+                        } else {
+                            this.border_color(border)
+                        }
+                    })
+                    .child(
+                        div()
+                            .size(gpui::px(14.))
+                            .rounded_full()
+                            .bg(color.hsla().unwrap_or(foreground)),
+                    )
+                    .on_click(move |_, _, cx| {
+                        state.update(cx, |s, cx| {
+                            s.0 = color;
+                            cx.notify();
+                        });
+                    })
+            })),
+    )
+}
 
 #[derive(Clone)]
 enum TestState {
@@ -251,6 +366,15 @@ fn open_session_dialog(
     let serial_port = cx.new(|cx| SelectState::new(port_choices, serial_index, window, cx));
 
     let selected_folder = cx.new(|_cx| SelectedFolder(existing.as_ref().and_then(|s| s.folder_id)));
+    let selected_icon = cx.new(|_cx| SelectedIcon(existing.as_ref().and_then(|s| s.icon)));
+    let selected_color = cx.new(|_cx| {
+        SelectedColor(
+            existing
+                .as_ref()
+                .map(|s| s.color)
+                .unwrap_or(ItemColor::Default),
+        )
+    });
 
     window.open_dialog(cx, move |dialog, _window, cx| {
         let weak_app = weak_app.clone();
@@ -264,6 +388,8 @@ fn open_session_dialog(
         let serial_port = serial_port.clone();
         let selected_folder = selected_folder.clone();
         let selected_kind = selected_kind.clone();
+        let selected_icon = selected_icon.clone();
+        let selected_color = selected_color.clone();
         let test_status = test_status.clone();
         let kind = selected_kind.read(cx).0;
         let current_folder = selected_folder.read(cx).0;
@@ -337,7 +463,9 @@ fn open_session_dialog(
             .gap_3()
             .w(gpui::px(400.))
             .child(tiles)
-            .child(v_flex().gap_1().child("Name").child(Input::new(&name)));
+            .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
+            .child(icon_picker(&selected_icon, cx))
+            .child(color_picker(&selected_color, cx));
 
         let password_field = |cx: &App| {
             v_flex()
@@ -627,6 +755,8 @@ fn open_session_dialog(
             let serial_port = serial_port.clone();
             let selected_folder = selected_folder.clone();
             let selected_kind = selected_kind.clone();
+            let selected_icon = selected_icon.clone();
+            let selected_color = selected_color.clone();
             move |cx: &mut App| {
                 let kind = selected_kind.read(cx).0;
                 let mut session = Session::new(name.read(cx).value().to_string(), kind);
@@ -657,6 +787,8 @@ fn open_session_dialog(
                     .map(|v| v.to_string())
                     .filter(|v| !v.trim().is_empty());
                 session.folder_id = selected_folder.read(cx).0;
+                session.icon = selected_icon.read(cx).0;
+                session.color = selected_color.read(cx).0;
 
                 let _ = weak_app.update(cx, |app, cx| {
                     if editing_id.is_some() {
@@ -848,16 +980,21 @@ pub fn open_new_folder_dialog(
     cx: &mut App,
 ) {
     let name = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
+    let selected_icon = cx.new(|_cx| SelectedIcon(None));
+    let selected_color = cx.new(|_cx| SelectedColor(ItemColor::Default));
 
-    window.open_dialog(cx, move |dialog, _window, _cx| {
+    window.open_dialog(cx, move |dialog, _window, cx| {
         let weak_app = weak_app.clone();
         let name = name.clone();
+        let selected_icon = selected_icon.clone();
+        let selected_color = selected_color.clone();
 
         let body = v_flex()
-            .gap_1()
+            .gap_3()
             .w(gpui::px(320.))
-            .child("Name")
-            .child(Input::new(&name));
+            .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
+            .child(icon_picker(&selected_icon, cx))
+            .child(color_picker(&selected_color, cx));
 
         let footer =
             DialogFooter::new()
@@ -872,8 +1009,11 @@ pub fn open_new_folder_dialog(
                     move |_, window, cx| {
                         let value = name.read(cx).value().to_string();
                         if !value.trim().is_empty() {
+                            let mut folder = SessionFolder::new(value);
+                            folder.icon = selected_icon.read(cx).0;
+                            folder.color = selected_color.read(cx).0;
                             let _ = weak_app.update(cx, |app, cx| {
-                                app.add_folder(SessionFolder::new(value), cx);
+                                app.add_folder(folder, cx);
                             });
                         }
                         window.close_dialog(cx);
@@ -892,16 +1032,21 @@ pub fn open_edit_folder_dialog(
 ) {
     let folder_id = folder.id;
     let name = cx.new(|cx| InputState::new(window, cx).default_value(folder.name.clone()));
+    let selected_icon = cx.new(|_cx| SelectedIcon(folder.icon));
+    let selected_color = cx.new(|_cx| SelectedColor(folder.color));
 
-    window.open_dialog(cx, move |dialog, _window, _cx| {
+    window.open_dialog(cx, move |dialog, _window, cx| {
         let weak_app = weak_app.clone();
         let name = name.clone();
+        let selected_icon = selected_icon.clone();
+        let selected_color = selected_color.clone();
 
         let body = v_flex()
-            .gap_1()
+            .gap_3()
             .w(gpui::px(320.))
-            .child("Name")
-            .child(Input::new(&name));
+            .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
+            .child(icon_picker(&selected_icon, cx))
+            .child(color_picker(&selected_color, cx));
 
         let footer =
             DialogFooter::new()
@@ -916,14 +1061,18 @@ pub fn open_edit_folder_dialog(
                     move |_, window, cx| {
                         let value = name.read(cx).value().to_string();
                         if !value.trim().is_empty() {
+                            let mut folder = SessionFolder::new(value);
+                            folder.id = folder_id;
+                            folder.icon = selected_icon.read(cx).0;
+                            folder.color = selected_color.read(cx).0;
                             let _ = weak_app.update(cx, |app, cx| {
-                                app.rename_folder(folder_id, value, cx);
+                                app.update_folder(folder, cx);
                             });
                         }
                         window.close_dialog(cx);
                     },
                 ));
 
-        dialog.title("Rename Folder").child(body).footer(footer)
+        dialog.title("Edit Folder").child(body).footer(footer)
     });
 }

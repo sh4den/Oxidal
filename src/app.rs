@@ -4,7 +4,7 @@ use crate::settings_view::SettingsView;
 use crate::sftp::SftpPanel;
 use crate::terminal::{self, TerminalView};
 use gpui::{
-    AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
+    AppContext as _, Context, Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     div, prelude::FluentBuilder as _, px,
 };
@@ -12,7 +12,7 @@ use gpui::{
 use gpui_component::button::Button;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, IconNamed as _, Root, Sizable as _, TitleBar, WindowExt as _,
     button::ButtonVariants as _,
     dialog::DialogFooter,
     h_flex,
@@ -42,7 +42,8 @@ enum TabContent {
 struct OpenTab {
     session_id: Option<Uuid>,
     title: SharedString,
-    icon: IconName,
+    icon: SharedString,
+    icon_color: Option<Hsla>,
     content: TabContent,
 }
 
@@ -193,9 +194,9 @@ impl OxidalApp {
         cx.notify();
     }
 
-    pub fn rename_folder(&mut self, id: Uuid, name: String, cx: &mut Context<Self>) {
-        if let Some(folder) = self.folders.iter_mut().find(|f| f.id == id) {
-            folder.name = name;
+    pub fn update_folder(&mut self, updated: SessionFolder, cx: &mut Context<Self>) {
+        if let Some(folder) = self.folders.iter_mut().find(|f| f.id == updated.id) {
+            *folder = updated;
             session::save_folders(&self.folders);
             cx.notify();
         }
@@ -236,7 +237,8 @@ impl OxidalApp {
         self.tabs.push(OpenTab {
             session_id: None,
             title: SharedString::from("Settings"),
-            icon: IconName::Settings,
+            icon: IconName::Settings.path(),
+            icon_color: None,
             content: TabContent::Settings(view),
         });
         self.active_tab = Some(self.tabs.len() - 1);
@@ -329,7 +331,8 @@ impl OxidalApp {
         self.tabs.push(OpenTab {
             session_id: Some(id),
             title: SharedString::from(target.name.clone()),
-            icon: target.kind.icon(),
+            icon: target.display_icon(),
+            icon_color: target.color.hsla(),
             content,
         });
         self.active_tab = Some(self.tabs.len() - 1);
@@ -362,17 +365,7 @@ impl OxidalApp {
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let update_button = match &self.update_state {
-            UpdateState::Idle => Some(
-                Button::new("update")
-                    .primary()
-                    .small()
-                    .icon(IconName::ArrowDown)
-                    .label("Download update")
-                    .tooltip(format!("Version {}", "5.5"))
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.start_update_download(cx);
-                    })),
-            ),
+            UpdateState::Idle => None,
             UpdateState::Available(found) => Some(
                 Button::new("update")
                     .primary()
@@ -491,7 +484,12 @@ impl OxidalApp {
                     }
                 }),
             )
-            .child(Icon::new(item.kind.icon()).small())
+            .child(
+                Icon::empty()
+                    .path(item.display_icon())
+                    .small()
+                    .when_some(item.color.hsla(), |this, color| this.text_color(color)),
+            )
             .child(
                 v_flex()
                     .flex_1()
@@ -706,7 +704,12 @@ impl OxidalApp {
                         })
                         .xsmall(),
                     )
-                    .child(Icon::new(IconName::Folder).small())
+                    .child(
+                        Icon::empty()
+                            .path(folder.display_icon())
+                            .small()
+                            .when_some(folder.color.hsla(), |this, color| this.text_color(color)),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -726,7 +729,7 @@ impl OxidalApp {
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Settings2)
-                                    .tooltip("Rename")
+                                    .tooltip("Edit")
                                     .on_click(cx.listener(move |_view, _, window, cx| {
                                         let weak_app = cx.weak_entity();
                                         session_dialog::open_edit_folder_dialog(
@@ -844,7 +847,12 @@ impl OxidalApp {
             }))
             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
                 Tab::new()
-                    .prefix(Icon::new(tab.icon.clone()).xsmall())
+                    .prefix(
+                        Icon::empty()
+                            .path(tab.icon.clone())
+                            .xsmall()
+                            .when_some(tab.icon_color, |this, color| this.text_color(color)),
+                    )
                     .pl_3()
                     .label(tab.title.clone())
                     .suffix(
