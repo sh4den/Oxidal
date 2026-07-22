@@ -1,11 +1,19 @@
+use crate::session::{self, Session, SessionFolder, SessionKind};
+use crate::session_dialog;
+use crate::settings_view::SettingsView;
+use crate::sftp::SftpPanel;
+use crate::terminal::{self, TerminalView};
 use gpui::{
     AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     div, prelude::FluentBuilder as _, px,
 };
+
+use gpui_component::button::Button;
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     dialog::DialogFooter,
     h_flex,
     notification::Notification,
@@ -15,14 +23,7 @@ use gpui_component::{
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
-
 use uuid::Uuid;
-
-use crate::session::{self, Session, SessionFolder, SessionKind};
-use crate::session_dialog;
-use crate::settings_view::SettingsView;
-use crate::sftp::SftpPanel;
-use crate::terminal::{self, TerminalView};
 
 const TERM_ROWS: usize = 32;
 const TERM_COLS: usize = 110;
@@ -361,7 +362,17 @@ impl OxidalApp {
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let update_button = match &self.update_state {
-            UpdateState::Idle => None,
+            UpdateState::Idle => Some(
+                Button::new("update")
+                    .primary()
+                    .small()
+                    .icon(IconName::ArrowDown)
+                    .label("Download update")
+                    .tooltip(format!("Version {}", "5.5"))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.start_update_download(cx);
+                    })),
+            ),
             UpdateState::Available(found) => Some(
                 Button::new("update")
                     .primary()
@@ -392,33 +403,54 @@ impl OxidalApp {
             ),
         };
 
-        TitleBar::new().child(
-            h_flex()
-                .items_center()
-                .justify_end()
-                .gap_1()
-                .pr_2()
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .when_some(update_button, |this, button| this.child(button))
-                .child(
-                    Button::new("about")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Info)
-                        .on_click(cx.listener(|_view, _, window, cx| {
-                            open_about_dialog(window, cx);
-                        })),
-                )
-                .child(
-                    Button::new("settings")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Settings)
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.open_settings_tab(window, cx);
-                        })),
-                ),
-        )
+        let this = cx.entity();
+
+        TitleBar::new()
+            .child(
+                Button::new("application-menu")
+                    .icon(IconName::Menu)
+                    .ghost()
+                    .small()
+                    .dropdown_menu(move |menu, _window, _cx| {
+                        let this = this.clone();
+                        menu.item(
+                            PopupMenuItem::new("Settings")
+                                .disabled(false)
+                                .icon(IconName::Settings)
+                                .on_click(move |_, window, cx| {
+                                    this.update(cx, |view, cx| {
+                                        view.open_settings_tab(window, cx);
+                                    });
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new("About")
+                                .disabled(false)
+                                .icon(IconName::Info)
+                                .on_click(|_, window, cx| {
+                                    open_about_dialog(window, cx);
+                                }),
+                        )
+                        .separator()
+                        .item(
+                            PopupMenuItem::new("Exit")
+                                .disabled(false)
+                                .icon(IconName::WindowClose)
+                                .on_click(|_, _, cx| {
+                                    cx.quit();
+                                }),
+                        )
+                    }),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_1()
+                    .pr_2()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .when_some(update_button, |this, button| this.child(button)),
+            )
     }
 
     fn render_session_row(
