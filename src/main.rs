@@ -3,6 +3,7 @@
 mod app;
 mod assets;
 mod credentials;
+mod host_keys;
 mod session;
 mod session_dialog;
 mod settings;
