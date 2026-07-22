@@ -19,7 +19,7 @@ use gpui::{
 use gpui_component::{Root, Theme, ThemeMode, TitleBar};
 
 use crate::app::OxidalApp;
-use crate::terminal::view::{CopySelection, PasteClipboard, SendTab, SendTabPrev};
+use crate::terminal::view::{CopySelection, CutSelection, PasteClipboard, SendTab, SendTabPrev};
 
 fn main() {
     let application = gpui_platform::application().with_assets(crate::assets::Assets);
@@ -30,7 +30,10 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("tab", SendTab, Some("Terminal")),
             KeyBinding::new("shift-tab", SendTabPrev, Some("Terminal")),
+            KeyBinding::new("ctrl-c", CopySelection, Some("Terminal")),
             KeyBinding::new("ctrl-shift-c", CopySelection, Some("Terminal")),
+            KeyBinding::new("ctrl-x", CutSelection, Some("Terminal")),
+            KeyBinding::new("ctrl-v", PasteClipboard, Some("Terminal")),
             KeyBinding::new("ctrl-shift-v", PasteClipboard, Some("Terminal")),
         ]);
 
