@@ -846,7 +846,9 @@ impl OxidalApp {
                 cx.notify();
             }))
             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
+                let group_name = SharedString::from(format!("tab-{index}"));
                 Tab::new()
+                    .group(group_name.clone())
                     .prefix(
                         Icon::empty()
                             .path(tab.icon.clone())
@@ -854,12 +856,16 @@ impl OxidalApp {
                             .when_some(tab.icon_color, |this, color| this.text_color(color)),
                     )
                     .pl_3()
+                    .pr_2()
                     .label(tab.title.clone())
                     .suffix(
                         Button::new(SharedString::from(format!("close-tab-{index}")))
                             .ghost()
                             .xsmall()
-                            .icon(IconName::Close)
+                            .rounded(px(10.))
+                            .icon(Icon::new(IconName::Close).with_size(px(11.)))
+                            .when(index != active_index, |this| this.invisible())
+                            .group_hover(group_name, |this| this.visible())
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.close_tab(index, cx);
                             })),
