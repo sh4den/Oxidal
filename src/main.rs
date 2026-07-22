@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod assets;
 mod credentials;
 mod session;
 mod session_dialog;
@@ -21,7 +22,7 @@ use crate::app::OxidalApp;
 use crate::terminal::view::{CopySelection, PasteClipboard, SendTab, SendTabPrev};
 
 fn main() {
-    let application = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let application = gpui_platform::application().with_assets(crate::assets::Assets);
 
     application.run(move |cx: &mut App| {
         gpui_component::init(cx);
