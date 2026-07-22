@@ -30,18 +30,18 @@ Your sessions live in a plain JSON file you can read, diff and back up yourself.
 <table width="100%">
   <tr>
     <td align="center" width="50%" valign="top">
-      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/a8b83009-8c80-4976-9ed0-8af504cb098c" />
+      <img width="960" height="522" src="https://github.com/user-attachments/assets/c4483678-4f32-4e09-86b2-ef6a7b4a83ec" />
     </td>
     <td align="center" width="50%" valign="top">
-      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/e0ced512-64f3-497a-a21d-79bdb21e6bc8" />
+      <img width="960" height="522" src="https://github.com/user-attachments/assets/a9227d35-c436-428f-83b2-87f82f9813cb" />
     </td>
   </tr>
   <tr>
     <td align="center" width="50%" valign="top">
-      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/6d22d50a-92fe-4217-96fc-466d9f48268d" />
+      <img width="960" height="522" src="https://github.com/user-attachments/assets/8aa1760d-1d60-48b5-9f2d-d8c1a732f625" />
     </td>
     <td align="center" width="50%" valign="top">
-      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/df845866-8f5f-4ef0-ab9a-7cd87ca53ebb" />
+      <img width="960" height="522" src="https://github.com/user-attachments/assets/97aa4887-5e3d-4413-bd6f-e98704f54b56" />
     </td>
   </tr>
 </table>
