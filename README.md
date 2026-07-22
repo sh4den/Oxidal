@@ -30,18 +30,18 @@ Your sessions live in a plain JSON file you can read, diff and back up yourself.
 <table width="100%">
   <tr>
     <td align="center" width="50%" valign="top">
-      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/a8b83009-8c80-4976-9ed0-8af504cb098c" />
+      <img width="960" height="522" src="https://github.com/user-attachments/assets/c4483678-4f32-4e09-86b2-ef6a7b4a83ec" />
     </td>
     <td align="center" width="50%" valign="top">
-      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/e0ced512-64f3-497a-a21d-79bdb21e6bc8" />
+      <img width="960" height="522" src="https://github.com/user-attachments/assets/a9227d35-c436-428f-83b2-87f82f9813cb" />
     </td>
   </tr>
   <tr>
     <td align="center" width="50%" valign="top">
-      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/6d22d50a-92fe-4217-96fc-466d9f48268d" />
+      <img width="960" height="522" src="https://github.com/user-attachments/assets/8aa1760d-1d60-48b5-9f2d-d8c1a732f625" />
     </td>
     <td align="center" width="50%" valign="top">
-      <img width="960" height="522" alt="image" src="https://github.com/user-attachments/assets/df845866-8f5f-4ef0-ab9a-7cd87ca53ebb" />
+      <img width="960" height="522" src="https://github.com/user-attachments/assets/97aa4887-5e3d-4413-bd6f-e98704f54b56" />
     </td>
   </tr>
 </table>
@@ -100,11 +100,7 @@ Sessions and preferences are written as JSON under a per user config directory:
 
 ## Security
 
-Worth being straight with you about where this stands.
-
 **Passwords go to your OS credential vault.** Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux, one entry per session, keyed by the session's id. They are never written to `sessions.json`, and deleting a session deletes its entry. Private keys are read from the path you configure and never copied anywhere.
-
-**Host key verification is not implemented yet.** Oxidal currently accepts whatever host key a server presents instead of checking it against a known_hosts store. That leaves SSH and SFTP sessions open to a machine in the middle on a network you do not trust. It is the next thing on the list, but until it lands, plan accordingly.
 
 ## Status
 
