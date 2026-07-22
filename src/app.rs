@@ -956,7 +956,80 @@ impl OxidalApp {
                         })),
                 )
             })
+            .child(render_shortcuts(cx))
     }
+}
+
+fn render_shortcuts(cx: &gpui::App) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+
+    let section = |title: &'static str| {
+        div()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(muted)
+            .child(title)
+    };
+
+    v_flex()
+        .mt_4()
+        .p_4()
+        .gap_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().muted.opacity(0.35))
+        .child(
+            h_flex()
+                .items_start()
+                .gap_10()
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(section("CLIPBOARD"))
+                        .child(shortcut(&["Ctrl", "C"], "Copy selection, else interrupt", cx))
+                        .child(shortcut(&["Ctrl", "V"], "Paste", cx))
+                        .child(shortcut(&["Ctrl", "X"], "Cut selection", cx))
+                        .child(shortcut(&["Right click"], "Paste", cx)),
+                )
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(section("NAVIGATION"))
+                        .child(shortcut(&["Ctrl", "←/→"], "Move by word", cx))
+                        .child(shortcut(&["Shift", "PgUp/PgDn"], "Scroll history", cx))
+                        .child(shortcut(&["Drag"], "Select text", cx))
+                        .child(shortcut(&["Double click"], "Open a session", cx)),
+                ),
+        )
+}
+
+fn shortcut(keys: &[&str], label: &'static str, cx: &gpui::App) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+
+    let mut chips = h_flex().w(px(150.)).flex_none().items_center().gap_1();
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            chips = chips.child(div().text_xs().text_color(muted).child("+"));
+        }
+        chips = chips.child(
+            div()
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .text_xs()
+                .child(SharedString::from(key.to_string())),
+        );
+    }
+
+    h_flex()
+        .items_center()
+        .gap_3()
+        .child(chips)
+        .child(div().text_xs().text_color(muted).child(label))
 }
 
 impl Render for OxidalApp {
