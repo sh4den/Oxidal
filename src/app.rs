@@ -73,7 +73,21 @@ pub struct OxidalApp {
 }
 
 impl OxidalApp {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let window_handle = window.window_handle();
+        cx.spawn(async move |_this, cx| {
+            let requests = crate::host_keys::requests();
+            while let Ok(request) = requests.recv().await {
+                let opened = cx.update_window(window_handle, |_, window, cx| {
+                    crate::host_keys::open_prompt(request, window, cx);
+                });
+                if opened.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         let updates = crate::update::check();
         cx.spawn(async move |this, cx| {
             if let Ok(found) = updates.recv().await {
