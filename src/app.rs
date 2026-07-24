@@ -18,6 +18,7 @@ use gpui_component::{
     h_flex,
     notification::Notification,
     resizable::{h_resizable, resizable_panel},
+    scroll::ScrollableElement as _,
     tab::{Tab, TabBar},
     v_flex,
 };
@@ -951,42 +952,52 @@ impl OxidalApp {
             .and_then(|id| self.sessions.iter().find(|s| s.id == id));
 
         v_flex()
+            .id("welcome")
             .flex_1()
             .min_w_0()
             .h_full()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .child(Icon::new(IconName::SquareTerminal).with_size(px(48.)))
+            .px_6()
+            .py_4()
             .child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Oxidal Terminal"),
+                v_flex()
+                    .my_auto()
+                    .w_full()
+                    .items_center()
+                    .gap_3()
+                    .child(Icon::new(IconName::SquareTerminal).with_size(px(48.)))
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Oxidal Terminal"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(match selected {
+                                Some(s) => {
+                                    SharedString::from(format!("Ready to connect: {}", s.detail()))
+                                }
+                                None => SharedString::from(
+                                    "Select a session on the left, or add a new one",
+                                ),
+                            }),
+                    )
+                    .when_some(selected.map(|s| s.id), |this, id| {
+                        this.child(
+                            Button::new("connect")
+                                .primary()
+                                .icon(IconName::SquareTerminal)
+                                .label("Connect")
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.connect_session(id, window, cx);
+                                })),
+                        )
+                    })
+                    .child(render_shortcuts(cx)),
             )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(match selected {
-                        Some(s) => SharedString::from(format!("Ready to connect: {}", s.detail())),
-                        None => {
-                            SharedString::from("Select a session on the left, or add a new one")
-                        }
-                    }),
-            )
-            .when_some(selected.map(|s| s.id), |this, id| {
-                this.child(
-                    Button::new("connect")
-                        .primary()
-                        .icon(IconName::SquareTerminal)
-                        .label("Connect")
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            view.connect_session(id, window, cx);
-                        })),
-                )
-            })
-            .child(render_shortcuts(cx))
+            .overflow_y_scrollbar()
     }
 }
 
@@ -1005,16 +1016,20 @@ fn render_shortcuts(cx: &gpui::App) -> impl IntoElement {
         .mt_4()
         .p_4()
         .gap_3()
+        .max_w_full()
         .rounded_lg()
         .border_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().muted.opacity(0.35))
         .child(
             h_flex()
+                .flex_wrap()
                 .items_start()
-                .gap_10()
+                .gap_x_10()
+                .gap_y_4()
                 .child(
                     v_flex()
+                        .min_w_0()
                         .gap_2()
                         .child(section("CLIPBOARD"))
                         .child(shortcut(&["Ctrl", "C"], "Copy selection, else interrupt", cx))
@@ -1024,6 +1039,7 @@ fn render_shortcuts(cx: &gpui::App) -> impl IntoElement {
                 )
                 .child(
                     v_flex()
+                        .min_w_0()
                         .gap_2()
                         .child(section("NAVIGATION"))
                         .child(shortcut(&["Ctrl", "←/→"], "Move by word", cx))
@@ -1059,7 +1075,14 @@ fn shortcut(keys: &[&str], label: &'static str, cx: &gpui::App) -> impl IntoElem
         .items_center()
         .gap_3()
         .child(chips)
-        .child(div().text_xs().text_color(muted).child(label))
+        .child(
+            div()
+                .min_w_0()
+                .text_xs()
+                .text_ellipsis()
+                .text_color(muted)
+                .child(label),
+        )
 }
 
 impl Render for OxidalApp {
