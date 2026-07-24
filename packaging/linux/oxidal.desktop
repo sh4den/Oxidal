@@ -6,3 +6,6 @@ Exec=oxidal
 Icon=oxidal
 Terminal=false
 Categories=Network;RemoteAccess;
+Keywords=ssh;sftp;serial;terminal;console;remote;
+StartupWMClass=oxidal
+StartupNotify=true

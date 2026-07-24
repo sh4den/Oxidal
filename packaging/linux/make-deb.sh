@@ -27,7 +27,8 @@ Priority: optional
 Architecture: $arch
 Maintainer: sh4den <69421356+sh4den@users.noreply.github.com>
 Homepage: https://github.com/sh4den/Oxidal
-Depends: libc6, libfontconfig1, libxkbcommon0, libvulkan1, libudev1
+Depends: libc6, libfontconfig1, libxkbcommon0, libvulkan1, libudev1, libdbus-1-3
+Recommends: libwayland-client0, libxkbcommon-x11-0, gnome-keyring
 Description: Cross-platform SSH, SFTP and serial terminal client
 EOF
 
