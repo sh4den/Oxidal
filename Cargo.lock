@@ -52,7 +52,7 @@ dependencies = [
  "atspi-common",
  "phf 0.13.1",
  "serde",
- "zvariant",
+ "zvariant 5.13.1",
 ]
 
 [[package]]
@@ -114,7 +114,7 @@ dependencies = [
  "futures-lite",
  "futures-util",
  "serde",
- "zbus",
+ "zbus 5.18.0",
 ]
 
 [[package]]
@@ -353,7 +353,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "serde",
- "zbus",
+ "zbus 5.18.0",
 ]
 
 [[package]]
@@ -552,11 +552,11 @@ dependencies = [
  "enumflags2",
  "serde",
  "static_assertions",
- "zbus",
+ "zbus 5.18.0",
  "zbus-lockstep",
  "zbus-lockstep-macros",
- "zbus_names",
- "zvariant",
+ "zbus_names 4.3.4",
+ "zvariant 5.13.1",
 ]
 
 [[package]]
@@ -567,7 +567,7 @@ checksum = "2230e48787ed3eb4088996eab66a32ca20c0b67bbd4fd6cdfe79f04f1f04c9fc"
 dependencies = [
  "atspi-common",
  "serde",
- "zbus",
+ "zbus 5.18.0",
 ]
 
 [[package]]
@@ -1528,7 +1528,15 @@ version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "708b509edf7889e53d7efb0ffadd994cc6c2345ccb62f55cfd6b0682165e4fa6"
 dependencies = [
+ "aes",
+ "block-padding",
+ "cbc",
  "dbus",
+ "fastrand",
+ "hkdf",
+ "num",
+ "once_cell",
+ "sha2 0.10.9",
  "zeroize",
 ]
 
@@ -3692,6 +3700,7 @@ dependencies = [
  "byteorder",
  "dbus-secret-service",
  "log",
+ "secret-service",
  "security-framework 2.11.1",
  "security-framework 3.7.0",
  "windows-sys 0.60.2",
@@ -4307,6 +4316,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset 0.9.1",
 ]
 
 [[package]]
@@ -4388,7 +4398,7 @@ dependencies = [
  "mac-notification-sys",
  "serde",
  "tauri-winrt-notification",
- "zbus",
+ "zbus 5.18.0",
 ]
 
 [[package]]
@@ -4918,10 +4928,10 @@ dependencies = [
  "serde_bytes",
  "sha2 0.10.9",
  "subtle",
- "zbus",
- "zbus_macros",
+ "zbus 5.18.0",
+ "zbus_macros 5.18.0",
  "zeroize",
- "zvariant",
+ "zvariant 5.13.1",
 ]
 
 [[package]]
@@ -6592,6 +6602,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
 dependencies = [
  "zeroize",
+]
+
+[[package]]
+name = "secret-service"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4d35ad99a181be0a60ffcbe85d680d98f87bdc4d7644ade319b87076b9dbfd4"
+dependencies = [
+ "aes",
+ "cbc",
+ "futures-util",
+ "generic-array",
+ "hkdf",
+ "num",
+ "once_cell",
+ "rand 0.8.7",
+ "serde",
+ "sha2 0.10.9",
+ "zbus 4.4.0",
 ]
 
 [[package]]
@@ -9362,6 +9391,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "xdg-home"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec1cdab258fb55c0da61328dc52c8764709b249011b2cad0454c72f0bf10a1f6"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "xml-rs"
 version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9432,6 +9471,38 @@ dependencies = [
 
 [[package]]
 name = "zbus"
+version = "4.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb97012beadd29e654708a0fdb4c84bc046f537aecfde2c3ee0a9e4b4d48c725"
+dependencies = [
+ "async-broadcast",
+ "async-process",
+ "async-recursion",
+ "async-trait",
+ "enumflags2",
+ "event-listener",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "hex",
+ "nix 0.29.0",
+ "ordered-stream",
+ "rand 0.8.7",
+ "serde",
+ "serde_repr",
+ "sha1",
+ "static_assertions",
+ "tracing",
+ "uds_windows",
+ "windows-sys 0.52.0",
+ "xdg-home",
+ "zbus_macros 4.4.0",
+ "zbus_names 3.0.0",
+ "zvariant 4.2.0",
+]
+
+[[package]]
+name = "zbus"
 version = "5.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe18fb60dc696039e738717b76eaea21e7a4489bbb1885020b43c94236d7e98a"
@@ -9460,9 +9531,9 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "winnow 1.0.4",
- "zbus_macros",
- "zbus_names",
- "zvariant",
+ "zbus_macros 5.18.0",
+ "zbus_names 4.3.4",
+ "zvariant 5.13.1",
 ]
 
 [[package]]
@@ -9472,7 +9543,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6998de05217a084b7578728a9443d04ea4cd80f2a0839b8d78770b76ccd45863"
 dependencies = [
  "zbus_xml",
- "zvariant",
+ "zvariant 5.13.1",
 ]
 
 [[package]]
@@ -9486,7 +9557,20 @@ dependencies = [
  "syn 2.0.119",
  "zbus-lockstep",
  "zbus_xml",
- "zvariant",
+ "zvariant 5.13.1",
+]
+
+[[package]]
+name = "zbus_macros"
+version = "4.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "267db9407081e90bbfa46d841d3cbc60f59c0351838c4bc65199ecd79ab1983e"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "zvariant_utils 2.1.0",
 ]
 
 [[package]]
@@ -9499,9 +9583,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "zbus_names",
- "zvariant",
- "zvariant_utils",
+ "zbus_names 4.3.4",
+ "zvariant 5.13.1",
+ "zvariant_utils 3.5.0",
+]
+
+[[package]]
+name = "zbus_names"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b9b1fef7d021261cc16cba64c351d291b715febe0fa10dc3a443ac5a5022e6c"
+dependencies = [
+ "serde",
+ "static_assertions",
+ "zvariant 4.2.0",
 ]
 
 [[package]]
@@ -9512,7 +9607,7 @@ checksum = "d8bf88b4a3ff53e883001e0e0115b297a9d53c31b9c1edd2bfdd853e3428624e"
 dependencies = [
  "serde",
  "winnow 1.0.4",
- "zvariant",
+ "zvariant 5.13.1",
 ]
 
 [[package]]
@@ -9523,8 +9618,8 @@ checksum = "d1586c021a01ca0a9216dcd874e546382e156a5cbab5fab6cb5f10087e22682a"
 dependencies = [
  "serde",
  "winnow 1.0.4",
- "zbus_names",
- "zvariant",
+ "zbus_names 4.3.4",
+ "zvariant 5.13.1",
 ]
 
 [[package]]
@@ -9807,6 +9902,19 @@ dependencies = [
 
 [[package]]
 name = "zvariant"
+version = "4.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2084290ab9a1c471c38fc524945837734fbf124487e105daec2bb57fd48c81fe"
+dependencies = [
+ "endi",
+ "enumflags2",
+ "serde",
+ "static_assertions",
+ "zvariant_derive 4.2.0",
+]
+
+[[package]]
+name = "zvariant"
 version = "5.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bee2a0bcd2a907786a456fff45aaaaf54c9ba5f50b71ae9ec1a4edd200c94911"
@@ -9816,8 +9924,21 @@ dependencies = [
  "serde",
  "serde_bytes",
  "winnow 1.0.4",
- "zvariant_derive",
- "zvariant_utils",
+ "zvariant_derive 5.13.1",
+ "zvariant_utils 3.5.0",
+]
+
+[[package]]
+name = "zvariant_derive"
+version = "4.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73e2ba546bda683a90652bac4a279bc146adad1386f25379cf73200d2002c449"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "zvariant_utils 2.1.0",
 ]
 
 [[package]]
@@ -9830,7 +9951,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "zvariant_utils",
+ "zvariant_utils 3.5.0",
+]
+
+[[package]]
+name = "zvariant_utils"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c51bcff7cc3dbb5055396bcf774748c3dab426b4b8659046963523cee4808340"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
