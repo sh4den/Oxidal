@@ -22,6 +22,8 @@ use gpui_component::{Root, Theme, ThemeMode, TitleBar};
 use crate::app::OxidalApp;
 use crate::terminal::view::{CopySelection, CutSelection, PasteClipboard, SendTab, SendTabPrev};
 
+const APP_ID: &str = "oxidal";
+
 fn main() {
     let application = gpui_platform::application().with_assets(crate::assets::Assets);
 
@@ -52,6 +54,7 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitleBar::title_bar_options()),
+            app_id: Some(APP_ID.to_string()),
             window_min_size: Some(size(px(800.), px(560.))),
             window_background: if opacity < 1.0 {
                 WindowBackgroundAppearance::Transparent

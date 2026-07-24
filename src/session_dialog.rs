@@ -6,14 +6,14 @@ use std::time::Duration;
 
 use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _,
+    PathPromptOptions, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed as _, IndexPath, Sizable as _,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
-    dialog::DialogFooter,
+    dialog::{Dialog, DialogFooter},
     h_flex,
     input::{Input, InputState},
     select::{SearchableVec, Select, SelectItem, SelectState},
@@ -25,6 +25,95 @@ use uuid::Uuid;
 
 use crate::app::OxidalApp;
 use crate::session::{ItemColor, ItemIcon, Session, SessionFolder, SessionKind};
+
+struct DialogMetrics {
+    width: gpui::Pixels,
+    margin_top: gpui::Pixels,
+    max_height: gpui::Pixels,
+    body_max_height: gpui::Pixels,
+}
+
+fn dialog_metrics(window: &Window, width: gpui::Pixels) -> DialogMetrics {
+    let viewport = window.viewport_size();
+    let margin_top = (viewport.height / 10.).clamp(gpui::px(12.), gpui::px(56.));
+    let max_height = (viewport.height - margin_top * 2.).max(gpui::px(160.));
+
+    DialogMetrics {
+        width: width.min((viewport.width - gpui::px(24.)).max(gpui::px(240.))),
+        margin_top,
+        max_height,
+        body_max_height: (max_height - gpui::px(112.)).max(gpui::px(120.)),
+    }
+}
+
+fn fit_to_window(dialog: Dialog, metrics: &DialogMetrics) -> Dialog {
+    dialog
+        .w(metrics.width)
+        .margin_top(metrics.margin_top)
+        .max_h(metrics.max_height)
+}
+
+fn scrollable_body(
+    id: &'static str,
+    body: impl IntoElement,
+    scroll: &ScrollHandle,
+    max_height: gpui::Pixels,
+    cx: &App,
+) -> impl IntoElement {
+    let remaining = scroll.max_offset().y + scroll.offset().y;
+    let background = cx.theme().background;
+    let border = cx.theme().border;
+    let popover = cx.theme().popover;
+    let muted_foreground = cx.theme().muted_foreground;
+
+    div()
+        .relative()
+        .w_full()
+        .child(
+            div()
+                .id(id)
+                .w_full()
+                .max_h(max_height)
+                .overflow_y_scroll()
+                .track_scroll(scroll)
+                .child(body),
+        )
+        .when(remaining > gpui::px(4.), |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .h(gpui::px(48.))
+                    .pb_1()
+                    .flex()
+                    .items_end()
+                    .justify_center()
+                    .bg(gpui::linear_gradient(
+                        180.,
+                        gpui::linear_color_stop(background.opacity(0.), 0.),
+                        gpui::linear_color_stop(background, 0.7),
+                    ))
+                    .child(
+                        h_flex()
+                            .h(gpui::px(22.))
+                            .px_2()
+                            .gap_1()
+                            .items_center()
+                            .rounded_full()
+                            .bg(popover)
+                            .border_1()
+                            .border_color(border)
+                            .text_color(muted_foreground)
+                            .shadow_sm()
+                            .child(Icon::new(IconName::ChevronDown).xsmall())
+                            .child(div().text_xs().child("Scroll down"))
+                            .child(Icon::new(IconName::ChevronDown).xsmall()),
+                    ),
+            )
+        })
+}
 
 struct SelectedFolder(Option<Uuid>);
 
@@ -157,6 +246,7 @@ struct TestStatus(TestState);
 #[derive(Clone, PartialEq)]
 struct KeyOption {
     label: SharedString,
+    detail: SharedString,
     path: SharedString,
 }
 
@@ -164,6 +254,7 @@ impl KeyOption {
     fn none() -> Self {
         Self {
             label: "No private key".into(),
+            detail: "".into(),
             path: "".into(),
         }
     }
@@ -174,6 +265,11 @@ impl KeyOption {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.display().to_string())
+                .into(),
+            detail: path
+                .parent()
+                .map(|parent| parent.display().to_string())
+                .unwrap_or_default()
                 .into(),
             path: path.display().to_string().into(),
         }
@@ -200,13 +296,18 @@ impl SelectItem for KeyOption {
         if self.path.is_empty() {
             self.label.clone().into_any_element()
         } else {
-            v_flex()
-                .child(self.label.clone())
+            h_flex()
+                .w_full()
+                .gap_2()
+                .justify_between()
+                .child(div().flex_none().child(self.label.clone()))
                 .child(
                     div()
+                        .min_w_0()
                         .text_xs()
+                        .text_ellipsis_start()
                         .text_color(cx.theme().muted_foreground)
-                        .child(self.path.clone()),
+                        .child(self.detail.clone()),
                 )
                 .into_any_element()
         }
@@ -343,6 +444,7 @@ fn open_session_dialog(
         .as_deref()
         .and_then(|path| key_choices.iter().position(|o| o.path.as_ref() == path))
         .unwrap_or(0);
+    let key_searchable = key_choices.len() > 8;
     let private_key = cx.new(|cx| {
         SelectState::new(
             SearchableVec::new(key_choices),
@@ -350,7 +452,7 @@ fn open_session_dialog(
             window,
             cx,
         )
-        .searchable(true)
+        .searchable(key_searchable)
     });
 
     let existing_port = existing
@@ -365,6 +467,7 @@ fn open_session_dialog(
         .map(|i| IndexPath::default().row(i));
     let serial_port = cx.new(|cx| SelectState::new(port_choices, serial_index, window, cx));
 
+    let body_scroll = ScrollHandle::new();
     let selected_folder = cx.new(|_cx| SelectedFolder(existing.as_ref().and_then(|s| s.folder_id)));
     let selected_icon = cx.new(|_cx| SelectedIcon(existing.as_ref().and_then(|s| s.icon)));
     let selected_color = cx.new(|_cx| {
@@ -376,7 +479,7 @@ fn open_session_dialog(
         )
     });
 
-    window.open_dialog(cx, move |dialog, _window, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         let weak_app = weak_app.clone();
         let name = name.clone();
         let host = host.clone();
@@ -391,6 +494,7 @@ fn open_session_dialog(
         let selected_icon = selected_icon.clone();
         let selected_color = selected_color.clone();
         let test_status = test_status.clone();
+        let body_scroll = body_scroll.clone();
         let kind = selected_kind.read(cx).0;
         let current_folder = selected_folder.read(cx).0;
         let test_state = test_status.read(cx).0.clone();
@@ -461,7 +565,7 @@ fn open_session_dialog(
 
         let mut body = v_flex()
             .gap_3()
-            .w(gpui::px(400.))
+            .w_full()
             .child(tiles)
             .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
             .child(icon_picker(&selected_icon, cx))
@@ -533,6 +637,7 @@ fn open_session_dialog(
                             .child(
                                 Select::new(&private_key)
                                     .search_placeholder("Search keys...")
+                                    .menu_max_h(gpui::px(220.))
                                     .flex_1(),
                             )
                             .child(
@@ -816,13 +921,21 @@ fn open_session_dialog(
                 }
             }));
 
-        dialog
+        let metrics = dialog_metrics(window, gpui::px(440.));
+
+        fit_to_window(dialog, &metrics)
             .title(if is_edit {
                 format!("Edit {} Session", kind.label())
             } else {
                 format!("New {} Session", kind.label())
             })
-            .child(body)
+            .child(scrollable_body(
+                "session-form",
+                body,
+                &body_scroll,
+                metrics.body_max_height,
+                cx,
+            ))
             .footer(footer)
             .on_ok({
                 let do_save = do_save.clone();
@@ -982,16 +1095,18 @@ pub fn open_new_folder_dialog(
     let name = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
     let selected_icon = cx.new(|_cx| SelectedIcon(None));
     let selected_color = cx.new(|_cx| SelectedColor(ItemColor::Default));
+    let body_scroll = ScrollHandle::new();
 
-    window.open_dialog(cx, move |dialog, _window, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         let weak_app = weak_app.clone();
         let name = name.clone();
         let selected_icon = selected_icon.clone();
         let selected_color = selected_color.clone();
+        let body_scroll = body_scroll.clone();
 
         let body = v_flex()
             .gap_3()
-            .w(gpui::px(320.))
+            .w_full()
             .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
             .child(icon_picker(&selected_icon, cx))
             .child(color_picker(&selected_color, cx));
@@ -1020,7 +1135,18 @@ pub fn open_new_folder_dialog(
                     },
                 ));
 
-        dialog.title("New Folder").child(body).footer(footer)
+        let metrics = dialog_metrics(window, gpui::px(360.));
+
+        fit_to_window(dialog, &metrics)
+            .title("New Folder")
+            .child(scrollable_body(
+                "new-folder-form",
+                body,
+                &body_scroll,
+                metrics.body_max_height,
+                cx,
+            ))
+            .footer(footer)
     });
 }
 
@@ -1034,16 +1160,18 @@ pub fn open_edit_folder_dialog(
     let name = cx.new(|cx| InputState::new(window, cx).default_value(folder.name.clone()));
     let selected_icon = cx.new(|_cx| SelectedIcon(folder.icon));
     let selected_color = cx.new(|_cx| SelectedColor(folder.color));
+    let body_scroll = ScrollHandle::new();
 
-    window.open_dialog(cx, move |dialog, _window, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         let weak_app = weak_app.clone();
         let name = name.clone();
         let selected_icon = selected_icon.clone();
         let selected_color = selected_color.clone();
+        let body_scroll = body_scroll.clone();
 
         let body = v_flex()
             .gap_3()
-            .w(gpui::px(320.))
+            .w_full()
             .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
             .child(icon_picker(&selected_icon, cx))
             .child(color_picker(&selected_color, cx));
@@ -1073,6 +1201,17 @@ pub fn open_edit_folder_dialog(
                     },
                 ));
 
-        dialog.title("Edit Folder").child(body).footer(footer)
+        let metrics = dialog_metrics(window, gpui::px(360.));
+
+        fit_to_window(dialog, &metrics)
+            .title("Edit Folder")
+            .child(scrollable_body(
+                "edit-folder-form",
+                body,
+                &body_scroll,
+                metrics.body_max_height,
+                cx,
+            ))
+            .footer(footer)
     });
 }
