@@ -246,6 +246,7 @@ struct TestStatus(TestState);
 #[derive(Clone, PartialEq)]
 struct KeyOption {
     label: SharedString,
+    detail: SharedString,
     path: SharedString,
 }
 
@@ -253,6 +254,7 @@ impl KeyOption {
     fn none() -> Self {
         Self {
             label: "No private key".into(),
+            detail: "".into(),
             path: "".into(),
         }
     }
@@ -263,6 +265,11 @@ impl KeyOption {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.display().to_string())
+                .into(),
+            detail: path
+                .parent()
+                .map(|parent| parent.display().to_string())
+                .unwrap_or_default()
                 .into(),
             path: path.display().to_string().into(),
         }
@@ -289,13 +296,18 @@ impl SelectItem for KeyOption {
         if self.path.is_empty() {
             self.label.clone().into_any_element()
         } else {
-            v_flex()
-                .child(self.label.clone())
+            h_flex()
+                .w_full()
+                .gap_2()
+                .justify_between()
+                .child(div().flex_none().child(self.label.clone()))
                 .child(
                     div()
+                        .min_w_0()
                         .text_xs()
+                        .text_ellipsis_start()
                         .text_color(cx.theme().muted_foreground)
-                        .child(self.path.clone()),
+                        .child(self.detail.clone()),
                 )
                 .into_any_element()
         }
@@ -432,6 +444,7 @@ fn open_session_dialog(
         .as_deref()
         .and_then(|path| key_choices.iter().position(|o| o.path.as_ref() == path))
         .unwrap_or(0);
+    let key_searchable = key_choices.len() > 8;
     let private_key = cx.new(|cx| {
         SelectState::new(
             SearchableVec::new(key_choices),
@@ -439,7 +452,7 @@ fn open_session_dialog(
             window,
             cx,
         )
-        .searchable(true)
+        .searchable(key_searchable)
     });
 
     let existing_port = existing
@@ -624,6 +637,7 @@ fn open_session_dialog(
                             .child(
                                 Select::new(&private_key)
                                     .search_placeholder("Search keys...")
+                                    .menu_max_h(gpui::px(220.))
                                     .flex_1(),
                             )
                             .child(
