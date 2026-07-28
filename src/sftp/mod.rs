@@ -10,9 +10,13 @@ pub struct SftpEntry {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    pub is_symlink: bool,
     pub size: u64,
     pub modified: Option<u64>,
+    pub accessed: Option<u64>,
     pub permissions: Option<u32>,
+    pub owner: Option<String>,
+    pub group: Option<String>,
 }
 
 enum SftpCommand {
@@ -182,6 +186,19 @@ pub fn format_modified(unix_secs: u64) -> String {
     match chrono::DateTime::from_timestamp(unix_secs as i64, 0) {
         Some(dt) => dt.format("%Y-%m-%d %H:%M").to_string(),
         None => String::new(),
+    }
+}
+
+pub fn format_kind(entry: &SftpEntry) -> String {
+    if entry.is_dir {
+        return "Folder".to_string();
+    }
+    if entry.is_symlink {
+        return "Symlink".to_string();
+    }
+    match entry.name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => ext.to_uppercase(),
+        _ => "File".to_string(),
     }
 }
 

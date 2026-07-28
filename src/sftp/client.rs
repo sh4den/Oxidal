@@ -172,9 +172,19 @@ async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntr
                 name: entry.file_name(),
                 path: entry.path(),
                 is_dir: matches!(entry.file_type(), FileType::Dir),
+                is_symlink: matches!(entry.file_type(), FileType::Symlink),
                 size: metadata.len(),
                 modified: metadata.mtime.map(|t| t as u64),
+                accessed: metadata.atime.map(|t| t as u64),
                 permissions: metadata.permissions,
+                owner: metadata
+                    .user
+                    .clone()
+                    .or_else(|| metadata.uid.map(|uid| uid.to_string())),
+                group: metadata
+                    .group
+                    .clone()
+                    .or_else(|| metadata.gid.map(|gid| gid.to_string())),
             }
         })
         .collect();
