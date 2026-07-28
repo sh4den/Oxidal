@@ -20,7 +20,13 @@ const CPU_HISTORY_LEN: usize = 30;
 
 actions!(
     terminal,
-    [SendTab, SendTabPrev, CopySelection, CutSelection, PasteClipboard]
+    [
+        SendTab,
+        SendTabPrev,
+        CopySelection,
+        CutSelection,
+        PasteClipboard
+    ]
 );
 
 fn cursor_fg() -> Hsla {
@@ -84,9 +90,23 @@ impl TerminalView {
 
         let events = backend.events.clone();
         cx.spawn(async move |this, cx| {
+            // Coalesce queued output into one grid feed + notify per wakeup;
+            // bursty producers otherwise cost an entity update per 4KB chunk.
+            const MAX_FEED_BATCH: usize = 1024 * 1024;
             loop {
                 match events.recv().await {
-                    Ok(BackendEvent::Data(bytes)) => {
+                    Ok(BackendEvent::Data(mut bytes)) => {
+                        let mut closed = None;
+                        while bytes.len() < MAX_FEED_BATCH {
+                            match events.try_recv() {
+                                Ok(BackendEvent::Data(more)) => bytes.extend_from_slice(&more),
+                                Ok(BackendEvent::Closed(message)) => {
+                                    closed = Some(message);
+                                    break;
+                                }
+                                Err(_) => break,
+                            }
+                        }
                         if this
                             .update(cx, |view: &mut Self, cx| {
                                 let top_before = view.grid.screen_top_line();
@@ -103,6 +123,15 @@ impl TerminalView {
                             })
                             .is_err()
                         {
+                            break;
+                        }
+                        if let Some(message) = closed {
+                            let _ = this.update(cx, |view: &mut Self, cx| {
+                                view.closed_message = Some(
+                                    message.unwrap_or_else(|| "Connection closed".to_string()),
+                                );
+                                cx.notify();
+                            });
                             break;
                         }
                     }
@@ -467,10 +496,11 @@ impl Render for TerminalView {
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(|view, event: &MouseDownEvent, _window, _cx| {
-                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
-                        if let Some((row, col)) = view.cell_at(event.position, false) {
-                            view.send_mouse(1, row, col, true, false);
-                        }
+                    if view.grid.mouse_mode != 0
+                        && !event.modifiers.shift
+                        && let Some((row, col)) = view.cell_at(event.position, false)
+                    {
+                        view.send_mouse(1, row, col, true, false);
                     }
                 }),
             )
@@ -493,10 +523,11 @@ impl Render for TerminalView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|view, event: &MouseUpEvent, _window, cx| {
-                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
-                        if let Some((row, col)) = view.cell_at(event.position, true) {
-                            view.send_mouse(0, row, col, false, false);
-                        }
+                    if view.grid.mouse_mode != 0
+                        && !event.modifiers.shift
+                        && let Some((row, col)) = view.cell_at(event.position, true)
+                    {
+                        view.send_mouse(0, row, col, false, false);
                     }
                     view.end_drag();
                     cx.notify();
@@ -505,20 +536,22 @@ impl Render for TerminalView {
             .on_mouse_up(
                 MouseButton::Middle,
                 cx.listener(|view, event: &MouseUpEvent, _window, _cx| {
-                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
-                        if let Some((row, col)) = view.cell_at(event.position, true) {
-                            view.send_mouse(1, row, col, false, false);
-                        }
+                    if view.grid.mouse_mode != 0
+                        && !event.modifiers.shift
+                        && let Some((row, col)) = view.cell_at(event.position, true)
+                    {
+                        view.send_mouse(1, row, col, false, false);
                     }
                 }),
             )
             .on_mouse_up(
                 MouseButton::Right,
                 cx.listener(|view, event: &MouseUpEvent, _window, _cx| {
-                    if view.grid.mouse_mode != 0 && !event.modifiers.shift {
-                        if let Some((row, col)) = view.cell_at(event.position, true) {
-                            view.send_mouse(2, row, col, false, false);
-                        }
+                    if view.grid.mouse_mode != 0
+                        && !event.modifiers.shift
+                        && let Some((row, col)) = view.cell_at(event.position, true)
+                    {
+                        view.send_mouse(2, row, col, false, false);
                     }
                 }),
             )
@@ -534,11 +567,12 @@ impl Render for TerminalView {
                     let cell = view
                         .cell_at(event.position, true)
                         .map(|(row, col)| (view.line_at(row), col));
-                    if let (Some(cell), Some(selection)) = (cell, view.selection.as_mut()) {
-                        if selection.dragging && selection.head != cell {
-                            selection.head = cell;
-                            cx.notify();
-                        }
+                    if let (Some(cell), Some(selection)) = (cell, view.selection.as_mut())
+                        && selection.dragging
+                        && selection.head != cell
+                    {
+                        selection.head = cell;
+                        cx.notify();
                     }
                 }
                 if view.grid.mouse_mode >= 1002 && !event.modifiers.shift {
@@ -1038,8 +1072,8 @@ fn build_paint(
     base_font: &Font,
     window: &Window,
 ) -> (Vec<PaintQuad>, Vec<(ShapedLine, Point<Pixels>)>) {
-    let mut quads = Vec::new();
-    let mut lines = Vec::new();
+    let mut quads = Vec::with_capacity(grid.rows);
+    let mut lines = Vec::with_capacity(grid.rows);
 
     let top_line = grid.screen_top_line().saturating_sub(scroll_offset);
     let cursor = grid

@@ -5,7 +5,7 @@ use vte::{Params, Perform};
 
 const SCROLLBACK_MAX: usize = 5000;
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Default)]
 pub enum Color {
     #[default]
     Default,
@@ -38,7 +38,7 @@ const FLAG_UNDERLINE: u32 = 1 << 26;
 const FLAG_STRIKE: u32 = 1 << 27;
 const FLAG_DIM: u32 = 1 << 28;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct Cell {
     ch_flags: u32,
     pub fg: Color,
@@ -242,12 +242,20 @@ impl Grid {
     }
 
     fn push_scrollback(&mut self, count: usize) {
-        for row in self.cells.iter().take(count) {
-            self.scrollback.push_back(row.clone());
-        }
-        while self.scrollback.len() > SCROLLBACK_MAX {
-            self.scrollback.pop_front();
-            self.scrollback_trimmed += 1;
+        // Both callers discard the pushed rows afterwards (blank-fill or
+        // resize-skip), so move them out and recycle trimmed rows instead
+        // of cloning. Recycled rows are only reused if their width matches.
+        let cols = self.cols;
+        for row in self.cells.iter_mut().take(count) {
+            let replacement = if self.scrollback.len() >= SCROLLBACK_MAX {
+                self.scrollback_trimmed += 1;
+                self.scrollback.pop_front()
+            } else {
+                None
+            }
+            .filter(|recycled| recycled.len() == cols)
+            .unwrap_or_else(|| vec![Cell::BLANK; cols].into_boxed_slice());
+            self.scrollback.push_back(std::mem::replace(row, replacement));
         }
     }
 
@@ -785,22 +793,20 @@ impl Perform for Grid {
                     self.responses.extend_from_slice(reply.as_bytes());
                 }
             }
-            'h' | 'l' => {
-                if intermediates.first() == Some(&b'?') {
-                    let enable = action == 'h';
-                    for param in params.iter() {
-                        match param.first().copied().unwrap_or(0) {
-                            1 => self.application_cursor_keys = enable,
-                            7 => self.autowrap = enable,
-                            25 => self.cursor_visible = enable,
-                            47 | 1047 | 1049 => self.set_alt_screen(enable),
-                            mode @ (1000 | 1002 | 1003) => {
-                                self.mouse_mode = if enable { mode } else { 0 };
-                            }
-                            1006 => self.mouse_sgr = enable,
-                            2004 => self.bracketed_paste = enable,
-                            _ => {}
+            'h' | 'l' if intermediates.first() == Some(&b'?') => {
+                let enable = action == 'h';
+                for param in params.iter() {
+                    match param.first().copied().unwrap_or(0) {
+                        1 => self.application_cursor_keys = enable,
+                        7 => self.autowrap = enable,
+                        25 => self.cursor_visible = enable,
+                        47 | 1047 | 1049 => self.set_alt_screen(enable),
+                        mode @ (1000 | 1002 | 1003) => {
+                            self.mouse_mode = if enable { mode } else { 0 };
                         }
+                        1006 => self.mouse_sgr = enable,
+                        2004 => self.bracketed_paste = enable,
+                        _ => {}
                     }
                 }
             }
@@ -904,3 +910,4 @@ fn dec_graphics(ch: char) -> char {
         other => other,
     }
 }
+

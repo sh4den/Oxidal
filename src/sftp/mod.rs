@@ -5,7 +5,7 @@ pub use panel::SftpPanel;
 
 use std::path::PathBuf;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SftpEntry {
     pub name: String,
     pub path: String,
