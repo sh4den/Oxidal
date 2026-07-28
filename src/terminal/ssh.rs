@@ -47,7 +47,7 @@ pub fn spawn(
         let _ = out_tx.send_blocking(BackendEvent::Closed(result.err().map(|e| e.to_string())));
     });
 
-    (Backend::new(out_rx, in_tx, resize_tx), stats_rx)
+    (Backend::new(out_rx, in_tx, Some(resize_tx)), stats_rx)
 }
 
 async fn run(

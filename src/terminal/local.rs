@@ -90,5 +90,5 @@ pub fn spawn(rows: u16, cols: u16) -> anyhow::Result<Backend> {
         let _ = child.wait();
     });
 
-    Ok(Backend::new(out_rx, in_tx, resize_tx))
+    Ok(Backend::new(out_rx, in_tx, Some(resize_tx)))
 }
