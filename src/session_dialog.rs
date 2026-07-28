@@ -540,12 +540,12 @@ fn open_session_dialog(
                         if prev == tile_kind {
                             return;
                         }
-                        if name.read(cx).value().to_string() == prev.label() {
+                        if name.read(cx).value() == prev.label() {
                             name.update(cx, |state, cx| {
                                 state.set_value(tile_kind.label(), window, cx);
                             });
                         }
-                        if port.read(cx).value().to_string() == prev.default_port().to_string() {
+                        if port.read(cx).value() == prev.default_port().to_string() {
                             port.update(cx, |state, cx| {
                                 state.set_value(tile_kind.default_port().to_string(), window, cx);
                             });
@@ -838,7 +838,7 @@ fn open_session_dialog(
                                 Ok(Err(err)) => TestState::Failed(err),
                                 Err(_) => TestState::Failed("Connection test aborted".to_string()),
                             };
-                            let _ = test_status.update(cx, |s, cx| {
+                            test_status.update(cx, |s, cx| {
                                 s.0 = outcome;
                                 cx.notify();
                             });
