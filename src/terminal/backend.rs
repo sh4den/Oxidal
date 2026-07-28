@@ -6,14 +6,15 @@ pub enum BackendEvent {
 pub struct Backend {
     pub events: async_channel::Receiver<BackendEvent>,
     input: async_channel::Sender<Vec<u8>>,
-    resize: async_channel::Sender<(u16, u16)>,
+    // None for transports with no resize concept (e.g. serial).
+    resize: Option<async_channel::Sender<(u16, u16)>>,
 }
 
 impl Backend {
     pub fn new(
         events: async_channel::Receiver<BackendEvent>,
         input: async_channel::Sender<Vec<u8>>,
-        resize: async_channel::Sender<(u16, u16)>,
+        resize: Option<async_channel::Sender<(u16, u16)>>,
     ) -> Self {
         Self {
             events,
@@ -27,6 +28,8 @@ impl Backend {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {
-        let _ = self.resize.send_blocking((rows, cols));
+        if let Some(resize) = &self.resize {
+            let _ = resize.send_blocking((rows, cols));
+        }
     }
 }

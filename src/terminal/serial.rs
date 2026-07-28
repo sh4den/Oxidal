@@ -11,7 +11,6 @@ pub fn spawn(port_name: String, baud_rate: u32) -> anyhow::Result<Backend> {
 
     let (out_tx, out_rx) = async_channel::unbounded::<BackendEvent>();
     let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
-    let (resize_tx, _resize_rx) = async_channel::unbounded::<(u16, u16)>();
 
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
@@ -43,5 +42,5 @@ pub fn spawn(port_name: String, baud_rate: u32) -> anyhow::Result<Backend> {
         }
     });
 
-    Ok(Backend::new(out_rx, in_tx, resize_tx))
+    Ok(Backend::new(out_rx, in_tx, None))
 }
