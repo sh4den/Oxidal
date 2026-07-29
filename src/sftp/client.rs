@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use secrecy::SecretString;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -8,6 +10,8 @@ use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote};
 use crate::ssh_client;
 
 const CHUNK_SIZE: usize = 64 * 1024;
+// Bounds how long the transport thread lingers waiting for the disconnect to flush.
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn spawn(
     host: String,
@@ -138,6 +142,14 @@ async fn run(
             },
         }
     }
+
+    // Panel is gone: close the subsystem and the session rather than leaving the
+    // socket to die with this thread's runtime.
+    drop(sftp);
+    let _ = session
+        .disconnect(russh::Disconnect::ByApplication, "", "en")
+        .await;
+    let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, session).await;
 
     Ok(())
 }
