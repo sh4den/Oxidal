@@ -30,6 +30,7 @@ pub fn spawn(rows: u16, cols: u16) -> anyhow::Result<Backend> {
     }
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
+    let mut killer = child.clone_killer();
 
     let writer = pair.master.take_writer()?;
     let mut reader = pair.master.try_clone_reader()?;
@@ -90,5 +91,11 @@ pub fn spawn(rows: u16, cols: u16) -> anyhow::Result<Backend> {
         let _ = child.wait();
     });
 
-    Ok(Backend::new(out_rx, in_tx, resize_tx))
+    let backend = Backend::new(out_rx, in_tx, Some(resize_tx)).on_shutdown(move || {
+        // The reader thread holds a clone of the master, so the shell never sees
+        // a hangup on its own; killing it ends the read and frees the pty.
+        let _ = killer.kill();
+    });
+
+    Ok(backend)
 }

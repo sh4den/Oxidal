@@ -364,7 +364,6 @@ impl OxidalApp {
         }
         self.tabs.remove(index);
         self.active_tab = match self.active_tab {
-            Some(_active) if self.tabs.is_empty() => None,
             Some(active) if active > index => Some(active - 1),
             Some(active) if active == index => Some(index.min(self.tabs.len().saturating_sub(1))),
             other => other,
@@ -423,7 +422,6 @@ impl OxidalApp {
                         let this = this.clone();
                         menu.item(
                             PopupMenuItem::new("Settings")
-                                .disabled(false)
                                 .icon(IconName::Settings)
                                 .on_click(move |_, window, cx| {
                                     this.update(cx, |view, cx| {
@@ -433,7 +431,6 @@ impl OxidalApp {
                         )
                         .item(
                             PopupMenuItem::new("About")
-                                .disabled(false)
                                 .icon(IconName::Info)
                                 .on_click(|_, window, cx| {
                                     open_about_dialog(window, cx);
@@ -442,7 +439,6 @@ impl OxidalApp {
                         .separator()
                         .item(
                             PopupMenuItem::new("Exit")
-                                .disabled(false)
                                 .icon(IconName::WindowClose)
                                 .on_click(|_, _, cx| {
                                     cx.quit();

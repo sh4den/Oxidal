@@ -143,16 +143,16 @@ impl StatsParser {
                     }
                 }
                 "net" => {
-                    if let Some((iface, rest)) = line.split_once(':') {
-                        if iface.trim() != "lo" {
-                            let fields: Vec<u64> = rest
-                                .split_whitespace()
-                                .filter_map(|f| f.parse().ok())
-                                .collect();
-                            if fields.len() >= 9 {
-                                let (rx, tx) = net_sample.unwrap_or((0, 0));
-                                net_sample = Some((rx + fields[0], tx + fields[8]));
-                            }
+                    if let Some((iface, rest)) = line.split_once(':')
+                        && iface.trim() != "lo"
+                    {
+                        let fields: Vec<u64> = rest
+                            .split_whitespace()
+                            .filter_map(|f| f.parse().ok())
+                            .collect();
+                        if fields.len() >= 9 {
+                            let (rx, tx) = net_sample.unwrap_or((0, 0));
+                            net_sample = Some((rx + fields[0], tx + fields[8]));
                         }
                     }
                 }
