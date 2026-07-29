@@ -540,12 +540,12 @@ fn open_session_dialog(
                         if prev == tile_kind {
                             return;
                         }
-                        if name.read(cx).value().to_string() == prev.label() {
+                        if name.read(cx).value() == prev.label() {
                             name.update(cx, |state, cx| {
                                 state.set_value(tile_kind.label(), window, cx);
                             });
                         }
-                        if port.read(cx).value().to_string() == prev.default_port().to_string() {
+                        if port.read(cx).value() == prev.default_port().to_string() {
                             port.update(cx, |state, cx| {
                                 state.set_value(tile_kind.default_port().to_string(), window, cx);
                             });
@@ -838,7 +838,7 @@ fn open_session_dialog(
                                 Ok(Err(err)) => TestState::Failed(err),
                                 Err(_) => TestState::Failed("Connection test aborted".to_string()),
                             };
-                            let _ = test_status.update(cx, |s, cx| {
+                            test_status.update(cx, |s, cx| {
                                 s.0 = outcome;
                                 cx.notify();
                             });
@@ -1111,6 +1111,18 @@ pub fn open_new_folder_dialog(
             .child(icon_picker(&selected_icon, cx))
             .child(color_picker(&selected_color, cx));
 
+        let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
+            let value = name.read(cx).value().to_string();
+            if !value.trim().is_empty() {
+                let mut folder = SessionFolder::new(value);
+                folder.icon = selected_icon.read(cx).0;
+                folder.color = selected_color.read(cx).0;
+                let _ = weak_app.update(cx, |app, cx| {
+                    app.add_folder(folder, cx);
+                });
+            }
+        });
+
         let footer =
             DialogFooter::new()
                 .child(
@@ -1120,20 +1132,13 @@ pub fn open_new_folder_dialog(
                             window.close_dialog(cx);
                         }),
                 )
-                .child(Button::new("save").primary().label("Save").on_click(
+                .child(Button::new("save").primary().label("Save").on_click({
+                    let do_save = do_save.clone();
                     move |_, window, cx| {
-                        let value = name.read(cx).value().to_string();
-                        if !value.trim().is_empty() {
-                            let mut folder = SessionFolder::new(value);
-                            folder.icon = selected_icon.read(cx).0;
-                            folder.color = selected_color.read(cx).0;
-                            let _ = weak_app.update(cx, |app, cx| {
-                                app.add_folder(folder, cx);
-                            });
-                        }
+                        do_save(cx);
                         window.close_dialog(cx);
-                    },
-                ));
+                    }
+                }));
 
         let metrics = dialog_metrics(window, gpui::px(360.));
 
@@ -1147,6 +1152,13 @@ pub fn open_new_folder_dialog(
                 cx,
             ))
             .footer(footer)
+            .on_ok({
+                let do_save = do_save.clone();
+                move |_, _window, cx| {
+                    do_save(cx);
+                    true
+                }
+            })
     });
 }
 
@@ -1176,6 +1188,19 @@ pub fn open_edit_folder_dialog(
             .child(icon_picker(&selected_icon, cx))
             .child(color_picker(&selected_color, cx));
 
+        let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
+            let value = name.read(cx).value().to_string();
+            if !value.trim().is_empty() {
+                let mut folder = SessionFolder::new(value);
+                folder.id = folder_id;
+                folder.icon = selected_icon.read(cx).0;
+                folder.color = selected_color.read(cx).0;
+                let _ = weak_app.update(cx, |app, cx| {
+                    app.update_folder(folder, cx);
+                });
+            }
+        });
+
         let footer =
             DialogFooter::new()
                 .child(
@@ -1185,21 +1210,13 @@ pub fn open_edit_folder_dialog(
                             window.close_dialog(cx);
                         }),
                 )
-                .child(Button::new("save").primary().label("Save").on_click(
+                .child(Button::new("save").primary().label("Save").on_click({
+                    let do_save = do_save.clone();
                     move |_, window, cx| {
-                        let value = name.read(cx).value().to_string();
-                        if !value.trim().is_empty() {
-                            let mut folder = SessionFolder::new(value);
-                            folder.id = folder_id;
-                            folder.icon = selected_icon.read(cx).0;
-                            folder.color = selected_color.read(cx).0;
-                            let _ = weak_app.update(cx, |app, cx| {
-                                app.update_folder(folder, cx);
-                            });
-                        }
+                        do_save(cx);
                         window.close_dialog(cx);
-                    },
-                ));
+                    }
+                }));
 
         let metrics = dialog_metrics(window, gpui::px(360.));
 
@@ -1213,5 +1230,12 @@ pub fn open_edit_folder_dialog(
                 cx,
             ))
             .footer(footer)
+            .on_ok({
+                let do_save = do_save.clone();
+                move |_, _window, cx| {
+                    do_save(cx);
+                    true
+                }
+            })
     });
 }

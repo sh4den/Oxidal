@@ -5,7 +5,7 @@ use gpui::{App, Global, Window, WindowBackgroundAppearance};
 use gpui_component::Theme;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub font_family: String,
     pub font_size: f32,
@@ -69,7 +69,7 @@ fn default_font_family() -> String {
     }
 }
 
-fn config_dir() -> PathBuf {
+pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("Oxidal")

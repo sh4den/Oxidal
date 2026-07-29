@@ -7,7 +7,9 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+use crate::settings::config_dir;
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionKind {
     Ssh,
     Sftp,
@@ -249,7 +251,7 @@ impl ItemColor {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: Uuid,
     pub name: String,
@@ -276,7 +278,7 @@ pub struct Session {
     pub color: ItemColor,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SessionFolder {
     pub id: Uuid,
     pub name: String,
@@ -365,12 +367,6 @@ impl SessionKind {
             SessionKind::Serial | SessionKind::Local => 0,
         }
     }
-}
-
-fn config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Oxidal")
 }
 
 fn sessions_path() -> PathBuf {
