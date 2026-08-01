@@ -58,7 +58,7 @@ Your sessions live in a plain JSON file you can read, diff and back up yourself.
 | **SFTP as a two sided file manager** | An SFTP session opens your own machine on the left and the server on the right, in a resizable split. Drag a file or folder from either side onto the other to transfer it, or select something and use the arrow buttons. Folders go across whole, recursively, under a single progress bar. Both sides browse, rename, delete and create folders the same way. |
 | **Serial console** | Pick a detected port from the list, any baud rate, defaulting to 115200. |
 | **Telnet** | A real NVT rather than a raw socket: it negotiates options, reports the window size as you resize the pane and the terminal type as `xterm-256color`, and echoes locally when the far end will not, which is what network gear and other bare telnet daemons need to feel like a terminal. |
-| **Keys or passwords** | Point a session at a private key and it gets tried first, with password auth as the fallback. Connections send keepalives, so an idle shell or file browser stays up. |
+| **Keys or passwords** | Point an SSH or SFTP session at a private key and it gets tried first, with password auth as the fallback. Encrypted keys are handled too: pick a key and a passphrase field appears, stored in the same credential vault as your passwords. Connections send keepalives, so an idle shell or file browser stays up. |
 | **Make it yours** | Light and dark themes, a searchable picker over every font your system has, and a window opacity slider if you like your terminal glassy. |
 | **Small in memory** | Every terminal cell is packed into 12 bytes, so screen buffers stay cheap even with a stack of tabs open. |
 
@@ -104,7 +104,7 @@ Sessions and preferences are written as JSON under a per user config directory:
 
 Worth being straight with you about where this stands.
 
-**Passwords go to your OS credential vault.** Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux, one entry per session, keyed by the session's id. They are never written to `sessions.json`, and deleting a session deletes its entry. Private keys are read from the path you configure and never copied anywhere.
+**Passwords go to your OS credential vault.** Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux, keyed by the session's id, with private key passphrases stored beside them under their own entry. Neither is ever written to `sessions.json`, and deleting a session deletes both. Private keys themselves are read from the path you configure and never copied anywhere.
 
 **Host key verification is not implemented yet.** Oxidal currently accepts whatever host key a server presents instead of checking it against a known_hosts store. That leaves SSH and SFTP sessions open to a machine in the middle on a network you do not trust. It is the next thing on the list, but until it lands, plan accordingly.
 

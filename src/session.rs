@@ -268,6 +268,8 @@ pub struct Session {
     pub username: String,
     #[serde(skip)]
     pub password: SecretString,
+    #[serde(skip)]
+    pub key_passphrase: SecretString,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
     #[serde(default)]
@@ -324,6 +326,7 @@ impl Session {
             port: kind.default_port(),
             username: String::new(),
             password: SecretString::default(),
+            key_passphrase: SecretString::default(),
             baud_rate: default_baud_rate(),
             private_key_path: None,
             folder_id: None,
@@ -338,6 +341,15 @@ impl Session {
             Some(icon) => icon.path(),
             None => self.kind.icon().path(),
         }
+    }
+
+    pub fn credentials(&self) -> crate::ssh_client::SshCredentials {
+        crate::ssh_client::SshCredentials::new(
+            self.username.clone(),
+            self.password.clone(),
+            self.private_key_path.clone(),
+            self.key_passphrase.clone(),
+        )
     }
 
     pub fn detail(&self) -> String {
@@ -392,6 +404,9 @@ pub fn load_sessions() -> Vec<Session> {
         session.name = session.name.trim().to_string();
         if let Some(password) = crate::credentials::load_password(session.id) {
             session.password = password;
+        }
+        if let Some(passphrase) = crate::credentials::load_key_passphrase(session.id) {
+            session.key_passphrase = passphrase;
         }
     }
     sessions

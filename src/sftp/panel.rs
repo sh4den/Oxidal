@@ -183,22 +183,13 @@ impl SftpPanel {
     pub fn new(
         host: String,
         port: u16,
-        username: String,
-        password: secrecy::SecretString,
-        private_key_path: Option<String>,
+        credentials: crate::ssh_client::SshCredentials,
         show_hidden: bool,
         on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let client = super::spawn(
-            host,
-            port,
-            username,
-            password,
-            private_key_path,
-            ".".to_string(),
-        );
+        let client = super::spawn(host, port, credentials, ".".to_string());
         Self::from_client(
             FileClient::Remote(client),
             show_hidden,

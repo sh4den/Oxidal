@@ -23,32 +23,22 @@ pub struct SftpWorkspace {
 }
 
 impl SftpWorkspace {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         host: String,
         port: u16,
-        username: String,
-        password: secrecy::SecretString,
-        private_key_path: Option<String>,
+        credentials: crate::ssh_client::SshCredentials,
         show_hidden: bool,
         on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + Clone + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let label = if username.is_empty() {
+        let label = if credentials.username.is_empty() {
             SharedString::from(format!("{host}:{port}"))
         } else {
-            SharedString::from(format!("{username}@{host}:{port}"))
+            SharedString::from(format!("{}@{host}:{port}", credentials.username))
         };
 
-        let client = super::spawn(
-            host,
-            port,
-            username,
-            password,
-            private_key_path,
-            ".".to_string(),
-        );
+        let client = super::spawn(host, port, credentials, ".".to_string());
 
         let remote = cx.new({
             let client = client.clone();

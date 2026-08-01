@@ -177,6 +177,7 @@ impl OxidalApp {
 
     pub fn add_session(&mut self, new_session: Session, cx: &mut Context<Self>) {
         crate::credentials::store_password(new_session.id, &new_session.password);
+        crate::credentials::store_key_passphrase(new_session.id, &new_session.key_passphrase);
         self.sessions.push(new_session);
         session::save_sessions(&self.sessions);
         cx.notify();
@@ -187,6 +188,7 @@ impl OxidalApp {
             let mut updated = updated;
             updated.show_hidden_files = existing.show_hidden_files;
             crate::credentials::store_password(updated.id, &updated.password);
+            crate::credentials::store_key_passphrase(updated.id, &updated.key_passphrase);
             *existing = updated;
             session::save_sessions(&self.sessions);
             cx.notify();
@@ -295,9 +297,7 @@ impl OxidalApp {
                 let (backend, stats) = terminal::ssh::spawn(
                     target.host.clone(),
                     target.port,
-                    target.username.clone(),
-                    target.password.clone(),
-                    target.private_key_path.clone(),
+                    target.credentials(),
                     TERM_ROWS as u16,
                     TERM_COLS as u16,
                 );
@@ -309,9 +309,7 @@ impl OxidalApp {
                     SftpPanel::new(
                         target.host.clone(),
                         target.port,
-                        target.username.clone(),
-                        target.password.clone(),
-                        target.private_key_path.clone(),
+                        target.credentials(),
                         target.show_hidden_files,
                         move |value, cx| {
                             let _ = weak_app
@@ -350,9 +348,7 @@ impl OxidalApp {
                     SftpWorkspace::new(
                         target.host.clone(),
                         target.port,
-                        target.username.clone(),
-                        target.password.clone(),
-                        target.private_key_path.clone(),
+                        target.credentials(),
                         target.show_hidden_files,
                         move |value, cx| {
                             let _ = weak_app
