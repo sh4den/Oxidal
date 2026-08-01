@@ -1,5 +1,6 @@
 use crate::session::{self, Session, SessionFolder, SessionKind};
 use crate::session_dialog;
+use crate::settings::{self, AppSettings};
 use crate::settings_view::SettingsView;
 use crate::sftp::{SftpPanel, SftpWorkspace};
 use crate::terminal::{self, TerminalView};
@@ -17,7 +18,7 @@ use gpui_component::{
     dialog::DialogFooter,
     h_flex,
     notification::Notification,
-    resizable::{h_resizable, resizable_panel},
+    resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
     tab::{Tab, TabBar},
     tooltip::Tooltip,
@@ -30,14 +31,26 @@ use uuid::Uuid;
 const TERM_ROWS: usize = 32;
 const TERM_COLS: usize = 110;
 
-const LABEL_TOOLTIP_MIN_CHARS: usize = 18;
 const FOLDER_GUIDE_INDENT: gpui::Pixels = px(18.);
 
-fn truncating_label(id: impl Into<ElementId>, text: SharedString) -> Stateful<Div> {
+// Row chrome around a label: margins, padding, icon, gaps and the hover buttons.
+const ROW_CHROME_WIDTH: f32 = 116.;
+const APPROX_CHAR_WIDTH: f32 = 7.;
+
+fn label_capacity(sidebar_width: gpui::Pixels) -> usize {
+    let text_width = f32::from(sidebar_width) - ROW_CHROME_WIDTH;
+    ((text_width / APPROX_CHAR_WIDTH).floor() as usize).max(6)
+}
+
+fn truncating_label(
+    id: impl Into<ElementId>,
+    text: SharedString,
+    capacity: usize,
+) -> Stateful<Div> {
     div()
         .id(id)
         .truncate()
-        .when(text.chars().count() > LABEL_TOOLTIP_MIN_CHARS, {
+        .when(text.chars().count() > capacity, {
             let full = text.clone();
             move |this| this.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
         })
@@ -85,6 +98,7 @@ pub struct OxidalApp {
     active_tab: Option<usize>,
     sidebar_mode: SidebarMode,
     sidebar_collapsed: bool,
+    sidebar_state: Entity<ResizableState>,
     update_state: UpdateState,
 }
 
@@ -124,6 +138,7 @@ impl OxidalApp {
             active_tab: None,
             sidebar_mode: SidebarMode::Sessions,
             sidebar_collapsed: false,
+            sidebar_state: cx.new(|_| ResizableState::default()),
             update_state: UpdateState::Idle,
         }
     }
@@ -487,6 +502,7 @@ impl OxidalApp {
         let session = item.clone();
         let name = SharedString::from(item.name.clone());
         let detail = SharedString::from(item.detail());
+        let capacity = self.label_capacity(cx);
 
         h_flex()
             .id(SharedString::from(format!("session-{id}")))
@@ -523,13 +539,21 @@ impl OxidalApp {
                     .flex_1()
                     .min_w_0()
                     .child(
-                        truncating_label(SharedString::from(format!("name-{id}")), name.clone())
-                            .text_sm(),
+                        truncating_label(
+                            SharedString::from(format!("name-{id}")),
+                            name.clone(),
+                            capacity,
+                        )
+                        .text_sm(),
                     )
                     .child(
-                        truncating_label(SharedString::from(format!("detail-{id}")), detail)
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground),
+                        truncating_label(
+                            SharedString::from(format!("detail-{id}")),
+                            detail,
+                            capacity,
+                        )
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground),
                     ),
             )
             .child(
@@ -597,6 +621,20 @@ impl OxidalApp {
                             })),
                     ),
             )
+    }
+
+    fn sidebar_width(&self, cx: &gpui::App) -> gpui::Pixels {
+        self.sidebar_state
+            .read(cx)
+            .sizes()
+            .first()
+            .copied()
+            .filter(|width| f32::from(*width) > 0.)
+            .unwrap_or_else(|| px(cx.global::<AppSettings>().sidebar_width))
+    }
+
+    fn label_capacity(&self, cx: &gpui::App) -> usize {
+        label_capacity(self.sidebar_width(cx))
     }
 
     fn active_sftp_panel(&self) -> Option<Entity<SftpPanel>> {
@@ -724,6 +762,7 @@ impl OxidalApp {
 
     fn render_sessions_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        let capacity = self.label_capacity(cx);
 
         for folder in self.folders.clone() {
             let folder_id = folder.id;
@@ -767,6 +806,7 @@ impl OxidalApp {
                         truncating_label(
                             SharedString::from(format!("folder-name-{folder_id}")),
                             SharedString::from(folder.name.clone()),
+                            capacity,
                         )
                         .flex_1()
                         .min_w_0()
@@ -847,9 +887,7 @@ impl OxidalApp {
         }
 
         v_flex()
-            .w(px(280.))
-            .flex_none()
-            .h_full()
+            .size_full()
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
@@ -1140,32 +1178,55 @@ impl Render for OxidalApp {
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
             .child({
-                let explorer_open = !self.sidebar_collapsed
-                    && self.effective_sidebar_mode() == SidebarMode::Explorer;
-                let mut content = h_flex()
+                let sidebar = if self.sidebar_collapsed {
+                    None
+                } else if self.effective_sidebar_mode() == SidebarMode::Explorer {
+                    Some(self.render_explorer_panel(cx).into_any_element())
+                } else {
+                    Some(self.render_sessions_panel(cx).into_any_element())
+                };
+
+                let content = h_flex()
                     .flex_1()
                     .min_h_0()
                     .child(self.render_sidebar_rail(cx));
-                if explorer_open {
-                    content = content.child(
+                match sidebar {
+                    // Both modes share one split, so a width set on either side
+                    // is the width the other opens at.
+                    Some(sidebar) => content.child(
                         div().flex_1().min_w_0().h_full().child(
-                            h_resizable("explorer-split")
+                            h_resizable("sidebar-split")
+                                .with_state(&self.sidebar_state)
                                 .child(
                                     resizable_panel()
-                                        .size(px(380.))
-                                        .size_range(px(300.)..px(800.))
-                                        .child(self.render_explorer_panel(cx).into_any_element()),
+                                        .size(px(cx.global::<AppSettings>().sidebar_width))
+                                        .size_range(
+                                            px(settings::SIDEBAR_MIN_WIDTH)
+                                                ..px(settings::SIDEBAR_MAX_WIDTH),
+                                        )
+                                        .child(sidebar),
                                 )
-                                .child(self.render_workspace(cx).into_any_element()),
+                                .child(self.render_workspace(cx).into_any_element())
+                                // Fires once on mouse up, so this is a write per
+                                // drag rather than per frame.
+                                .on_resize(|state, _, cx| {
+                                    let Some(width) = state.read(cx).sizes().first().copied()
+                                    else {
+                                        return;
+                                    };
+                                    let width = f32::from(width).clamp(
+                                        settings::SIDEBAR_MIN_WIDTH,
+                                        settings::SIDEBAR_MAX_WIDTH,
+                                    );
+                                    if cx.global::<AppSettings>().sidebar_width != width {
+                                        cx.global_mut::<AppSettings>().sidebar_width = width;
+                                        settings::save_settings(cx.global::<AppSettings>());
+                                    }
+                                }),
                         ),
-                    );
-                } else {
-                    if !self.sidebar_collapsed {
-                        content = content.child(self.render_sessions_panel(cx).into_any_element());
-                    }
-                    content = content.child(self.render_workspace(cx).into_any_element());
+                    ),
+                    None => content.child(self.render_workspace(cx).into_any_element()),
                 }
-                content
             })
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
