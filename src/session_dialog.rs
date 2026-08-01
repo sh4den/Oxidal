@@ -620,7 +620,7 @@ fn open_session_dialog(
                     ),
                 )
                 .child(v_flex().gap_1().child("Baud Rate").child(Input::new(&baud))),
-            SessionKind::Ssh => body
+            SessionKind::Ssh | SessionKind::Sftp => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
                 .child(v_flex().gap_1().child("Port").child(Input::new(&port)))
                 .child(
@@ -691,7 +691,7 @@ fn open_session_dialog(
             SessionKind::Telnet => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
                 .child(v_flex().gap_1().child("Port").child(Input::new(&port))),
-            SessionKind::Sftp | SessionKind::Rdp => body
+            SessionKind::Rdp => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
                 .child(v_flex().gap_1().child("Port").child(Input::new(&port)))
                 .child(

@@ -55,7 +55,7 @@ Your sessions live in a plain JSON file you can read, diff and back up yourself.
 | **A real terminal emulator** | Built directly on `vte` rather than shelling out to one. Handles 256 color and truecolor, scroll regions, line and character insert or delete, and the alternate screen buffer, so vim, htop and less all behave. |
 | **Live remote monitoring** | SSH sessions get a status strip with CPU, memory, network and disk usage, sampled over the same connection. Hovering the disk segment breaks it down per filesystem. |
 | **A session dialog that helps** | Session kinds as tiles across the top, a Test Connection button that actually authenticates, a private key picker that finds the keys in your `~/.ssh`, and a dropdown of the serial ports currently plugged in, with the device names next to them. |
-| **SFTP that does the boring parts** | Browse, upload, download, rename, delete and create folders, with live transfer progress. |
+| **SFTP as a two sided file manager** | An SFTP session opens your own machine on the left and the server on the right, in a resizable split. Drag a file or folder from either side onto the other to transfer it, or select something and use the arrow buttons. Folders go across whole, recursively, under a single progress bar. Both sides browse, rename, delete and create folders the same way. |
 | **Serial console** | Pick a detected port from the list, any baud rate, defaulting to 115200. |
 | **Telnet** | A real NVT rather than a raw socket: it negotiates options, reports the window size as you resize the pane and the terminal type as `xterm-256color`, and echoes locally when the far end will not, which is what network gear and other bare telnet daemons need to feel like a terminal. |
 | **Keys or passwords** | Point a session at a private key and it gets tried first, with password auth as the fallback. Connections send keepalives, so an idle shell or file browser stays up. |
@@ -84,6 +84,7 @@ The debug profile works too, but the terminal feels noticeably better on `--rele
 2. Fill in what that kind needs. Host, username and port for SSH and SFTP, just a host and port for telnet, or a port and baud rate for serial. Local needs nothing. **Test Connection** tells you whether the details work before you save them.
 3. Double click the session to connect, or use the connect button on its row. Single click just selects it.
 4. SSH sessions open with the file browser on the left and the shell on the right. Drag the divider to taste.
+5. SFTP sessions open as a two sided file manager: your home folder on the left, the server on the right. Drag between the sides to transfer, or pick an entry and use the arrows in the header.
 
 Font, size, light or dark mode and window opacity live in the Settings tab.
 
