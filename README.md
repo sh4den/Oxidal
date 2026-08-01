@@ -10,7 +10,7 @@
 
 <div align="center">
   <h1>Oxidal</h1>
-  <p><b>Oxidal</b>: every session in one window. SSH, SFTP, serial and local shells in a single native app.</p>
+  <p><b>Oxidal</b>: every session in one window. SSH, SFTP, telnet, serial and local shells in a single native app.</p>
   <p>
     <img src="https://img.shields.io/badge/Built%20with-Rust-e43717?style=flat-square&logo=rust&logoColor=white" alt="Built with Rust"/>
     <img src="https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-informational?style=flat-square" alt="Platforms"/>
@@ -50,13 +50,14 @@ Your sessions live in a plain JSON file you can read, diff and back up yourself.
 
 | Feature | What it does |
 |---|---|
-| **Tabbed sessions** | SSH, SFTP, serial and local shells open side by side in one window, organized into folders in the sidebar. |
+| **Tabbed sessions** | SSH, SFTP, telnet, serial and local shells open side by side in one window, organized into folders in the sidebar. |
 | **SSH with a file browser attached** | Opening an SSH session docks an SFTP panel next to the terminal, the way MobaXterm does it. Each side runs over its own connection, so a slow file transfer never blocks your shell. Resizable, with size, modified date and permissions columns, an editable path bar, and per-session dotfile visibility. Double clicking a remote file downloads it and opens it with whatever your OS uses for that extension. |
 | **A real terminal emulator** | Built directly on `vte` rather than shelling out to one. Handles 256 color and truecolor, scroll regions, line and character insert or delete, and the alternate screen buffer, so vim, htop and less all behave. |
 | **Live remote monitoring** | SSH sessions get a status strip with CPU, memory, network and disk usage, sampled over the same connection. Hovering the disk segment breaks it down per filesystem. |
 | **A session dialog that helps** | Session kinds as tiles across the top, a Test Connection button that actually authenticates, a private key picker that finds the keys in your `~/.ssh`, and a dropdown of the serial ports currently plugged in, with the device names next to them. |
 | **SFTP that does the boring parts** | Browse, upload, download, rename, delete and create folders, with live transfer progress. |
 | **Serial console** | Pick a detected port from the list, any baud rate, defaulting to 115200. |
+| **Telnet** | A real NVT rather than a raw socket: it negotiates options, reports the window size as you resize the pane and the terminal type as `xterm-256color`, and echoes locally when the far end will not, which is what network gear and other bare telnet daemons need to feel like a terminal. |
 | **Keys or passwords** | Point a session at a private key and it gets tried first, with password auth as the fallback. Connections send keepalives, so an idle shell or file browser stays up. |
 | **Make it yours** | Light and dark themes, a searchable picker over every font your system has, and a window opacity slider if you like your terminal glassy. |
 | **Small in memory** | Every terminal cell is packed into 12 bytes, so screen buffers stay cheap even with a stack of tabs open. |
@@ -79,8 +80,8 @@ The debug profile works too, but the terminal feels noticeably better on `--rele
 
 ### Usage
 
-1. Hit **New Session** in the sidebar and pick a kind from the tiles: SSH, SFTP, RDP, Serial or Local.
-2. Fill in what that kind needs. Host, username and port for SSH and SFTP, or a port and baud rate for serial. Local needs nothing. **Test Connection** tells you whether the details work before you save them.
+1. Hit **New Session** in the sidebar and pick a kind from the tiles: SSH, SFTP, Telnet, RDP, Serial or Local.
+2. Fill in what that kind needs. Host, username and port for SSH and SFTP, just a host and port for telnet, or a port and baud rate for serial. Local needs nothing. **Test Connection** tells you whether the details work before you save them.
 3. Double click the session to connect, or use the connect button on its row. Single click just selects it.
 4. SSH sessions open with the file browser on the left and the shell on the right. Drag the divider to taste.
 
@@ -108,7 +109,9 @@ Worth being straight with you about where this stands.
 
 ## Status
 
-SSH, SFTP, serial and local shells all work. RDP shows up in the session list because the groundwork is there, but it has no backend behind it yet and will tell you so.
+SSH, SFTP, telnet, serial and local shells all work. RDP shows up in the session list because the groundwork is there, but it has no backend behind it yet and will tell you so.
+
+**Telnet is unencrypted**, credentials and all, which is the protocol and not something Oxidal can fix. Use it on a management network or a console server, and reach for SSH anywhere else.
 
 This is early software. Expect rough edges.
 

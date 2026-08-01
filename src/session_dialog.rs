@@ -688,6 +688,9 @@ fn open_session_dialog(
                             ),
                     ),
                 ),
+            SessionKind::Telnet => body
+                .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
+                .child(v_flex().gap_1().child("Port").child(Input::new(&port))),
             SessionKind::Sftp | SessionKind::Rdp => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
                 .child(v_flex().gap_1().child("Port").child(Input::new(&port)))
@@ -1036,7 +1039,7 @@ fn run_connection_test(
                 .open()
                 .map(|_| format!("Opened {host} at {baud_rate} baud"))
                 .map_err(|e| format!("Could not open {host}: {e}")),
-            SessionKind::Rdp => tcp_check(&host, port),
+            SessionKind::Telnet | SessionKind::Rdp => tcp_check(&host, port),
             SessionKind::Ssh | SessionKind::Sftp => {
                 ssh_check(host, port, username, password, private_key_path)
             }
