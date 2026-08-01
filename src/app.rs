@@ -308,6 +308,17 @@ impl OxidalApp {
                 });
                 TabContent::SshSession { sftp, terminal }
             }
+            SessionKind::Telnet => {
+                let backend = terminal::telnet::spawn(
+                    target.host.clone(),
+                    target.port,
+                    TERM_ROWS as u16,
+                    TERM_COLS as u16,
+                );
+                let terminal =
+                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, None, window, cx));
+                TabContent::Terminal(terminal)
+            }
             SessionKind::Serial => {
                 match terminal::serial::spawn(target.host.clone(), target.baud_rate) {
                     Ok(backend) => TabContent::Terminal(cx.new(|cx| {

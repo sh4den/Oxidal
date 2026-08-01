@@ -13,15 +13,17 @@ use crate::settings::config_dir;
 pub enum SessionKind {
     Ssh,
     Sftp,
+    Telnet,
     Rdp,
     Serial,
     Local,
 }
 
 impl SessionKind {
-    pub const ALL: [SessionKind; 5] = [
+    pub const ALL: [SessionKind; 6] = [
         SessionKind::Ssh,
         SessionKind::Sftp,
+        SessionKind::Telnet,
         SessionKind::Rdp,
         SessionKind::Serial,
         SessionKind::Local,
@@ -31,6 +33,7 @@ impl SessionKind {
         match self {
             SessionKind::Ssh | SessionKind::Local => IconName::SquareTerminal,
             SessionKind::Sftp => IconName::Folder,
+            SessionKind::Telnet => IconName::Network,
             SessionKind::Rdp => IconName::LayoutDashboard,
             SessionKind::Serial => IconName::Cpu,
         }
@@ -40,6 +43,7 @@ impl SessionKind {
         match self {
             SessionKind::Ssh => "SSH",
             SessionKind::Sftp => "SFTP",
+            SessionKind::Telnet => "Telnet",
             SessionKind::Rdp => "RDP",
             SessionKind::Serial => "Serial",
             SessionKind::Local => "Local",
@@ -346,7 +350,7 @@ impl Session {
                     self.host.clone()
                 }
             }
-            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Rdp => {
+            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Telnet | SessionKind::Rdp => {
                 if self.host.is_empty() {
                     "No host configured".to_string()
                 } else if self.username.is_empty() {
@@ -363,6 +367,7 @@ impl SessionKind {
     pub fn default_port(self) -> u16 {
         match self {
             SessionKind::Ssh | SessionKind::Sftp => 22,
+            SessionKind::Telnet => 23,
             SessionKind::Rdp => 3389,
             SessionKind::Serial | SessionKind::Local => 0,
         }
