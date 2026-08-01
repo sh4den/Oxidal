@@ -1,13 +1,12 @@
 use std::time::Duration;
 
-use secrecy::SecretString;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::FileType;
 
-use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote};
-use crate::ssh_client;
+use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote, safe_local_name};
+use crate::ssh_client::{self, SshCredentials};
 
 const CHUNK_SIZE: usize = 64 * 1024;
 // Bounds how long the transport thread lingers waiting for the disconnect to flush.
@@ -16,9 +15,7 @@ const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub fn spawn(
     host: String,
     port: u16,
-    username: String,
-    password: SecretString,
-    private_key_path: Option<String>,
+    credentials: SshCredentials,
     initial_path: String,
 ) -> SftpClient {
     let (out_tx, out_rx) = async_channel::unbounded::<SftpEvent>();
@@ -39,9 +36,7 @@ pub fn spawn(
         let result = runtime.block_on(run(
             host,
             port,
-            username,
-            password,
-            private_key_path,
+            credentials,
             initial_path,
             out_tx.clone(),
             cmd_rx,
@@ -58,14 +53,12 @@ pub fn spawn(
 async fn run(
     host: String,
     port: u16,
-    username: String,
-    password: SecretString,
-    private_key_path: Option<String>,
+    credentials: SshCredentials,
     initial_path: String,
     out_tx: async_channel::Sender<SftpEvent>,
     cmd_rx: async_channel::Receiver<SftpCommand>,
 ) -> anyhow::Result<()> {
-    let session = ssh_client::connect(host, port, username, password, private_key_path).await?;
+    let session = ssh_client::connect(host, port, credentials).await?;
 
     let channel = session.channel_open_session().await?;
     channel.request_subsystem(true, "sftp").await?;
@@ -111,35 +104,28 @@ async fn run(
                 list_and_send(&sftp, current_dir.clone(), &out_tx).await;
             }
             SftpCommand::Upload { local, remote } => {
-                if let Err(err) = do_upload(&sftp, &local, &remote, &out_tx).await {
-                    let _ = out_tx
-                        .send(SftpEvent::TransferFinished {
-                            error: Some(err.to_string()),
-                        })
-                        .await;
-                }
+                do_upload(&sftp, &local, &remote, &out_tx).await;
                 list_and_send(&sftp, current_dir.clone(), &out_tx).await;
             }
             SftpCommand::Download {
                 remote,
                 local,
                 open_when_done,
-            } => match do_download(&sftp, &remote, &local, &out_tx).await {
-                Ok(()) if open_when_done => {
-                    if let Err(err) = open::that_detached(&local) {
-                        send_error(&out_tx, format!("Couldn't open {}: {err}", local.display()))
-                            .await;
-                    }
+            } => {
+                if do_download(&sftp, &remote, &local, &out_tx).await
+                    && open_when_done
+                    && let Err(err) = open::that_detached(&local)
+                {
+                    send_error(&out_tx, format!("Couldn't open {}: {err}", local.display())).await;
                 }
-                Ok(()) => {}
-                Err(err) => {
-                    let _ = out_tx
-                        .send(SftpEvent::TransferFinished {
-                            error: Some(err.to_string()),
-                        })
-                        .await;
-                }
-            },
+            }
+            SftpCommand::UploadDir { local, remote } => {
+                do_upload_dir(&sftp, &local, &remote, &out_tx).await;
+                list_and_send(&sftp, current_dir.clone(), &out_tx).await;
+            }
+            SftpCommand::DownloadDir { remote, local } => {
+                do_download_dir(&sftp, &remote, &local, &out_tx).await;
+            }
         }
     }
 
@@ -210,46 +196,100 @@ async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntr
     Ok(entries)
 }
 
-async fn do_upload(
+fn transfer_label(path: &std::path::Path, fallback: &str) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+async fn copy_up(
     sftp: &SftpSession,
     local: &std::path::Path,
     remote: &str,
     out_tx: &async_channel::Sender<SftpEvent>,
+    done: &mut u64,
 ) -> anyhow::Result<()> {
     let mut local_file = tokio::fs::File::open(local).await?;
-    let total = local_file.metadata().await?.len();
-    let label = local
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| remote.to_string());
-
-    let _ = out_tx
-        .send(SftpEvent::TransferStarted {
-            label,
-            total: Some(total),
-        })
-        .await;
-
     let mut remote_file = sftp.create(remote).await?;
     let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut transferred = 0u64;
     loop {
         let n = local_file.read(&mut buf).await?;
         if n == 0 {
             break;
         }
         remote_file.write_all(&buf[..n]).await?;
-        transferred += n as u64;
+        *done += n as u64;
         let _ = out_tx
-            .send(SftpEvent::TransferProgress { transferred })
+            .send(SftpEvent::TransferProgress { transferred: *done })
             .await;
     }
     remote_file.shutdown().await?;
+    Ok(())
+}
+
+async fn copy_down(
+    sftp: &SftpSession,
+    remote: &str,
+    local: &std::path::Path,
+    out_tx: &async_channel::Sender<SftpEvent>,
+    done: &mut u64,
+) -> anyhow::Result<()> {
+    let mut remote_file = sftp.open(remote).await?;
+    let mut local_file = tokio::fs::File::create(local).await?;
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    loop {
+        let n = remote_file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        local_file.write_all(&buf[..n]).await?;
+        *done += n as u64;
+        let _ = out_tx
+            .send(SftpEvent::TransferProgress { transferred: *done })
+            .await;
+    }
+    remote_file.shutdown().await?;
+    local_file.flush().await?;
+    Ok(())
+}
+
+async fn finish_transfer(
+    out_tx: &async_channel::Sender<SftpEvent>,
+    result: anyhow::Result<()>,
+) -> bool {
+    let ok = result.is_ok();
+    let _ = out_tx
+        .send(SftpEvent::TransferFinished {
+            error: result.err().map(|e| e.to_string()),
+        })
+        .await;
+    ok
+}
+
+async fn do_upload(
+    sftp: &SftpSession,
+    local: &std::path::Path,
+    remote: &str,
+    out_tx: &async_channel::Sender<SftpEvent>,
+) -> bool {
+    let total = match tokio::fs::metadata(local).await {
+        Ok(metadata) => metadata.len(),
+        Err(err) => {
+            send_error(out_tx, format!("Couldn't read {}: {err}", local.display())).await;
+            return false;
+        }
+    };
 
     let _ = out_tx
-        .send(SftpEvent::TransferFinished { error: None })
+        .send(SftpEvent::TransferStarted {
+            label: transfer_label(local, remote),
+            total: Some(total),
+        })
         .await;
-    Ok(())
+
+    let mut done = 0u64;
+    let result = copy_up(sftp, local, remote, out_tx, &mut done).await;
+    finish_transfer(out_tx, result).await
 }
 
 async fn do_download(
@@ -257,40 +297,233 @@ async fn do_download(
     remote: &str,
     local: &std::path::Path,
     out_tx: &async_channel::Sender<SftpEvent>,
-) -> anyhow::Result<()> {
-    let metadata = sftp.metadata(remote).await?;
-    let label = local
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| remote.to_string());
+) -> bool {
+    let total = match sftp.metadata(remote).await {
+        Ok(metadata) => metadata.len(),
+        Err(err) => {
+            send_error(out_tx, format!("Couldn't read {remote}: {err}")).await;
+            return false;
+        }
+    };
 
     let _ = out_tx
         .send(SftpEvent::TransferStarted {
-            label,
-            total: Some(metadata.len()),
+            label: transfer_label(local, remote),
+            total: Some(total),
         })
         .await;
 
-    let mut remote_file = sftp.open(remote).await?;
-    let mut local_file = tokio::fs::File::create(local).await?;
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut transferred = 0u64;
-    loop {
-        let n = remote_file.read(&mut buf).await?;
-        if n == 0 {
-            break;
+    let mut done = 0u64;
+    let result = copy_down(sftp, remote, local, out_tx, &mut done).await;
+    finish_transfer(out_tx, result).await
+}
+
+struct PlannedFile<L, R> {
+    source: L,
+    destination: R,
+    size: u64,
+}
+
+async fn plan_upload(
+    local_root: &std::path::Path,
+    remote_root: &str,
+) -> anyhow::Result<(Vec<String>, Vec<PlannedFile<std::path::PathBuf, String>>)> {
+    let mut dirs = vec![remote_root.to_string()];
+    let mut files = Vec::new();
+    let mut pending = vec![(local_root.to_path_buf(), remote_root.to_string())];
+
+    while let Some((local_dir, remote_dir)) = pending.pop() {
+        let mut reader = tokio::fs::read_dir(&local_dir).await?;
+        while let Some(entry) = reader.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let remote_path = join_remote(&remote_dir, &name);
+            let file_type = entry.file_type().await?;
+            if file_type.is_dir() {
+                dirs.push(remote_path.clone());
+                pending.push((entry.path(), remote_path));
+            } else if file_type.is_file() {
+                files.push(PlannedFile {
+                    size: entry.metadata().await.map(|m| m.len()).unwrap_or(0),
+                    source: entry.path(),
+                    destination: remote_path,
+                });
+            }
         }
-        local_file.write_all(&buf[..n]).await?;
-        transferred += n as u64;
-        let _ = out_tx
-            .send(SftpEvent::TransferProgress { transferred })
-            .await;
     }
-    remote_file.shutdown().await?;
-    local_file.flush().await?;
+
+    Ok((dirs, files))
+}
+
+async fn plan_download(
+    sftp: &SftpSession,
+    remote_root: &str,
+    local_root: &std::path::Path,
+) -> anyhow::Result<(
+    Vec<std::path::PathBuf>,
+    Vec<PlannedFile<String, std::path::PathBuf>>,
+)> {
+    let mut dirs = vec![local_root.to_path_buf()];
+    let mut files = Vec::new();
+    let mut pending = vec![(remote_root.to_string(), local_root.to_path_buf())];
+
+    while let Some((remote_dir, local_dir)) = pending.pop() {
+        for entry in read_dir(sftp, &remote_dir).await? {
+            let local_path = local_dir.join(safe_local_name(&entry.name));
+            if entry.is_dir {
+                dirs.push(local_path.clone());
+                pending.push((entry.path, local_path));
+            } else if !entry.is_symlink {
+                files.push(PlannedFile {
+                    source: entry.path,
+                    destination: local_path,
+                    size: entry.size,
+                });
+            }
+        }
+    }
+
+    Ok((dirs, files))
+}
+
+async fn do_upload_dir(
+    sftp: &SftpSession,
+    local: &std::path::Path,
+    remote: &str,
+    out_tx: &async_channel::Sender<SftpEvent>,
+) {
+    let (dirs, files) = match plan_upload(local, remote).await {
+        Ok(plan) => plan,
+        Err(err) => {
+            send_error(out_tx, format!("Couldn't read {}: {err}", local.display())).await;
+            return;
+        }
+    };
 
     let _ = out_tx
-        .send(SftpEvent::TransferFinished { error: None })
+        .send(SftpEvent::TransferStarted {
+            label: transfer_label(local, remote),
+            total: Some(files.iter().map(|file| file.size).sum()),
+        })
         .await;
-    Ok(())
+
+    let result = async {
+        for dir in &dirs {
+            let _ = sftp.create_dir(dir.clone()).await;
+        }
+        let mut done = 0u64;
+        for file in &files {
+            copy_up(sftp, &file.source, &file.destination, out_tx, &mut done).await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+
+    finish_transfer(out_tx, result).await;
+}
+
+async fn do_download_dir(
+    sftp: &SftpSession,
+    remote: &str,
+    local: &std::path::Path,
+    out_tx: &async_channel::Sender<SftpEvent>,
+) {
+    let (dirs, files) = match plan_download(sftp, remote, local).await {
+        Ok(plan) => plan,
+        Err(err) => {
+            send_error(out_tx, format!("Couldn't read {remote}: {err}")).await;
+            return;
+        }
+    };
+
+    let _ = out_tx
+        .send(SftpEvent::TransferStarted {
+            label: transfer_label(local, remote),
+            total: Some(files.iter().map(|file| file.size).sum()),
+        })
+        .await;
+
+    let result = async {
+        for dir in &dirs {
+            tokio::fs::create_dir_all(dir).await?;
+        }
+        let mut done = 0u64;
+        for file in &files {
+            copy_down(sftp, &file.source, &file.destination, out_tx, &mut done).await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+
+    finish_transfer(out_tx, result).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(future)
+    }
+
+    #[test]
+    fn planning_an_upload_walks_the_whole_tree() {
+        let base = std::env::temp_dir().join(format!("oxidal-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("nested").join("deeper")).expect("dirs");
+        std::fs::write(base.join("top.txt"), b"12345").expect("file");
+        std::fs::write(base.join("nested").join("mid.txt"), b"12").expect("file");
+        std::fs::write(base.join("nested").join("deeper").join("leaf.bin"), b"123").expect("file");
+
+        let (mut dirs, files) = block_on(plan_upload(&base, "/srv/dest")).expect("plan");
+        dirs.sort();
+
+        assert_eq!(
+            dirs,
+            vec![
+                "/srv/dest".to_string(),
+                "/srv/dest/nested".to_string(),
+                "/srv/dest/nested/deeper".to_string(),
+            ],
+            "every directory should be created remotely, parents before children once sorted"
+        );
+
+        let mut destinations: Vec<&str> =
+            files.iter().map(|file| file.destination.as_str()).collect();
+        destinations.sort();
+        assert_eq!(
+            destinations,
+            vec![
+                "/srv/dest/nested/deeper/leaf.bin",
+                "/srv/dest/nested/mid.txt",
+                "/srv/dest/top.txt",
+            ],
+            "remote destinations stay slash separated whatever the local separator is"
+        );
+
+        assert_eq!(
+            files.iter().map(|file| file.size).sum::<u64>(),
+            10,
+            "the progress total should cover every file in the tree"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn planning_an_upload_of_an_empty_directory_still_creates_it() {
+        let base = std::env::temp_dir().join(format!("oxidal-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("dir");
+
+        let (dirs, files) = block_on(plan_upload(&base, "/srv/empty")).expect("plan");
+
+        assert_eq!(dirs, vec!["/srv/empty".to_string()]);
+        assert!(files.is_empty());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

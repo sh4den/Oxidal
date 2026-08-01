@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::app::OxidalApp;
 use crate::session::{ItemColor, ItemIcon, Session, SessionFolder, SessionKind};
+use crate::ssh_client::SshCredentials;
 
 struct DialogMetrics {
     width: gpui::Pixels,
@@ -428,6 +429,16 @@ fn open_session_dialog(
             )
             .masked(true)
     });
+    let passphrase = cx.new(|cx| {
+        InputState::new(window, cx)
+            .default_value(
+                existing
+                    .as_ref()
+                    .map(|s| s.key_passphrase.expose_secret().to_string())
+                    .unwrap_or_default(),
+            )
+            .masked(true)
+    });
     let baud = cx.new(|cx| {
         InputState::new(window, cx).default_value(
             existing
@@ -486,6 +497,7 @@ fn open_session_dialog(
         let port = port.clone();
         let username = username.clone();
         let password = password.clone();
+        let passphrase = passphrase.clone();
         let baud = baud.clone();
         let private_key = private_key.clone();
         let serial_port = serial_port.clone();
@@ -496,6 +508,10 @@ fn open_session_dialog(
         let test_status = test_status.clone();
         let body_scroll = body_scroll.clone();
         let kind = selected_kind.read(cx).0;
+        let key_selected = private_key
+            .read(cx)
+            .selected_value()
+            .is_some_and(|value| !value.trim().is_empty());
         let current_folder = selected_folder.read(cx).0;
         let test_state = test_status.read(cx).0.clone();
         let testing = matches!(test_state, TestState::Testing);
@@ -620,7 +636,7 @@ fn open_session_dialog(
                     ),
                 )
                 .child(v_flex().gap_1().child("Baud Rate").child(Input::new(&baud))),
-            SessionKind::Ssh => body
+            SessionKind::Ssh | SessionKind::Sftp => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
                 .child(v_flex().gap_1().child("Port").child(Input::new(&port)))
                 .child(
@@ -687,8 +703,28 @@ fn open_session_dialog(
                                     }),
                             ),
                     ),
-                ),
-            SessionKind::Sftp | SessionKind::Rdp => body
+                )
+                .when(key_selected, |this| {
+                    this.child(
+                        v_flex()
+                            .gap_1()
+                            .child("Key Passphrase")
+                            .child(Input::new(&passphrase))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "Only needed if the key is encrypted. Saved encrypted in \
+                                         your system credential store",
+                                    ),
+                            ),
+                    )
+                }),
+            SessionKind::Telnet => body
+                .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
+                .child(v_flex().gap_1().child("Port").child(Input::new(&port))),
+            SessionKind::Rdp => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
                 .child(v_flex().gap_1().child("Port").child(Input::new(&port)))
                 .child(
@@ -766,6 +802,7 @@ fn open_session_dialog(
             let port = port.clone();
             let username = username.clone();
             let password = password.clone();
+            let passphrase = passphrase.clone();
             let private_key = private_key.clone();
             let serial_port = serial_port.clone();
             let baud = baud.clone();
@@ -826,9 +863,12 @@ fn open_session_dialog(
                             kind,
                             host_value,
                             port_value,
-                            username_value,
-                            password_value,
-                            key_value,
+                            SshCredentials::new(
+                                username_value,
+                                password_value,
+                                key_value,
+                                SecretString::from(passphrase.read(cx).value().to_string()),
+                            ),
                             baud_value,
                         );
                         let test_status = test_status.clone();
@@ -855,6 +895,7 @@ fn open_session_dialog(
             let port = port.clone();
             let username = username.clone();
             let password = password.clone();
+            let passphrase = passphrase.clone();
             let baud = baud.clone();
             let private_key = private_key.clone();
             let serial_port = serial_port.clone();
@@ -864,7 +905,11 @@ fn open_session_dialog(
             let selected_color = selected_color.clone();
             move |cx: &mut App| {
                 let kind = selected_kind.read(cx).0;
-                let mut session = Session::new(name.read(cx).value().to_string(), kind);
+                let mut label = name.read(cx).value().trim().to_string();
+                if label.is_empty() {
+                    label = kind.label().to_string();
+                }
+                let mut session = Session::new(label, kind);
                 if let Some(id) = editing_id {
                     session.id = id;
                 }
@@ -891,6 +936,10 @@ fn open_session_dialog(
                     .selected_value()
                     .map(|v| v.to_string())
                     .filter(|v| !v.trim().is_empty());
+                session.key_passphrase = match session.private_key_path {
+                    Some(_) => SecretString::from(passphrase.read(cx).value().to_string()),
+                    None => SecretString::default(),
+                };
                 session.folder_id = selected_folder.read(cx).0;
                 session.icon = selected_icon.read(cx).0;
                 session.color = selected_color.read(cx).0;
@@ -1022,9 +1071,7 @@ fn run_connection_test(
     kind: SessionKind,
     host: String,
     port: u16,
-    username: String,
-    password: SecretString,
-    private_key_path: Option<String>,
+    credentials: SshCredentials,
     baud_rate: u32,
 ) -> async_channel::Receiver<Result<String, String>> {
     let (tx, rx) = async_channel::bounded(1);
@@ -1036,10 +1083,8 @@ fn run_connection_test(
                 .open()
                 .map(|_| format!("Opened {host} at {baud_rate} baud"))
                 .map_err(|e| format!("Could not open {host}: {e}")),
-            SessionKind::Rdp => tcp_check(&host, port),
-            SessionKind::Ssh | SessionKind::Sftp => {
-                ssh_check(host, port, username, password, private_key_path)
-            }
+            SessionKind::Telnet | SessionKind::Rdp => tcp_check(&host, port),
+            SessionKind::Ssh | SessionKind::Sftp => ssh_check(host, port, credentials),
         };
         let _ = tx.send_blocking(result);
     });
@@ -1061,20 +1106,13 @@ fn tcp_check(host: &str, port: u16) -> Result<String, String> {
     Err(last_err)
 }
 
-fn ssh_check(
-    host: String,
-    port: u16,
-    username: String,
-    password: SecretString,
-    private_key_path: Option<String>,
-) -> Result<String, String> {
+fn ssh_check(host: String, port: u16, credentials: SshCredentials) -> Result<String, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     runtime.block_on(async {
-        let connect =
-            crate::ssh_client::connect(host.clone(), port, username, password, private_key_path);
+        let connect = crate::ssh_client::connect(host.clone(), port, credentials);
         match connect.await {
             Err(e) => Err(e.to_string()),
             Ok(handle) => {
@@ -1112,8 +1150,8 @@ pub fn open_new_folder_dialog(
             .child(color_picker(&selected_color, cx));
 
         let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
-            let value = name.read(cx).value().to_string();
-            if !value.trim().is_empty() {
+            let value = name.read(cx).value().trim().to_string();
+            if !value.is_empty() {
                 let mut folder = SessionFolder::new(value);
                 folder.icon = selected_icon.read(cx).0;
                 folder.color = selected_color.read(cx).0;
@@ -1189,8 +1227,8 @@ pub fn open_edit_folder_dialog(
             .child(color_picker(&selected_color, cx));
 
         let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
-            let value = name.read(cx).value().to_string();
-            if !value.trim().is_empty() {
+            let value = name.read(cx).value().trim().to_string();
+            if !value.is_empty() {
                 let mut folder = SessionFolder::new(value);
                 folder.id = folder_id;
                 folder.icon = selected_icon.read(cx).0;

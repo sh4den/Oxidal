@@ -13,15 +13,17 @@ use crate::settings::config_dir;
 pub enum SessionKind {
     Ssh,
     Sftp,
+    Telnet,
     Rdp,
     Serial,
     Local,
 }
 
 impl SessionKind {
-    pub const ALL: [SessionKind; 5] = [
+    pub const ALL: [SessionKind; 6] = [
         SessionKind::Ssh,
         SessionKind::Sftp,
+        SessionKind::Telnet,
         SessionKind::Rdp,
         SessionKind::Serial,
         SessionKind::Local,
@@ -31,6 +33,7 @@ impl SessionKind {
         match self {
             SessionKind::Ssh | SessionKind::Local => IconName::SquareTerminal,
             SessionKind::Sftp => IconName::Folder,
+            SessionKind::Telnet => IconName::Network,
             SessionKind::Rdp => IconName::LayoutDashboard,
             SessionKind::Serial => IconName::Cpu,
         }
@@ -40,6 +43,7 @@ impl SessionKind {
         match self {
             SessionKind::Ssh => "SSH",
             SessionKind::Sftp => "SFTP",
+            SessionKind::Telnet => "Telnet",
             SessionKind::Rdp => "RDP",
             SessionKind::Serial => "Serial",
             SessionKind::Local => "Local",
@@ -264,6 +268,8 @@ pub struct Session {
     pub username: String,
     #[serde(skip)]
     pub password: SecretString,
+    #[serde(skip)]
+    pub key_passphrase: SecretString,
     #[serde(default = "default_baud_rate")]
     pub baud_rate: u32,
     #[serde(default)]
@@ -320,6 +326,7 @@ impl Session {
             port: kind.default_port(),
             username: String::new(),
             password: SecretString::default(),
+            key_passphrase: SecretString::default(),
             baud_rate: default_baud_rate(),
             private_key_path: None,
             folder_id: None,
@@ -336,6 +343,15 @@ impl Session {
         }
     }
 
+    pub fn credentials(&self) -> crate::ssh_client::SshCredentials {
+        crate::ssh_client::SshCredentials::new(
+            self.username.clone(),
+            self.password.clone(),
+            self.private_key_path.clone(),
+            self.key_passphrase.clone(),
+        )
+    }
+
     pub fn detail(&self) -> String {
         match self.kind {
             SessionKind::Local => "Local shell".to_string(),
@@ -346,7 +362,7 @@ impl Session {
                     self.host.clone()
                 }
             }
-            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Rdp => {
+            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Telnet | SessionKind::Rdp => {
                 if self.host.is_empty() {
                     "No host configured".to_string()
                 } else if self.username.is_empty() {
@@ -363,6 +379,7 @@ impl SessionKind {
     pub fn default_port(self) -> u16 {
         match self {
             SessionKind::Ssh | SessionKind::Sftp => 22,
+            SessionKind::Telnet => 23,
             SessionKind::Rdp => 3389,
             SessionKind::Serial | SessionKind::Local => 0,
         }
@@ -384,8 +401,12 @@ pub fn load_sessions() -> Vec<Session> {
         Err(_) => default_sessions(),
     };
     for session in &mut sessions {
+        session.name = session.name.trim().to_string();
         if let Some(password) = crate::credentials::load_password(session.id) {
             session.password = password;
+        }
+        if let Some(passphrase) = crate::credentials::load_key_passphrase(session.id) {
+            session.key_passphrase = passphrase;
         }
     }
     sessions
@@ -403,10 +424,14 @@ pub fn save_sessions(sessions: &[Session]) {
 
 pub fn load_folders() -> Vec<SessionFolder> {
     let path = folders_path();
-    match fs::read_to_string(&path) {
+    let mut folders: Vec<SessionFolder> = match fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => Vec::new(),
+    };
+    for folder in &mut folders {
+        folder.name = folder.name.trim().to_string();
     }
+    folders
 }
 
 pub fn save_folders(folders: &[SessionFolder]) {

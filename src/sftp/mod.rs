@@ -1,7 +1,10 @@
 mod client;
+mod local;
 mod panel;
+mod workspace;
 
 pub use panel::SftpPanel;
+pub use workspace::SftpWorkspace;
 
 use std::path::PathBuf;
 
@@ -45,6 +48,22 @@ enum SftpCommand {
         local: PathBuf,
         open_when_done: bool,
     },
+    UploadDir {
+        local: PathBuf,
+        remote: String,
+    },
+    DownloadDir {
+        remote: String,
+        local: PathBuf,
+    },
+}
+
+enum LocalCommand {
+    List { path: String },
+    CreateDir { name: String },
+    Rename { from: String, to: String },
+    RemoveFile { path: String },
+    RemoveDir { path: String },
 }
 
 enum SftpEvent {
@@ -126,9 +145,122 @@ impl SftpClient {
             open_when_done: true,
         });
     }
+
+    pub fn upload_dir(&self, local: PathBuf, remote: impl Into<String>) {
+        let _ = self.commands.send_blocking(SftpCommand::UploadDir {
+            local,
+            remote: remote.into(),
+        });
+    }
+
+    pub fn download_dir(&self, remote: impl Into<String>, local: PathBuf) {
+        let _ = self.commands.send_blocking(SftpCommand::DownloadDir {
+            remote: remote.into(),
+            local,
+        });
+    }
+}
+
+#[derive(Clone)]
+pub struct LocalClient {
+    events: async_channel::Receiver<SftpEvent>,
+    commands: async_channel::Sender<LocalCommand>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PanelSide {
+    Local,
+    Remote,
+}
+
+#[derive(Clone)]
+pub struct FileDrag {
+    pub side: PanelSide,
+    pub entry_path: String,
+    pub name: String,
+    pub is_dir: bool,
+}
+
+#[derive(Clone)]
+pub enum FileClient {
+    Local(LocalClient),
+    Remote(SftpClient),
+}
+
+impl FileClient {
+    fn events(&self) -> async_channel::Receiver<SftpEvent> {
+        match self {
+            FileClient::Local(client) => client.events.clone(),
+            FileClient::Remote(client) => client.events.clone(),
+        }
+    }
+
+    pub fn side(&self) -> PanelSide {
+        match self {
+            FileClient::Local(_) => PanelSide::Local,
+            FileClient::Remote(_) => PanelSide::Remote,
+        }
+    }
+
+    pub fn list(&self, path: impl Into<String>) {
+        match self {
+            FileClient::Local(client) => {
+                let _ = client
+                    .commands
+                    .send_blocking(LocalCommand::List { path: path.into() });
+            }
+            FileClient::Remote(client) => client.list(path),
+        }
+    }
+
+    pub fn create_dir(&self, name: impl Into<String>) {
+        match self {
+            FileClient::Local(client) => {
+                let _ = client
+                    .commands
+                    .send_blocking(LocalCommand::CreateDir { name: name.into() });
+            }
+            FileClient::Remote(client) => client.create_dir(name),
+        }
+    }
+
+    pub fn rename(&self, from: impl Into<String>, to: impl Into<String>) {
+        match self {
+            FileClient::Local(client) => {
+                let _ = client.commands.send_blocking(LocalCommand::Rename {
+                    from: from.into(),
+                    to: to.into(),
+                });
+            }
+            FileClient::Remote(client) => client.rename(from, to),
+        }
+    }
+
+    pub fn remove_file(&self, path: impl Into<String>) {
+        match self {
+            FileClient::Local(client) => {
+                let _ = client
+                    .commands
+                    .send_blocking(LocalCommand::RemoveFile { path: path.into() });
+            }
+            FileClient::Remote(client) => client.remove_file(path),
+        }
+    }
+
+    pub fn remove_dir(&self, path: impl Into<String>) {
+        match self {
+            FileClient::Local(client) => {
+                let _ = client
+                    .commands
+                    .send_blocking(LocalCommand::RemoveDir { path: path.into() });
+            }
+            FileClient::Remote(client) => client.remove_dir(path),
+        }
+    }
 }
 
 pub use client::spawn;
+pub use local::{home_dir, spawn as spawn_local};
 
 fn safe_local_name(name: &str) -> String {
     let sanitized: String = name
@@ -152,6 +284,27 @@ fn join_remote(dir: &str, name: &str) -> String {
         format!("{dir}{name}")
     } else {
         format!("{dir}/{name}")
+    }
+}
+
+fn join_path(side: PanelSide, dir: &str, name: &str) -> String {
+    match side {
+        PanelSide::Local => local::join_local(dir, name),
+        PanelSide::Remote => join_remote(dir, name),
+    }
+}
+
+fn parent_path(side: PanelSide, path: &str) -> String {
+    match side {
+        PanelSide::Local => local::parent_local(path),
+        PanelSide::Remote => parent_remote(path),
+    }
+}
+
+fn has_parent(side: PanelSide, path: &str) -> bool {
+    match side {
+        PanelSide::Local => local::has_parent(path),
+        PanelSide::Remote => path != "/",
     }
 }
 

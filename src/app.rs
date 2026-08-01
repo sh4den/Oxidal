@@ -1,12 +1,13 @@
 use crate::session::{self, Session, SessionFolder, SessionKind};
 use crate::session_dialog;
+use crate::settings::{self, AppSettings};
 use crate::settings_view::SettingsView;
-use crate::sftp::SftpPanel;
+use crate::sftp::{SftpPanel, SftpWorkspace};
 use crate::terminal::{self, TerminalView};
 use gpui::{
-    AppContext as _, Context, Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px,
+    AppContext as _, Context, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use gpui_component::button::Button;
@@ -17,9 +18,10 @@ use gpui_component::{
     dialog::DialogFooter,
     h_flex,
     notification::Notification,
-    resizable::{h_resizable, resizable_panel},
+    resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
     tab::{Tab, TabBar},
+    tooltip::Tooltip,
     v_flex,
 };
 use std::collections::HashSet;
@@ -29,13 +31,39 @@ use uuid::Uuid;
 const TERM_ROWS: usize = 32;
 const TERM_COLS: usize = 110;
 
+const FOLDER_GUIDE_INDENT: gpui::Pixels = px(18.);
+
+// Row chrome around a label: margins, padding, icon, gaps and the hover buttons.
+const ROW_CHROME_WIDTH: f32 = 116.;
+const APPROX_CHAR_WIDTH: f32 = 7.;
+
+fn label_capacity(sidebar_width: gpui::Pixels) -> usize {
+    let text_width = f32::from(sidebar_width) - ROW_CHROME_WIDTH;
+    ((text_width / APPROX_CHAR_WIDTH).floor() as usize).max(6)
+}
+
+fn truncating_label(
+    id: impl Into<ElementId>,
+    text: SharedString,
+    capacity: usize,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .truncate()
+        .when(text.chars().count() > capacity, {
+            let full = text.clone();
+            move |this| this.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+        })
+        .child(text)
+}
+
 enum TabContent {
     Terminal(Entity<TerminalView>),
     SshSession {
         sftp: Entity<SftpPanel>,
         terminal: Entity<TerminalView>,
     },
-    Sftp(Entity<SftpPanel>),
+    Sftp(Entity<SftpWorkspace>),
     Settings(Entity<SettingsView>),
     Message(SharedString),
 }
@@ -70,6 +98,7 @@ pub struct OxidalApp {
     active_tab: Option<usize>,
     sidebar_mode: SidebarMode,
     sidebar_collapsed: bool,
+    sidebar_state: Entity<ResizableState>,
     update_state: UpdateState,
 }
 
@@ -109,6 +138,7 @@ impl OxidalApp {
             active_tab: None,
             sidebar_mode: SidebarMode::Sessions,
             sidebar_collapsed: false,
+            sidebar_state: cx.new(|_| ResizableState::default()),
             update_state: UpdateState::Idle,
         }
     }
@@ -162,6 +192,7 @@ impl OxidalApp {
 
     pub fn add_session(&mut self, new_session: Session, cx: &mut Context<Self>) {
         crate::credentials::store_password(new_session.id, &new_session.password);
+        crate::credentials::store_key_passphrase(new_session.id, &new_session.key_passphrase);
         self.sessions.push(new_session);
         session::save_sessions(&self.sessions);
         cx.notify();
@@ -172,6 +203,7 @@ impl OxidalApp {
             let mut updated = updated;
             updated.show_hidden_files = existing.show_hidden_files;
             crate::credentials::store_password(updated.id, &updated.password);
+            crate::credentials::store_key_passphrase(updated.id, &updated.key_passphrase);
             *existing = updated;
             session::save_sessions(&self.sessions);
             cx.notify();
@@ -280,9 +312,7 @@ impl OxidalApp {
                 let (backend, stats) = terminal::ssh::spawn(
                     target.host.clone(),
                     target.port,
-                    target.username.clone(),
-                    target.password.clone(),
-                    target.private_key_path.clone(),
+                    target.credentials(),
                     TERM_ROWS as u16,
                     TERM_COLS as u16,
                 );
@@ -294,9 +324,7 @@ impl OxidalApp {
                     SftpPanel::new(
                         target.host.clone(),
                         target.port,
-                        target.username.clone(),
-                        target.password.clone(),
-                        target.private_key_path.clone(),
+                        target.credentials(),
                         target.show_hidden_files,
                         move |value, cx| {
                             let _ = weak_app
@@ -307,6 +335,17 @@ impl OxidalApp {
                     )
                 });
                 TabContent::SshSession { sftp, terminal }
+            }
+            SessionKind::Telnet => {
+                let backend = terminal::telnet::spawn(
+                    target.host.clone(),
+                    target.port,
+                    TERM_ROWS as u16,
+                    TERM_COLS as u16,
+                );
+                let terminal =
+                    cx.new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, None, window, cx));
+                TabContent::Terminal(terminal)
             }
             SessionKind::Serial => {
                 match terminal::serial::spawn(target.host.clone(), target.baud_rate) {
@@ -321,12 +360,10 @@ impl OxidalApp {
             SessionKind::Sftp => {
                 let weak_app = cx.entity().downgrade();
                 TabContent::Sftp(cx.new(|cx| {
-                    SftpPanel::new(
+                    SftpWorkspace::new(
                         target.host.clone(),
                         target.port,
-                        target.username.clone(),
-                        target.password.clone(),
-                        target.private_key_path.clone(),
+                        target.credentials(),
                         target.show_hidden_files,
                         move |value, cx| {
                             let _ = weak_app
@@ -342,7 +379,7 @@ impl OxidalApp {
             ),
         };
 
-        let has_explorer = matches!(content, TabContent::SshSession { .. } | TabContent::Sftp(_));
+        let has_explorer = matches!(content, TabContent::SshSession { .. });
         self.tabs.push(OpenTab {
             session_id: Some(id),
             title: SharedString::from(target.name.clone()),
@@ -457,18 +494,15 @@ impl OxidalApp {
             )
     }
 
-    fn render_session_row(
-        &self,
-        item: &Session,
-        indent: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_session_row(&self, item: &Session, cx: &mut Context<Self>) -> impl IntoElement {
         let id = item.id;
         let selected = self.selected_session == Some(id);
         let group_name = SharedString::from(format!("session-{id}"));
         let folders = self.folders.clone();
         let session = item.clone();
         let name = SharedString::from(item.name.clone());
+        let detail = SharedString::from(item.detail());
+        let capacity = self.label_capacity(cx);
 
         h_flex()
             .id(SharedString::from(format!("session-{id}")))
@@ -478,7 +512,6 @@ impl OxidalApp {
             .px_2()
             .py_1()
             .mx_1()
-            .when(indent, |this| this.pl_6())
             .rounded_md()
             .cursor_pointer()
             .when(selected, |this| {
@@ -505,12 +538,22 @@ impl OxidalApp {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_sm().child(SharedString::from(item.name.clone())))
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(item.detail())),
+                        truncating_label(
+                            SharedString::from(format!("name-{id}")),
+                            name.clone(),
+                            capacity,
+                        )
+                        .text_sm(),
+                    )
+                    .child(
+                        truncating_label(
+                            SharedString::from(format!("detail-{id}")),
+                            detail,
+                            capacity,
+                        )
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground),
                     ),
             )
             .child(
@@ -580,10 +623,41 @@ impl OxidalApp {
             )
     }
 
+    fn sidebar_width(&self, cx: &gpui::App) -> gpui::Pixels {
+        self.sidebar_state
+            .read(cx)
+            .sizes()
+            .first()
+            .copied()
+            .filter(|width| f32::from(*width) > 0.)
+            .unwrap_or_else(|| px(cx.global::<AppSettings>().sidebar_width))
+    }
+
+    fn label_capacity(&self, cx: &gpui::App) -> usize {
+        label_capacity(self.sidebar_width(cx))
+    }
+
+    fn active_sftp_panel(&self) -> Option<Entity<SftpPanel>> {
+        self.active_tab
+            .and_then(|index| self.tabs.get(index))
+            .and_then(|tab| match &tab.content {
+                TabContent::SshSession { sftp, .. } => Some(sftp.clone()),
+                _ => None,
+            })
+    }
+
+    fn effective_sidebar_mode(&self) -> SidebarMode {
+        match self.sidebar_mode {
+            SidebarMode::Explorer if self.active_sftp_panel().is_none() => SidebarMode::Sessions,
+            mode => mode,
+        }
+    }
+
     fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let sessions_active = !self.sidebar_collapsed && self.sidebar_mode == SidebarMode::Sessions;
-        let explorer_active = !self.sidebar_collapsed && self.sidebar_mode == SidebarMode::Explorer;
-        let has_open_session = !self.tabs.is_empty();
+        let mode = self.effective_sidebar_mode();
+        let sessions_active = !self.sidebar_collapsed && mode == SidebarMode::Sessions;
+        let explorer_active = !self.sidebar_collapsed && mode == SidebarMode::Explorer;
+        let has_explorer = self.active_sftp_panel().is_some();
 
         v_flex()
             .w(px(72.))
@@ -611,7 +685,7 @@ impl OxidalApp {
                         view.set_sidebar_mode(SidebarMode::Sessions, cx);
                     })),
             )
-            .when(has_open_session, |this| {
+            .when(has_explorer, |this| {
                 this.child(
                     Button::new("sidebar-explorer")
                         .ghost()
@@ -651,16 +725,7 @@ impl OxidalApp {
     }
 
     fn render_explorer_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let sftp = self
-            .active_tab
-            .and_then(|index| self.tabs.get(index))
-            .and_then(|tab| match &tab.content {
-                TabContent::SshSession { sftp, .. } => Some(sftp.clone()),
-                TabContent::Sftp(sftp) => Some(sftp.clone()),
-                _ => None,
-            });
-
-        let content = match sftp {
+        let content = match self.active_sftp_panel() {
             Some(sftp) => sftp.into_any_element(),
             None => v_flex()
                 .flex_1()
@@ -697,11 +762,17 @@ impl OxidalApp {
 
     fn render_sessions_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        let capacity = self.label_capacity(cx);
 
         for folder in self.folders.clone() {
             let folder_id = folder.id;
             let collapsed = self.collapsed_folders.contains(&folder_id);
             let group_name = SharedString::from(format!("folder-{folder_id}"));
+            let children: Vec<&Session> = self
+                .sessions
+                .iter()
+                .filter(|s| s.folder_id == Some(folder_id))
+                .collect();
 
             rows.push(
                 h_flex()
@@ -732,13 +803,28 @@ impl OxidalApp {
                             .when_some(folder.color.hsla(), |this, color| this.text_color(color)),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(SharedString::from(folder.name.clone())),
+                        truncating_label(
+                            SharedString::from(format!("folder-name-{folder_id}")),
+                            SharedString::from(folder.name.clone()),
+                            capacity,
+                        )
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD),
                     )
+                    .when(collapsed && !children.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .px_1p5()
+                                .rounded_full()
+                                .text_xs()
+                                .bg(cx.theme().sidebar_accent)
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(children.len().to_string())),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_1()
@@ -779,25 +865,29 @@ impl OxidalApp {
                     .into_any_element(),
             );
 
-            if !collapsed {
-                for item in self
-                    .sessions
-                    .iter()
-                    .filter(|s| s.folder_id == Some(folder_id))
-                {
-                    rows.push(self.render_session_row(item, true, cx).into_any_element());
-                }
+            if !collapsed && !children.is_empty() {
+                let nested: Vec<gpui::AnyElement> = children
+                    .into_iter()
+                    .map(|item| self.render_session_row(item, cx).into_any_element())
+                    .collect();
+                rows.push(
+                    v_flex()
+                        .ml(FOLDER_GUIDE_INDENT)
+                        .pl_1()
+                        .border_l_1()
+                        .border_color(cx.theme().sidebar_border)
+                        .children(nested)
+                        .into_any_element(),
+                );
             }
         }
 
         for item in self.sessions.iter().filter(|s| s.folder_id.is_none()) {
-            rows.push(self.render_session_row(item, false, cx).into_any_element());
+            rows.push(self.render_session_row(item, cx).into_any_element());
         }
 
         v_flex()
-            .w(px(280.))
-            .flex_none()
-            .h_full()
+            .size_full()
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
@@ -1088,32 +1178,55 @@ impl Render for OxidalApp {
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
             .child({
-                let explorer_open =
-                    !self.sidebar_collapsed && self.sidebar_mode == SidebarMode::Explorer;
-                let mut content = h_flex()
+                let sidebar = if self.sidebar_collapsed {
+                    None
+                } else if self.effective_sidebar_mode() == SidebarMode::Explorer {
+                    Some(self.render_explorer_panel(cx).into_any_element())
+                } else {
+                    Some(self.render_sessions_panel(cx).into_any_element())
+                };
+
+                let content = h_flex()
                     .flex_1()
                     .min_h_0()
                     .child(self.render_sidebar_rail(cx));
-                if explorer_open {
-                    content = content.child(
+                match sidebar {
+                    // Both modes share one split, so a width set on either side
+                    // is the width the other opens at.
+                    Some(sidebar) => content.child(
                         div().flex_1().min_w_0().h_full().child(
-                            h_resizable("explorer-split")
+                            h_resizable("sidebar-split")
+                                .with_state(&self.sidebar_state)
                                 .child(
                                     resizable_panel()
-                                        .size(px(380.))
-                                        .size_range(px(300.)..px(800.))
-                                        .child(self.render_explorer_panel(cx).into_any_element()),
+                                        .size(px(cx.global::<AppSettings>().sidebar_width))
+                                        .size_range(
+                                            px(settings::SIDEBAR_MIN_WIDTH)
+                                                ..px(settings::SIDEBAR_MAX_WIDTH),
+                                        )
+                                        .child(sidebar),
                                 )
-                                .child(self.render_workspace(cx).into_any_element()),
+                                .child(self.render_workspace(cx).into_any_element())
+                                // Fires once on mouse up, so this is a write per
+                                // drag rather than per frame.
+                                .on_resize(|state, _, cx| {
+                                    let Some(width) = state.read(cx).sizes().first().copied()
+                                    else {
+                                        return;
+                                    };
+                                    let width = f32::from(width).clamp(
+                                        settings::SIDEBAR_MIN_WIDTH,
+                                        settings::SIDEBAR_MAX_WIDTH,
+                                    );
+                                    if cx.global::<AppSettings>().sidebar_width != width {
+                                        cx.global_mut::<AppSettings>().sidebar_width = width;
+                                        settings::save_settings(cx.global::<AppSettings>());
+                                    }
+                                }),
                         ),
-                    );
-                } else {
-                    if !self.sidebar_collapsed {
-                        content = content.child(self.render_sessions_panel(cx).into_any_element());
-                    }
-                    content = content.child(self.render_workspace(cx).into_any_element());
+                    ),
+                    None => content.child(self.render_workspace(cx).into_any_element()),
                 }
-                content
             })
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
