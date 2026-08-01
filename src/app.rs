@@ -1,7 +1,7 @@
 use crate::session::{self, Session, SessionFolder, SessionKind};
 use crate::session_dialog;
 use crate::settings_view::SettingsView;
-use crate::sftp::SftpPanel;
+use crate::sftp::{SftpPanel, SftpWorkspace};
 use crate::terminal::{self, TerminalView};
 use gpui::{
     AppContext as _, Context, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement as _,
@@ -50,7 +50,7 @@ enum TabContent {
         sftp: Entity<SftpPanel>,
         terminal: Entity<TerminalView>,
     },
-    Sftp(Entity<SftpPanel>),
+    Sftp(Entity<SftpWorkspace>),
     Settings(Entity<SettingsView>),
     Message(SharedString),
 }
@@ -347,7 +347,7 @@ impl OxidalApp {
             SessionKind::Sftp => {
                 let weak_app = cx.entity().downgrade();
                 TabContent::Sftp(cx.new(|cx| {
-                    SftpPanel::new(
+                    SftpWorkspace::new(
                         target.host.clone(),
                         target.port,
                         target.username.clone(),
@@ -368,7 +368,7 @@ impl OxidalApp {
             ),
         };
 
-        let has_explorer = matches!(content, TabContent::SshSession { .. } | TabContent::Sftp(_));
+        let has_explorer = matches!(content, TabContent::SshSession { .. });
         self.tabs.push(OpenTab {
             session_id: Some(id),
             title: SharedString::from(target.name.clone()),
@@ -679,7 +679,6 @@ impl OxidalApp {
             .and_then(|index| self.tabs.get(index))
             .and_then(|tab| match &tab.content {
                 TabContent::SshSession { sftp, .. } => Some(sftp.clone()),
-                TabContent::Sftp(sftp) => Some(sftp.clone()),
                 _ => None,
             });
 
