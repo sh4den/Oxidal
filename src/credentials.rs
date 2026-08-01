@@ -9,25 +9,45 @@ fn entry(id: Uuid) -> Option<Entry> {
     Entry::new(SERVICE, &id.to_string()).ok()
 }
 
-pub fn store_password(id: Uuid, password: &SecretString) {
-    let Some(entry) = entry(id) else { return };
-    let password = password.expose_secret();
-    if password.is_empty() {
+fn passphrase_entry(id: Uuid) -> Option<Entry> {
+    Entry::new(SERVICE, &format!("{id}:key-passphrase")).ok()
+}
+
+fn store(entry: Option<Entry>, secret: &SecretString) {
+    let Some(entry) = entry else { return };
+    let secret = secret.expose_secret();
+    if secret.is_empty() {
         let _ = entry.delete_credential();
     } else {
-        let _ = entry.set_password(password);
+        let _ = entry.set_password(secret);
     }
 }
 
-pub fn load_password(id: Uuid) -> Option<SecretString> {
-    let mut raw = entry(id)?.get_password().ok()?;
+fn load(entry: Option<Entry>) -> Option<SecretString> {
+    let mut raw = entry?.get_password().ok()?;
     let secret = SecretString::from(raw.as_str());
     raw.zeroize();
     Some(secret)
 }
 
+pub fn store_password(id: Uuid, password: &SecretString) {
+    store(entry(id), password);
+}
+
+pub fn load_password(id: Uuid) -> Option<SecretString> {
+    load(entry(id))
+}
+
+pub fn store_key_passphrase(id: Uuid, passphrase: &SecretString) {
+    store(passphrase_entry(id), passphrase);
+}
+
+pub fn load_key_passphrase(id: Uuid) -> Option<SecretString> {
+    load(passphrase_entry(id))
+}
+
 pub fn delete_password(id: Uuid) {
-    if let Some(entry) = entry(id) {
+    for entry in [entry(id), passphrase_entry(id)].into_iter().flatten() {
         let _ = entry.delete_credential();
     }
 }

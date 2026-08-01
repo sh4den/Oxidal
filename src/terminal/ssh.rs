@@ -1,11 +1,10 @@
 use std::time::Duration;
 
 use russh::{Channel, ChannelMsg};
-use secrecy::SecretString;
 
 use super::backend::{Backend, BackendEvent};
 use super::stats::{self, RemoteStats};
-use crate::ssh_client;
+use crate::ssh_client::{self, SshCredentials};
 
 // Bounds how long the transport thread lingers waiting for the disconnect to flush.
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -13,9 +12,7 @@ const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub fn spawn(
     host: String,
     port: u16,
-    username: String,
-    password: SecretString,
-    private_key_path: Option<String>,
+    credentials: SshCredentials,
     rows: u16,
     cols: u16,
 ) -> (Backend, async_channel::Receiver<RemoteStats>) {
@@ -39,9 +36,7 @@ pub fn spawn(
         let result = runtime.block_on(run(
             host,
             port,
-            username,
-            password,
-            private_key_path,
+            credentials,
             rows,
             cols,
             out_tx.clone(),
@@ -58,9 +53,7 @@ pub fn spawn(
 async fn run(
     host: String,
     port: u16,
-    username: String,
-    password: SecretString,
-    private_key_path: Option<String>,
+    credentials: SshCredentials,
     rows: u16,
     cols: u16,
     out_tx: async_channel::Sender<BackendEvent>,
@@ -68,7 +61,7 @@ async fn run(
     resize_rx: async_channel::Receiver<(u16, u16)>,
     stats_tx: async_channel::Sender<RemoteStats>,
 ) -> anyhow::Result<()> {
-    let session = ssh_client::connect(host, port, username, password, private_key_path).await?;
+    let session = ssh_client::connect(host, port, credentials).await?;
 
     let mut channel = session.channel_open_session().await?;
     channel
