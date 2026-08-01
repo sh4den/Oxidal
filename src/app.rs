@@ -4,9 +4,9 @@ use crate::settings_view::SettingsView;
 use crate::sftp::SftpPanel;
 use crate::terminal::{self, TerminalView};
 use gpui::{
-    AppContext as _, Context, Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px,
+    AppContext as _, Context, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use gpui_component::button::Button;
@@ -20,6 +20,7 @@ use gpui_component::{
     resizable::{h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
     tab::{Tab, TabBar},
+    tooltip::Tooltip,
     v_flex,
 };
 use std::collections::HashSet;
@@ -28,6 +29,20 @@ use uuid::Uuid;
 
 const TERM_ROWS: usize = 32;
 const TERM_COLS: usize = 110;
+
+const LABEL_TOOLTIP_MIN_CHARS: usize = 18;
+const FOLDER_GUIDE_INDENT: gpui::Pixels = px(18.);
+
+fn truncating_label(id: impl Into<ElementId>, text: SharedString) -> Stateful<Div> {
+    div()
+        .id(id)
+        .truncate()
+        .when(text.chars().count() > LABEL_TOOLTIP_MIN_CHARS, {
+            let full = text.clone();
+            move |this| this.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+        })
+        .child(text)
+}
 
 enum TabContent {
     Terminal(Entity<TerminalView>),
@@ -468,18 +483,14 @@ impl OxidalApp {
             )
     }
 
-    fn render_session_row(
-        &self,
-        item: &Session,
-        indent: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_session_row(&self, item: &Session, cx: &mut Context<Self>) -> impl IntoElement {
         let id = item.id;
         let selected = self.selected_session == Some(id);
         let group_name = SharedString::from(format!("session-{id}"));
         let folders = self.folders.clone();
         let session = item.clone();
         let name = SharedString::from(item.name.clone());
+        let detail = SharedString::from(item.detail());
 
         h_flex()
             .id(SharedString::from(format!("session-{id}")))
@@ -489,7 +500,6 @@ impl OxidalApp {
             .px_2()
             .py_1()
             .mx_1()
-            .when(indent, |this| this.pl_6())
             .rounded_md()
             .cursor_pointer()
             .when(selected, |this| {
@@ -516,12 +526,14 @@ impl OxidalApp {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_sm().child(SharedString::from(item.name.clone())))
                     .child(
-                        div()
+                        truncating_label(SharedString::from(format!("name-{id}")), name.clone())
+                            .text_sm(),
+                    )
+                    .child(
+                        truncating_label(SharedString::from(format!("detail-{id}")), detail)
                             .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(item.detail())),
+                            .text_color(cx.theme().muted_foreground),
                     ),
             )
             .child(
@@ -713,6 +725,11 @@ impl OxidalApp {
             let folder_id = folder.id;
             let collapsed = self.collapsed_folders.contains(&folder_id);
             let group_name = SharedString::from(format!("folder-{folder_id}"));
+            let children: Vec<&Session> = self
+                .sessions
+                .iter()
+                .filter(|s| s.folder_id == Some(folder_id))
+                .collect();
 
             rows.push(
                 h_flex()
@@ -743,13 +760,27 @@ impl OxidalApp {
                             .when_some(folder.color.hsla(), |this, color| this.text_color(color)),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(SharedString::from(folder.name.clone())),
+                        truncating_label(
+                            SharedString::from(format!("folder-name-{folder_id}")),
+                            SharedString::from(folder.name.clone()),
+                        )
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD),
                     )
+                    .when(collapsed && !children.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .px_1p5()
+                                .rounded_full()
+                                .text_xs()
+                                .bg(cx.theme().sidebar_accent)
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(children.len().to_string())),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_1()
@@ -790,19 +821,25 @@ impl OxidalApp {
                     .into_any_element(),
             );
 
-            if !collapsed {
-                for item in self
-                    .sessions
-                    .iter()
-                    .filter(|s| s.folder_id == Some(folder_id))
-                {
-                    rows.push(self.render_session_row(item, true, cx).into_any_element());
-                }
+            if !collapsed && !children.is_empty() {
+                let nested: Vec<gpui::AnyElement> = children
+                    .into_iter()
+                    .map(|item| self.render_session_row(item, cx).into_any_element())
+                    .collect();
+                rows.push(
+                    v_flex()
+                        .ml(FOLDER_GUIDE_INDENT)
+                        .pl_1()
+                        .border_l_1()
+                        .border_color(cx.theme().sidebar_border)
+                        .children(nested)
+                        .into_any_element(),
+                );
             }
         }
 
         for item in self.sessions.iter().filter(|s| s.folder_id.is_none()) {
-            rows.push(self.render_session_row(item, false, cx).into_any_element());
+            rows.push(self.render_session_row(item, cx).into_any_element());
         }
 
         v_flex()

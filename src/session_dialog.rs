@@ -867,7 +867,11 @@ fn open_session_dialog(
             let selected_color = selected_color.clone();
             move |cx: &mut App| {
                 let kind = selected_kind.read(cx).0;
-                let mut session = Session::new(name.read(cx).value().to_string(), kind);
+                let mut label = name.read(cx).value().trim().to_string();
+                if label.is_empty() {
+                    label = kind.label().to_string();
+                }
+                let mut session = Session::new(label, kind);
                 if let Some(id) = editing_id {
                     session.id = id;
                 }
@@ -1115,8 +1119,8 @@ pub fn open_new_folder_dialog(
             .child(color_picker(&selected_color, cx));
 
         let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
-            let value = name.read(cx).value().to_string();
-            if !value.trim().is_empty() {
+            let value = name.read(cx).value().trim().to_string();
+            if !value.is_empty() {
                 let mut folder = SessionFolder::new(value);
                 folder.icon = selected_icon.read(cx).0;
                 folder.color = selected_color.read(cx).0;
@@ -1192,8 +1196,8 @@ pub fn open_edit_folder_dialog(
             .child(color_picker(&selected_color, cx));
 
         let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
-            let value = name.read(cx).value().to_string();
-            if !value.trim().is_empty() {
+            let value = name.read(cx).value().trim().to_string();
+            if !value.is_empty() {
                 let mut folder = SessionFolder::new(value);
                 folder.id = folder_id;
                 folder.icon = selected_icon.read(cx).0;

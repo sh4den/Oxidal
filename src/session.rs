@@ -389,6 +389,7 @@ pub fn load_sessions() -> Vec<Session> {
         Err(_) => default_sessions(),
     };
     for session in &mut sessions {
+        session.name = session.name.trim().to_string();
         if let Some(password) = crate::credentials::load_password(session.id) {
             session.password = password;
         }
@@ -408,10 +409,14 @@ pub fn save_sessions(sessions: &[Session]) {
 
 pub fn load_folders() -> Vec<SessionFolder> {
     let path = folders_path();
-    match fs::read_to_string(&path) {
+    let mut folders: Vec<SessionFolder> = match fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => Vec::new(),
+    };
+    for folder in &mut folders {
+        folder.name = folder.name.trim().to_string();
     }
+    folders
 }
 
 pub fn save_folders(folders: &[SessionFolder]) {
