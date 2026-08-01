@@ -599,10 +599,27 @@ impl OxidalApp {
             )
     }
 
+    fn active_sftp_panel(&self) -> Option<Entity<SftpPanel>> {
+        self.active_tab
+            .and_then(|index| self.tabs.get(index))
+            .and_then(|tab| match &tab.content {
+                TabContent::SshSession { sftp, .. } => Some(sftp.clone()),
+                _ => None,
+            })
+    }
+
+    fn effective_sidebar_mode(&self) -> SidebarMode {
+        match self.sidebar_mode {
+            SidebarMode::Explorer if self.active_sftp_panel().is_none() => SidebarMode::Sessions,
+            mode => mode,
+        }
+    }
+
     fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let sessions_active = !self.sidebar_collapsed && self.sidebar_mode == SidebarMode::Sessions;
-        let explorer_active = !self.sidebar_collapsed && self.sidebar_mode == SidebarMode::Explorer;
-        let has_open_session = !self.tabs.is_empty();
+        let mode = self.effective_sidebar_mode();
+        let sessions_active = !self.sidebar_collapsed && mode == SidebarMode::Sessions;
+        let explorer_active = !self.sidebar_collapsed && mode == SidebarMode::Explorer;
+        let has_explorer = self.active_sftp_panel().is_some();
 
         v_flex()
             .w(px(72.))
@@ -630,7 +647,7 @@ impl OxidalApp {
                         view.set_sidebar_mode(SidebarMode::Sessions, cx);
                     })),
             )
-            .when(has_open_session, |this| {
+            .when(has_explorer, |this| {
                 this.child(
                     Button::new("sidebar-explorer")
                         .ghost()
@@ -670,15 +687,7 @@ impl OxidalApp {
     }
 
     fn render_explorer_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let sftp = self
-            .active_tab
-            .and_then(|index| self.tabs.get(index))
-            .and_then(|tab| match &tab.content {
-                TabContent::SshSession { sftp, .. } => Some(sftp.clone()),
-                _ => None,
-            });
-
-        let content = match sftp {
+        let content = match self.active_sftp_panel() {
             Some(sftp) => sftp.into_any_element(),
             None => v_flex()
                 .flex_1()
@@ -1131,8 +1140,8 @@ impl Render for OxidalApp {
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
             .child({
-                let explorer_open =
-                    !self.sidebar_collapsed && self.sidebar_mode == SidebarMode::Explorer;
+                let explorer_open = !self.sidebar_collapsed
+                    && self.effective_sidebar_mode() == SidebarMode::Explorer;
                 let mut content = h_flex()
                     .flex_1()
                     .min_h_0()
