@@ -12,6 +12,8 @@ pub struct AppSettings {
     pub dark_mode: bool,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
 }
 
 impl Global for AppSettings {}
@@ -23,12 +25,20 @@ impl Default for AppSettings {
             font_size: 14.0,
             dark_mode: false,
             opacity: default_opacity(),
+            sidebar_width: default_sidebar_width(),
         }
     }
 }
 
 fn default_opacity() -> f32 {
     1.0
+}
+
+pub const SIDEBAR_MIN_WIDTH: f32 = 240.0;
+pub const SIDEBAR_MAX_WIDTH: f32 = 800.0;
+
+fn default_sidebar_width() -> f32 {
+    320.0
 }
 
 pub fn apply_window_opacity(window: &mut Window, cx: &mut App) {
@@ -93,5 +103,46 @@ pub fn save_settings(settings: &AppSettings) {
     }
     if let Ok(json) = serde_json::to_string_pretty(settings) {
         let _ = fs::write(settings_path(), json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_saved_before_the_sidebar_was_resizable_keep_their_values() {
+        let existing = r#"{
+            "font_family": "0xProto Nerd Font Mono",
+            "font_size": 14.0,
+            "dark_mode": true,
+            "opacity": 1.0
+        }"#;
+
+        let settings: AppSettings =
+            serde_json::from_str(existing).expect("a file without the new field should still load");
+
+        assert_eq!(settings.font_family, "0xProto Nerd Font Mono");
+        assert!(settings.dark_mode, "existing preferences must survive");
+        assert_eq!(settings.sidebar_width, default_sidebar_width());
+    }
+
+    #[test]
+    fn the_sidebar_width_survives_a_round_trip() {
+        let settings = AppSettings {
+            sidebar_width: 512.0,
+            ..AppSettings::default()
+        };
+
+        let json = serde_json::to_string(&settings).expect("serialize");
+        let restored: AppSettings = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.sidebar_width, 512.0);
+    }
+
+    #[test]
+    fn the_default_width_sits_inside_the_allowed_range() {
+        assert!(default_sidebar_width() >= SIDEBAR_MIN_WIDTH);
+        assert!(default_sidebar_width() <= SIDEBAR_MAX_WIDTH);
     }
 }
