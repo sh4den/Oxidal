@@ -40,6 +40,13 @@ const CLIPBOARD_MODIFIER: &str = if cfg!(target_os = "macos") {
     "Ctrl"
 };
 
+// Matches the word-motion keys the terminal translates.
+const WORD_MOVE_MODIFIER: &str = if cfg!(target_os = "macos") {
+    "⌥"
+} else {
+    "Ctrl"
+};
+
 // Row chrome around a label: margins, padding, icon, gaps and the hover buttons.
 const ROW_CHROME_WIDTH: f32 = 116.;
 const APPROX_CHAR_WIDTH: f32 = 7.;
@@ -1143,7 +1150,7 @@ fn render_shortcuts(cx: &gpui::App) -> impl IntoElement {
                         .min_w_0()
                         .gap_2()
                         .child(section("NAVIGATION"))
-                        .child(shortcut(&["Ctrl", "←/→"], "Move by word", cx))
+                        .child(shortcut(&[WORD_MOVE_MODIFIER, "←/→"], "Move by word", cx))
                         .child(shortcut(&["Shift", "PgUp/PgDn"], "Scroll history", cx))
                         .child(shortcut(&["Drag"], "Select text", cx))
                         .child(shortcut(&["Double click"], "Open a session", cx)),
