@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use gpui::{
     Anchor, AnyElement, AppContext as _, ClickEvent, Context, DragMoveEvent, Empty, EntityId,
-    EventEmitter, FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    EventEmitter, ExternalPaths, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
@@ -15,17 +15,19 @@ use gpui_component::{
     dialog::DialogFooter,
     h_flex,
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     progress::Progress,
     scroll::Scrollbar,
     skeleton::Skeleton,
     v_flex,
 };
 
+use crate::settings::AppSettings;
+
 use super::{
     FileClient, FileDrag, PanelSide, SftpEntry, SftpEvent, format_kind, format_modified,
     format_permissions, format_size, has_parent, join_path, join_remote, parent_path,
-    safe_local_name,
+    safe_local_name, unique_destination,
 };
 
 pub enum PanelEvent {
@@ -164,6 +166,7 @@ pub struct SftpPanel {
     current_path: String,
     entries: Vec<SftpEntry>,
     selected: Option<String>,
+    context_entry: Option<SftpEntry>,
     loading: bool,
     error: Option<String>,
     closed: Option<String>,
@@ -306,6 +309,9 @@ impl SftpPanel {
                                 if let Some(err) = error {
                                     panel.error = Some(err);
                                 }
+                                if panel.side == PanelSide::Remote {
+                                    panel.client.list(panel.current_path.clone());
+                                }
                                 cx.emit(PanelEvent::TransferFinished);
                                 cx.notify();
                             })
@@ -334,6 +340,7 @@ impl SftpPanel {
             current_path: "/".to_string(),
             entries: Vec::new(),
             selected: None,
+            context_entry: None,
             loading: true,
             error: None,
             closed: None,
@@ -568,60 +575,63 @@ impl SftpPanel {
         });
     }
 
-    fn upload(&self, cx: &mut Context<Self>) {
-        let FileClient::Remote(client) = &self.client else {
+    fn upload_prompt(&self, cx: &mut Context<Self>) {
+        if !matches!(self.client, FileClient::Remote(_)) {
             return;
-        };
+        }
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: true,
             multiple: true,
             prompt: Some(SharedString::from("Upload")),
         });
-        let client = client.clone();
-        let remote_dir = self.current_path.clone();
-        cx.spawn(async move |_this, _cx| {
+        cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
-                for local in paths {
-                    let name = local
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    if name.is_empty() {
-                        continue;
-                    }
-                    let remote = join_remote(&remote_dir, &name);
-                    if local.is_dir() {
-                        client.upload_dir(local, remote);
-                    } else {
-                        client.upload(local, remote);
-                    }
-                }
+                let _ = this.update(cx, |panel, cx| panel.upload_paths(&paths, cx));
             }
         })
         .detach();
     }
 
-    fn download(&self, entry: SftpEntry, cx: &mut Context<Self>) {
+    fn upload_paths(&self, paths: &[PathBuf], cx: &mut Context<Self>) {
         let FileClient::Remote(client) = &self.client else {
             return;
         };
-        let start_dir = dirs::download_dir()
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let suggested = safe_local_name(&entry.name);
-        let rx = cx.prompt_for_new_path(&start_dir, Some(&suggested));
-        let client = client.clone();
-        cx.spawn(async move |_this, _cx| {
-            if let Ok(Ok(Some(local))) = rx.await {
-                if entry.is_dir {
-                    client.download_dir(entry.path.clone(), local);
-                } else {
-                    client.download(entry.path.clone(), local);
-                }
+        for local in paths {
+            let name = local
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
             }
-        })
-        .detach();
+            let remote = join_remote(&self.current_path, &name);
+            if local.is_dir() {
+                client.upload_dir(local.clone(), remote);
+            } else {
+                client.upload(local.clone(), remote);
+            }
+        }
+        cx.notify();
+    }
+
+    fn download(&mut self, entry: SftpEntry, cx: &mut Context<Self>) {
+        let FileClient::Remote(client) = self.client.clone() else {
+            return;
+        };
+        let folder = cx.global::<AppSettings>().resolved_download_dir();
+        if let Err(err) = std::fs::create_dir_all(&folder) {
+            self.error = Some(format!("Couldn't use {}: {err}", folder.display()));
+            cx.notify();
+            return;
+        }
+        let destination = unique_destination(&folder, &safe_local_name(&entry.name));
+        if entry.is_dir {
+            client.download_dir(entry.path, destination);
+        } else {
+            client.download(entry.path, destination);
+        }
+        cx.notify();
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -683,7 +693,7 @@ impl SftpPanel {
                         .xsmall()
                         .icon(IconName::ArrowUp)
                         .label("Upload")
-                        .on_click(cx.listener(|panel, _, _, cx| panel.upload(cx))),
+                        .on_click(cx.listener(|panel, _, _, cx| panel.upload_prompt(cx))),
                 )
             })
             .child(div().flex_1())
@@ -782,12 +792,9 @@ impl SftpPanel {
     }
 
     fn render_row(&self, entry: &SftpEntry, cx: &mut Context<Self>) -> AnyElement {
-        let view = cx.entity();
         let selected = self.selected.as_deref() == Some(entry.path.as_str());
         let row_entry = entry.clone();
         let row_entry_click = entry.clone();
-        let is_dir = entry.is_dir;
-        let is_remote = self.side == PanelSide::Remote;
 
         let mut row = h_flex()
             .id(SharedString::from(format!("sftp-entry-{}", entry.path)))
@@ -876,43 +883,81 @@ impl SftpPanel {
             );
         }
 
-        row.context_menu(move |menu, window, _cx| {
-                let entry = row_entry.clone();
-                let mut menu = menu;
-                if !is_dir {
-                    let open_entry = entry.clone();
-                    menu = menu.item(PopupMenuItem::new("Open").on_click(
-                        window.listener_for(&view, move |panel, _, _, cx| {
-                            panel.open_file(&open_entry, cx)
-                        }),
-                    ));
-                }
-                if is_remote {
-                    let entry = entry.clone();
-                    menu = menu.item(PopupMenuItem::new("Download to...").on_click(
-                        window.listener_for(&view, move |panel, _, _, cx| {
-                            panel.download(entry.clone(), cx)
-                        }),
-                    ));
-                }
-                if !is_dir || is_remote {
-                    menu = menu.separator();
-                }
-                menu = menu.item(PopupMenuItem::new("Rename").on_click(window.listener_for(
-                    &view,
-                    {
-                        let entry = entry.clone();
-                        move |panel, _, window, cx| panel.rename_dialog(entry.clone(), window, cx)
-                    },
-                )));
-                menu.item(
-                    PopupMenuItem::new("Delete").on_click(window.listener_for(&view, {
-                        move |panel, _, window, cx| panel.delete_dialog(entry.clone(), window, cx)
-                    })),
-                )
-            })
-            .into_any_element()
+        row.on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |panel, _: &MouseDownEvent, _, cx| {
+                panel.context_entry = Some(row_entry.clone());
+                panel.selected = Some(row_entry.path.clone());
+                cx.stop_propagation();
+                cx.emit(PanelEvent::SelectionChanged);
+                cx.notify();
+            }),
+        )
+        .into_any_element()
     }
+}
+
+fn entry_menu(
+    menu: PopupMenu,
+    view: &gpui::Entity<SftpPanel>,
+    entry: SftpEntry,
+    is_remote: bool,
+    window: &mut Window,
+) -> PopupMenu {
+    let mut menu = menu;
+    if !entry.is_dir {
+        let open_entry = entry.clone();
+        menu = menu.item(PopupMenuItem::new("Open").on_click(
+            window.listener_for(view, move |panel, _, _, cx| {
+                panel.open_file(&open_entry, cx)
+            }),
+        ));
+    }
+    if is_remote {
+        let target = entry.clone();
+        menu = menu.item(PopupMenuItem::new("Download").on_click(
+            window.listener_for(view, move |panel, _, _, cx| {
+                panel.download(target.clone(), cx)
+            }),
+        ));
+    }
+    if !entry.is_dir || is_remote {
+        menu = menu.separator();
+    }
+    let renamed = entry.clone();
+    menu = menu.item(PopupMenuItem::new("Rename").on_click(
+        window.listener_for(view, move |panel, _, window, cx| {
+            panel.rename_dialog(renamed.clone(), window, cx)
+        }),
+    ));
+    menu.item(PopupMenuItem::new("Delete").on_click(
+        window.listener_for(view, move |panel, _, window, cx| {
+            panel.delete_dialog(entry.clone(), window, cx)
+        }),
+    ))
+}
+
+fn folder_menu(
+    menu: PopupMenu,
+    view: &gpui::Entity<SftpPanel>,
+    is_remote: bool,
+    window: &mut Window,
+) -> PopupMenu {
+    let mut menu = menu.item(PopupMenuItem::new("New Folder").on_click(
+        window.listener_for(view, |panel, _, window, cx| {
+            panel.new_folder_dialog(window, cx)
+        }),
+    ));
+    if is_remote {
+        menu = menu.item(
+            PopupMenuItem::new("Upload...")
+                .on_click(window.listener_for(view, |panel, _, _, cx| panel.upload_prompt(cx))),
+        );
+    }
+    menu.separator().item(
+        PopupMenuItem::new("Refresh")
+            .on_click(window.listener_for(view, |panel, _, _, cx| panel.refresh(cx))),
+    )
 }
 
 impl EventEmitter<PanelEvent> for SftpPanel {}
@@ -1004,9 +1049,12 @@ impl Render for SftpPanel {
                     .when(self.resizing.is_some(), |this| this.cursor_col_resize())
                     .can_drop({
                         let side = self.side;
-                        move |drag, _, _| {
-                            drag.downcast_ref::<FileDrag>()
-                                .is_some_and(|drag| drag.side != side)
+                        move |drag, _, _| match drag.downcast_ref::<FileDrag>() {
+                            Some(drag) => drag.side != side,
+                            None => {
+                                side == PanelSide::Remote
+                                    && drag.downcast_ref::<ExternalPaths>().is_some()
+                            }
                         }
                     })
                     .drag_over::<FileDrag>(|style, _, _, cx| {
@@ -1021,6 +1069,14 @@ impl Render for SftpPanel {
                             dest_dir: panel.current_path.clone(),
                         });
                     }))
+                    .when(is_remote_panel, |this| {
+                        this.drag_over::<ExternalPaths>(|style, _, _, cx| {
+                            style.bg(cx.theme().primary.opacity(0.08))
+                        })
+                        .on_drop(cx.listener(|panel, paths: &ExternalPaths, _, cx| {
+                            panel.upload_paths(paths.paths(), cx);
+                        }))
+                    })
                     .on_drag_move(cx.listener(
                         |panel, event: &DragMoveEvent<ColumnDrag>, _, cx| {
                             let ColumnDrag(entity_id) = event.drag(cx);
@@ -1122,35 +1178,28 @@ impl Render for SftpPanel {
                                                     },
                                                 ),
                                             )
-                                            .context_menu(move |menu, window, _cx| {
-                                                let mut menu = menu.item(
-                                                    PopupMenuItem::new("New Folder").on_click(
-                                                        window.listener_for(
-                                                            &view,
-                                                            |panel, _, window, cx| {
-                                                                panel.new_folder_dialog(window, cx)
-                                                            },
-                                                        ),
+                                            .on_mouse_down(
+                                                MouseButton::Right,
+                                                cx.listener(|panel, _: &MouseDownEvent, _, _| {
+                                                    panel.context_entry = None;
+                                                }),
+                                            )
+                                            .context_menu(move |menu, window, cx| {
+                                                match view.read(cx).context_entry.clone() {
+                                                    Some(entry) => entry_menu(
+                                                        menu,
+                                                        &view,
+                                                        entry,
+                                                        is_remote_panel,
+                                                        window,
                                                     ),
-                                                );
-                                                if is_remote_panel {
-                                                    menu = menu.item(
-                                                        PopupMenuItem::new("Upload...").on_click(
-                                                            window.listener_for(
-                                                                &view,
-                                                                |panel, _, _, cx| panel.upload(cx),
-                                                            ),
-                                                        ),
-                                                    );
+                                                    None => folder_menu(
+                                                        menu,
+                                                        &view,
+                                                        is_remote_panel,
+                                                        window,
+                                                    ),
                                                 }
-                                                menu.separator().item(
-                                                    PopupMenuItem::new("Refresh").on_click(
-                                                        window.listener_for(
-                                                            &view,
-                                                            |panel, _, _, cx| panel.refresh(cx),
-                                                        ),
-                                                    ),
-                                                )
                                             }),
                                     ),
                             ),

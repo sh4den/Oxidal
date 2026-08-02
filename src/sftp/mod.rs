@@ -277,6 +277,31 @@ fn safe_local_name(name: &str) -> String {
     }
 }
 
+fn unique_destination(dir: &std::path::Path, name: &str) -> PathBuf {
+    let taken = dir.join(name);
+    if !taken.exists() {
+        return taken;
+    }
+    let as_path = std::path::Path::new(name);
+    let (stem, extension) = match as_path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => (
+            as_path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(name),
+            format!(".{ext}"),
+        ),
+        None => (name, String::new()),
+    };
+    for suffix in 1..1000 {
+        let candidate = dir.join(format!("{stem} ({suffix}){extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    taken
+}
+
 fn join_remote(dir: &str, name: &str) -> String {
     if dir.is_empty() {
         name.to_string()
@@ -368,4 +393,52 @@ pub fn format_permissions(is_dir: bool, mode: Option<u32>) -> String {
         out.push(if bits & 0o1 != 0 { 'x' } else { '-' });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_second_download_of_the_same_name_lands_beside_the_first() {
+        let base = std::env::temp_dir().join(format!("oxidal-unique-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("dir");
+
+        assert_eq!(
+            unique_destination(&base, "report.tar.gz"),
+            base.join("report.tar.gz"),
+            "a free name should be used as is"
+        );
+
+        std::fs::write(base.join("report.tar.gz"), b"first").expect("file");
+        assert_eq!(
+            unique_destination(&base, "report.tar.gz"),
+            base.join("report.tar (1).gz"),
+            "the counter goes before the last extension so the file still opens"
+        );
+
+        std::fs::write(base.join("report.tar (1).gz"), b"second").expect("file");
+        assert_eq!(
+            unique_destination(&base, "report.tar.gz"),
+            base.join("report.tar (2).gz"),
+            "the counter keeps climbing while names are taken"
+        );
+
+        std::fs::create_dir(base.join("logs")).expect("dir");
+        assert_eq!(
+            unique_destination(&base, "logs"),
+            base.join("logs (1)"),
+            "extensionless names, such as folders, get the counter appended"
+        );
+
+        std::fs::write(base.join(".bashrc"), b"x").expect("file");
+        assert_eq!(
+            unique_destination(&base, ".bashrc"),
+            base.join(".bashrc (1)"),
+            "a leading dot is part of the name, not an extension"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

@@ -33,8 +33,6 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("tab", SendTab, Some("Terminal")),
             KeyBinding::new("shift-tab", SendTabPrev, Some("Terminal")),
-            // `secondary` is cmd on macOS and ctrl elsewhere, so ctrl stays free
-            // for the shell on macOS.
             KeyBinding::new("secondary-c", CopySelection, Some("Terminal")),
             KeyBinding::new("secondary-shift-c", CopySelection, Some("Terminal")),
             KeyBinding::new("secondary-x", CutSelection, Some("Terminal")),
