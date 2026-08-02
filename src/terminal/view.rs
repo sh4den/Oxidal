@@ -23,6 +23,9 @@ const CPU_HISTORY_LEN: usize = 30;
 /// use cmd and ctrl reaches the shell untouched.
 const CLIPBOARD_SHARES_CONTROL_KEY: bool = !cfg!(target_os = "macos");
 
+/// macOS moves by word with option-arrow rather than ctrl-arrow.
+const WORD_MOTION_USES_ALT: bool = cfg!(target_os = "macos");
+
 actions!(
     terminal,
     [
@@ -1215,6 +1218,18 @@ fn translate_key(event: &KeyDownEvent, application_cursor_keys: bool) -> Option<
     }
 
     let modifiers = &keystroke.modifiers;
+
+    // On macOS word movement is option-arrow, and macOS itself eats ctrl-arrow
+    // for Mission Control. ESC-b / ESC-f are what readline and zsh bind to
+    // backward-word / forward-word out of the box.
+    if WORD_MOTION_USES_ALT && modifiers.alt && !modifiers.control && !modifiers.platform {
+        match keystroke.key.as_str() {
+            "left" => return Some(b"\x1bb".to_vec()),
+            "right" => return Some(b"\x1bf".to_vec()),
+            _ => {}
+        }
+    }
+
     let modifier_code = 1
         + u8::from(modifiers.shift)
         + 2 * u8::from(modifiers.alt)
