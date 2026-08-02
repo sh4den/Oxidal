@@ -112,10 +112,11 @@ fn cleanup_previous() {
 
 fn fetch_latest() -> Option<AvailableUpdate> {
     let release: Release = ureq::get(RELEASES_URL)
-        .set("User-Agent", USER_AGENT)
+        .header("User-Agent", USER_AGENT)
         .call()
         .ok()?
-        .into_json()
+        .body_mut()
+        .read_json()
         .ok()?;
     let version = release.tag_name.trim_start_matches(['v', 'V']).to_string();
     if !is_newer(&version, env!("CARGO_PKG_VERSION")) {
@@ -134,11 +135,11 @@ fn fetch_asset(update: &AvailableUpdate) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
     let file_name = update.asset_name.replace(['/', '\\', ':'], "_");
     let path = dir.join(file_name);
-    let response = ureq::get(&update.asset_url)
-        .set("User-Agent", USER_AGENT)
+    let mut response = ureq::get(&update.asset_url)
+        .header("User-Agent", USER_AGENT)
         .call()?;
     let mut file = std::fs::File::create(&path)?;
-    std::io::copy(&mut response.into_reader(), &mut file)?;
+    std::io::copy(&mut response.body_mut().as_reader(), &mut file)?;
     Ok(path)
 }
 

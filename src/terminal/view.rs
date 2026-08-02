@@ -18,6 +18,10 @@ use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
 
+const CLIPBOARD_SHARES_CONTROL_KEY: bool = !cfg!(target_os = "macos");
+
+const WORD_MOTION_USES_ALT: bool = cfg!(target_os = "macos");
+
 actions!(
     terminal,
     [
@@ -452,14 +456,14 @@ impl Render for TerminalView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CopySelection, _window, cx| {
-                if !view.copy_selection(cx) {
+                if !view.copy_selection(cx) && CLIPBOARD_SHARES_CONTROL_KEY {
                     view.scroll_offset = 0;
                     view.backend.write_input(b"\x03");
                 }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CutSelection, _window, cx| {
-                if !view.copy_selection(cx) {
+                if !view.copy_selection(cx) && CLIPBOARD_SHARES_CONTROL_KEY {
                     view.scroll_offset = 0;
                     view.backend.write_input(b"\x18");
                 }
@@ -1210,6 +1214,15 @@ fn translate_key(event: &KeyDownEvent, application_cursor_keys: bool) -> Option<
     }
 
     let modifiers = &keystroke.modifiers;
+
+    if WORD_MOTION_USES_ALT && modifiers.alt && !modifiers.control && !modifiers.platform {
+        match keystroke.key.as_str() {
+            "left" => return Some(b"\x1bb".to_vec()),
+            "right" => return Some(b"\x1bf".to_vec()),
+            _ => {}
+        }
+    }
+
     let modifier_code = 1
         + u8::from(modifiers.shift)
         + 2 * u8::from(modifiers.alt)
