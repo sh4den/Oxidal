@@ -33,6 +33,13 @@ const TERM_COLS: usize = 110;
 
 const FOLDER_GUIDE_INDENT: gpui::Pixels = px(18.);
 
+// Matches the `secondary-` clipboard bindings registered in main.
+const CLIPBOARD_MODIFIER: &str = if cfg!(target_os = "macos") {
+    "⌘"
+} else {
+    "Ctrl"
+};
+
 // Row chrome around a label: margins, padding, icon, gaps and the hover buttons.
 const ROW_CHROME_WIDTH: f32 = 116.;
 const APPROX_CHAR_WIDTH: f32 = 7.;
@@ -1118,9 +1125,17 @@ fn render_shortcuts(cx: &gpui::App) -> impl IntoElement {
                         .min_w_0()
                         .gap_2()
                         .child(section("CLIPBOARD"))
-                        .child(shortcut(&["Ctrl", "C"], "Copy selection, else interrupt", cx))
-                        .child(shortcut(&["Ctrl", "V"], "Paste", cx))
-                        .child(shortcut(&["Ctrl", "X"], "Cut selection", cx))
+                        .child(shortcut(
+                            &[CLIPBOARD_MODIFIER, "C"],
+                            if cfg!(target_os = "macos") {
+                                "Copy selection"
+                            } else {
+                                "Copy selection, else interrupt"
+                            },
+                            cx,
+                        ))
+                        .child(shortcut(&[CLIPBOARD_MODIFIER, "V"], "Paste", cx))
+                        .child(shortcut(&[CLIPBOARD_MODIFIER, "X"], "Cut selection", cx))
                         .child(shortcut(&["Right click"], "Paste", cx)),
                 )
                 .child(
