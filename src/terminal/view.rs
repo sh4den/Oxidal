@@ -18,6 +18,11 @@ use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
 
+/// Outside macOS the clipboard bindings use ctrl, so ctrl-c / ctrl-x still have
+/// to send their control code when there is no selection to copy. On macOS they
+/// use cmd and ctrl reaches the shell untouched.
+const CLIPBOARD_SHARES_CONTROL_KEY: bool = !cfg!(target_os = "macos");
+
 actions!(
     terminal,
     [
@@ -452,14 +457,14 @@ impl Render for TerminalView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CopySelection, _window, cx| {
-                if !view.copy_selection(cx) {
+                if !view.copy_selection(cx) && CLIPBOARD_SHARES_CONTROL_KEY {
                     view.scroll_offset = 0;
                     view.backend.write_input(b"\x03");
                 }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CutSelection, _window, cx| {
-                if !view.copy_selection(cx) {
+                if !view.copy_selection(cx) && CLIPBOARD_SHARES_CONTROL_KEY {
                     view.scroll_offset = 0;
                     view.backend.write_input(b"\x18");
                 }
