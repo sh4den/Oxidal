@@ -295,9 +295,7 @@ impl Grid {
         let Some(mut parser) = self.parser.take() else {
             return Vec::new();
         };
-        for byte in bytes {
-            parser.advance(self, *byte);
-        }
+        parser.advance(self, bytes);
         self.parser = Some(parser);
         std::mem::take(&mut self.responses)
     }
