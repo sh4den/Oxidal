@@ -33,14 +33,12 @@ const TERM_COLS: usize = 110;
 
 const FOLDER_GUIDE_INDENT: gpui::Pixels = px(18.);
 
-// Matches the `secondary-` clipboard bindings registered in main.
 const CLIPBOARD_MODIFIER: &str = if cfg!(target_os = "macos") {
     "⌘"
 } else {
     "Ctrl"
 };
 
-// Matches the word-motion keys the terminal translates.
 const WORD_MOVE_MODIFIER: &str = if cfg!(target_os = "macos") {
     "⌥"
 } else {

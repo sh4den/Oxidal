@@ -284,7 +284,10 @@ impl Render for SftpWorkspace {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(Icon::new(IconName::Info).xsmall())
-                    .child("Drag a file or folder onto the other side to transfer it"),
+                    .child(
+                        "Drag a file or folder onto the other side to transfer it, \
+                         or drop one from your computer onto the remote side",
+                    ),
             )
     }
 }

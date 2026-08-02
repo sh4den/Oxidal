@@ -14,9 +14,28 @@ pub struct AppSettings {
     pub opacity: f32,
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: f32,
+    #[serde(default)]
+    pub download_dir: Option<String>,
 }
 
 impl Global for AppSettings {}
+
+impl AppSettings {
+    pub fn resolved_download_dir(&self) -> PathBuf {
+        self.download_dir
+            .as_ref()
+            .map(|dir| dir.trim())
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(default_download_dir)
+    }
+}
+
+pub fn default_download_dir() -> PathBuf {
+    dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
+}
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -26,6 +45,7 @@ impl Default for AppSettings {
             dark_mode: false,
             opacity: default_opacity(),
             sidebar_width: default_sidebar_width(),
+            download_dir: None,
         }
     }
 }
@@ -138,6 +158,49 @@ mod tests {
         let restored: AppSettings = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(restored.sidebar_width, 512.0);
+    }
+
+    #[test]
+    fn the_download_folder_falls_back_to_the_one_the_os_uses() {
+        let existing = r#"{
+            "font_family": "Menlo",
+            "font_size": 14.0,
+            "dark_mode": false
+        }"#;
+
+        let settings: AppSettings =
+            serde_json::from_str(existing).expect("a file from before the setting should load");
+        assert_eq!(
+            settings.resolved_download_dir(),
+            default_download_dir(),
+            "an unset folder means the OS downloads folder"
+        );
+
+        let blank = AppSettings {
+            download_dir: Some("   ".to_string()),
+            ..AppSettings::default()
+        };
+        assert_eq!(
+            blank.resolved_download_dir(),
+            default_download_dir(),
+            "a cleared field must not send downloads to a blank path"
+        );
+    }
+
+    #[test]
+    fn a_chosen_download_folder_survives_a_round_trip() {
+        let settings = AppSettings {
+            download_dir: Some("/srv/incoming".to_string()),
+            ..AppSettings::default()
+        };
+
+        let json = serde_json::to_string(&settings).expect("serialize");
+        let restored: AppSettings = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(
+            restored.resolved_download_dir(),
+            PathBuf::from("/srv/incoming")
+        );
     }
 
     #[test]

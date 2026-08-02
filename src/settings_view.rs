@@ -1,12 +1,12 @@
 use gpui::{
-    AppContext as _, Context, FontWeight, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    AppContext as _, Context, FontWeight, IntoElement, ParentElement as _, PathPromptOptions,
+    Render, SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, IconName, IndexPath, Theme, ThemeMode, WindowExt as _,
+    ActiveTheme as _, IconName, IndexPath, Sizable as _, Theme, ThemeMode, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     select::{SearchableVec, Select, SelectState},
     slider::{Slider, SliderEvent, SliderState},
     v_flex,
@@ -18,6 +18,7 @@ pub struct SettingsView {
     font_select: gpui::Entity<SelectState<SearchableVec<SharedString>>>,
     font_size_input: gpui::Entity<InputState>,
     opacity_slider: gpui::Entity<SliderState>,
+    download_dir_input: gpui::Entity<InputState>,
 }
 
 impl SettingsView {
@@ -69,6 +70,26 @@ impl SettingsView {
         )
         .detach();
 
+        let download_dir_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(
+                    settings::default_download_dir()
+                        .to_string_lossy()
+                        .to_string(),
+                )
+                .default_value(current.download_dir.clone().unwrap_or_default())
+        });
+        cx.subscribe(
+            &download_dir_input,
+            |view: &mut Self, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    let folder = input.read(cx).value().to_string();
+                    view.set_download_dir(folder, cx);
+                }
+            },
+        )
+        .detach();
+
         cx.observe_global::<AppSettings>(|_, cx| cx.notify())
             .detach();
 
@@ -76,7 +97,50 @@ impl SettingsView {
             font_select,
             font_size_input,
             opacity_slider,
+            download_dir_input,
         }
+    }
+
+    fn set_download_dir(&self, folder: String, cx: &mut Context<Self>) {
+        let folder = folder.trim().to_string();
+        cx.global_mut::<AppSettings>().download_dir = if folder.is_empty() {
+            None
+        } else {
+            Some(folder)
+        };
+        settings::save_settings(cx.global::<AppSettings>());
+        cx.notify();
+    }
+
+    fn pick_download_dir(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(SharedString::from("Choose")),
+        });
+        cx.spawn_in(window, async move |view, cx| {
+            let Ok(Ok(Some(folder))) = rx.await else {
+                return;
+            };
+            let Some(folder) = folder.first().map(|dir| dir.to_string_lossy().to_string()) else {
+                return;
+            };
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.download_dir_input.update(cx, |state, cx| {
+                    state.set_value(folder.clone(), window, cx);
+                });
+                view.set_download_dir(folder, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn reset_download_dir(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.download_dir_input.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+        self.set_download_dir(String::new(), cx);
     }
 
     fn apply_font(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -239,6 +303,47 @@ impl Render for SettingsView {
                             view.apply_font(window, cx);
                         }),
                     )),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .max_w(px(360.))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Downloads"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Files downloaded from a remote folder are saved here."),
+                    )
+                    .child(Input::new(&self.download_dir_input))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("choose-download-dir")
+                                    .outline()
+                                    .small()
+                                    .icon(IconName::FolderOpen)
+                                    .label("Choose...")
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.pick_download_dir(window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("reset-download-dir")
+                                    .ghost()
+                                    .small()
+                                    .label("Use default")
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.reset_download_dir(window, cx);
+                                    })),
+                            ),
+                    ),
             )
     }
 }
