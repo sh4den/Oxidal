@@ -1,5 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash as _, Hasher as _};
 use std::path::PathBuf;
 
 use gpui::{
@@ -25,9 +23,9 @@ use gpui_component::{
 use crate::settings::AppSettings;
 
 use super::{
-    FileClient, FileDrag, PanelSide, SftpEntry, SftpEvent, format_kind, format_modified,
-    format_permissions, format_size, has_parent, join_path, join_remote, parent_path,
-    safe_local_name, unique_destination,
+    FileClient, FileDrag, PanelSide, SftpEntry, SftpEvent, display_name, format_kind,
+    format_modified, format_permissions, format_size, has_parent, is_runnable, join_path,
+    join_remote, parent_path, safe_local_name, unique_destination,
 };
 
 pub enum PanelEvent {
@@ -180,6 +178,15 @@ pub struct SftpPanel {
     column_widths: [Option<f32>; ListColumn::COUNT],
     hidden_columns: [bool; ListColumn::COUNT],
     resizing: Option<ColumnResize>,
+    opened_temp_dirs: Vec<PathBuf>,
+}
+
+impl Drop for SftpPanel {
+    fn drop(&mut self) {
+        for dir in &self.opened_temp_dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }
 
 impl SftpPanel {
@@ -354,6 +361,7 @@ impl SftpPanel {
             column_widths: [None; ListColumn::COUNT],
             hidden_columns: [false; ListColumn::COUNT],
             resizing: None,
+            opened_temp_dirs: Vec::new(),
         }
     }
 
@@ -446,24 +454,34 @@ impl SftpPanel {
     fn open_file(&mut self, entry: &SftpEntry, cx: &mut Context<Self>) {
         if self.side == PanelSide::Local {
             if let Err(err) = open::that_detached(&entry.path) {
-                self.error = Some(format!("Couldn't open {}: {err}", entry.name));
+                self.error = Some(format!("Couldn't open {}: {err}", display_name(&entry.name)));
                 cx.notify();
             }
             return;
         }
 
-        let mut hasher = DefaultHasher::new();
-        entry.path.hash(&mut hasher);
-        let dir = std::env::temp_dir()
-            .join("Oxidal")
-            .join(format!("{:016x}", hasher.finish()));
-        if let Err(err) = std::fs::create_dir_all(&dir) {
-            self.error = Some(format!("Couldn't prepare temp folder: {err}"));
+        let name = safe_local_name(&entry.name);
+        if is_runnable(&name) {
+            self.error = Some(format!(
+                "\"{}\" is the kind of file the system would run rather than show. Download it \
+                 with the arrow button and open it yourself if you trust this server.",
+                display_name(&entry.name)
+            ));
             cx.notify();
             return;
         }
+
+        let dir = match crate::tempdir::private_dir("oxidal-open") {
+            Ok(dir) => dir,
+            Err(err) => {
+                self.error = Some(format!("Couldn't prepare temp folder: {err}"));
+                cx.notify();
+                return;
+            }
+        };
         if let FileClient::Remote(client) = &self.client {
-            client.download_and_open(entry.path.clone(), dir.join(safe_local_name(&entry.name)));
+            client.download_and_open(entry.path.clone(), dir.join(name));
+            self.opened_temp_dirs.push(dir);
         }
     }
 
@@ -513,7 +531,7 @@ impl SftpPanel {
             let name = name.clone();
 
             dialog
-                .title(format!("Rename \"{}\"", entry.name))
+                .title(format!("Rename \"{}\"", display_name(&entry.name)))
                 .child(v_flex().gap_2().w(px(320.)).child(Input::new(&name)))
                 .footer(
                     DialogFooter::new()
@@ -550,7 +568,7 @@ impl SftpPanel {
                 .child(format!(
                     "Delete {} \"{}\"? This cannot be undone.",
                     if entry.is_dir { "folder" } else { "file" },
-                    entry.name
+                    display_name(&entry.name)
                 ))
                 .footer(
                     DialogFooter::new()
@@ -827,7 +845,7 @@ impl SftpPanel {
                     is_dir: entry.is_dir,
                 },
                 |drag, _, _, cx| {
-                    let label = SharedString::from(drag.name.clone());
+                    let label = SharedString::from(display_name(&drag.name));
                     let is_dir = drag.is_dir;
                     cx.new(|_| DragPreview { label, is_dir })
                 },
@@ -850,7 +868,7 @@ impl SftpPanel {
                     .text_sm()
                     .text_ellipsis_middle()
                     .when(entry.is_dir, |this| this.font_weight(FontWeight::MEDIUM))
-                    .child(SharedString::from(entry.name.clone())),
+                    .child(SharedString::from(display_name(&entry.name))),
             );
 
         for column in self.visible_columns() {

@@ -143,6 +143,7 @@ pub async fn connect(
 
     let attempt = async {
         let mut authenticated = false;
+        let key_configured = credentials.key_path().is_some();
         if let Some(key_path) = credentials.key_path() {
             let key_pair = load_key(key_path, credentials.passphrase())?;
             let hash_alg = session.best_supported_rsa_hash().await?.flatten();
@@ -156,13 +157,24 @@ pub async fn connect(
         }
 
         if !authenticated {
+            let password = credentials.password.expose_secret();
+            if password.is_empty() {
+                if key_configured {
+                    anyhow::bail!(
+                        "the server rejected the private key, and no password is set for this \
+                         session"
+                    );
+                }
+                anyhow::bail!("no private key or password is set for this session");
+            }
+
             let auth = session
-                .authenticate_password(
-                    credentials.username.clone(),
-                    credentials.password.expose_secret(),
-                )
+                .authenticate_password(credentials.username.clone(), password)
                 .await?;
             if !auth.success() {
+                if key_configured {
+                    anyhow::bail!("the server rejected both the private key and the password");
+                }
                 anyhow::bail!("SSH authentication failed");
             }
         }

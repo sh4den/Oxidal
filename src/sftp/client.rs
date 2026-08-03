@@ -197,9 +197,11 @@ async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntr
 }
 
 fn transfer_label(path: &std::path::Path, fallback: &str) -> String {
-    path.file_name()
+    let raw = path
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| fallback.to_string())
+        .unwrap_or_else(|| fallback.to_string());
+    super::display_name(&raw)
 }
 
 async fn copy_up(
@@ -227,6 +229,14 @@ async fn copy_up(
     Ok(())
 }
 
+async fn create_new(local: &std::path::Path) -> std::io::Result<tokio::fs::File> {
+    tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(local)
+        .await
+}
+
 async fn copy_down(
     sftp: &SftpSession,
     remote: &str,
@@ -235,7 +245,16 @@ async fn copy_down(
     done: &mut u64,
 ) -> anyhow::Result<()> {
     let mut remote_file = sftp.open(remote).await?;
-    let mut local_file = tokio::fs::File::create(local).await?;
+    let mut local_file = create_new(local).await.map_err(|err| {
+        if err.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::anyhow!(
+                "{} already exists, so nothing was written over it",
+                local.display()
+            )
+        } else {
+            anyhow::anyhow!("couldn't create {}: {err}", local.display())
+        }
+    })?;
     let mut buf = vec![0u8; CHUNK_SIZE];
     loop {
         let n = remote_file.read(&mut buf).await?;

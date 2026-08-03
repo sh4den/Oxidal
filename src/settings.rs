@@ -105,6 +105,31 @@ pub fn config_dir() -> PathBuf {
         .join("Oxidal")
 }
 
+pub fn prepare_config_dir() -> std::io::Result<PathBuf> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
+pub fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let staging = path.with_extension("tmp");
+    let _ = fs::remove_file(&staging);
+    fs::write(&staging, contents)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o600))?;
+    }
+
+    fs::rename(&staging, path)
+}
+
 fn settings_path() -> PathBuf {
     config_dir().join("settings.json")
 }
@@ -117,12 +142,11 @@ pub fn load_settings() -> AppSettings {
 }
 
 pub fn save_settings(settings: &AppSettings) {
-    let dir = config_dir();
-    if fs::create_dir_all(&dir).is_err() {
+    if prepare_config_dir().is_err() {
         return;
     }
     if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = fs::write(settings_path(), json);
+        let _ = write_private(&settings_path(), &json);
     }
 }
 

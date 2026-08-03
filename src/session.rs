@@ -278,10 +278,16 @@ pub struct Session {
     pub folder_id: Option<Uuid>,
     #[serde(default)]
     pub show_hidden_files: bool,
+    #[serde(default = "default_monitoring")]
+    pub monitoring: bool,
     #[serde(default)]
     pub icon: Option<ItemIcon>,
     #[serde(default)]
     pub color: ItemColor,
+}
+
+fn default_monitoring() -> bool {
+    true
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -331,6 +337,7 @@ impl Session {
             private_key_path: None,
             folder_id: None,
             show_hidden_files: false,
+            monitoring: default_monitoring(),
             icon: None,
             color: ItemColor::default(),
         }
@@ -413,12 +420,11 @@ pub fn load_sessions() -> Vec<Session> {
 }
 
 pub fn save_sessions(sessions: &[Session]) {
-    let dir = config_dir();
-    if fs::create_dir_all(&dir).is_err() {
+    if crate::settings::prepare_config_dir().is_err() {
         return;
     }
     if let Ok(json) = serde_json::to_string_pretty(sessions) {
-        let _ = fs::write(sessions_path(), json);
+        let _ = crate::settings::write_private(&sessions_path(), &json);
     }
 }
 
@@ -435,12 +441,11 @@ pub fn load_folders() -> Vec<SessionFolder> {
 }
 
 pub fn save_folders(folders: &[SessionFolder]) {
-    let dir = config_dir();
-    if fs::create_dir_all(&dir).is_err() {
+    if crate::settings::prepare_config_dir().is_err() {
         return;
     }
     if let Ok(json) = serde_json::to_string_pretty(folders) {
-        let _ = fs::write(folders_path(), json);
+        let _ = crate::settings::write_private(&folders_path(), &json);
     }
 }
 

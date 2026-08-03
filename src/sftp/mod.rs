@@ -262,18 +262,59 @@ impl FileClient {
 pub use client::spawn;
 pub use local::{home_dir, spawn as spawn_local};
 
+fn is_deceptive(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{061c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}')
+}
+
+pub fn display_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if is_deceptive(c) { '\u{fffd}' } else { c })
+        .collect()
+}
+
+const WINDOWS_RESERVED: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
 fn safe_local_name(name: &str) -> String {
     let sanitized: String = name
         .chars()
         .map(|c| match c {
-            '/' | '\\' | ':' | '\0' => '_',
+            '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' => '_',
+            c if is_deceptive(c) => '_',
             c => c,
         })
         .collect();
-    if sanitized.chars().all(|c| c == '.' || c == ' ') {
-        "_".to_string()
-    } else {
-        sanitized
+
+    let trimmed = sanitized.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty() {
+        return "_".to_string();
+    }
+
+    let stem = trimmed.split('.').next().unwrap_or(trimmed).to_lowercase();
+    if WINDOWS_RESERVED.contains(&stem.as_str()) {
+        return format!("_{trimmed}");
+    }
+    trimmed.to_string()
+}
+
+const RUNNABLE: [&str; 26] = [
+    "app", "appimage", "bat", "cmd", "com", "command", "cpl", "deb", "desktop", "dmg", "exe",
+    "hta", "jar", "js", "jse", "lnk", "msi", "pkg", "ps1", "reg", "scr", "sh", "vb", "vbe", "vbs",
+    "wsf",
+];
+
+fn is_runnable(name: &str) -> bool {
+    match name.rsplit_once('.') {
+        Some((_, extension)) => RUNNABLE.contains(&extension.to_lowercase().as_str()),
+        None => false,
     }
 }
 
@@ -398,6 +439,52 @@ pub fn format_permissions(is_dir: bool, mode: Option<u32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_that_reorders_itself_is_defused() {
+        let spoofed = "evil\u{202e}gpj.exe";
+
+        assert!(
+            !display_name(spoofed).contains('\u{202e}'),
+            "a right-to-left override must never reach the screen"
+        );
+        assert!(
+            !safe_local_name(spoofed).contains('\u{202e}'),
+            "nor the filesystem"
+        );
+        assert!(
+            display_name("plan\u{200b}.txt").contains('\u{fffd}'),
+            "a hidden character should be visible, not silently dropped"
+        );
+        assert_eq!(
+            display_name("réunion été.txt"),
+            "réunion été.txt",
+            "ordinary accented names are left alone"
+        );
+    }
+
+    #[test]
+    fn control_characters_never_reach_a_local_path() {
+        assert_eq!(safe_local_name("a\nb\tc\0d"), "a_b_c_d");
+        assert_eq!(safe_local_name("../../etc/passwd"), ".._.._etc_passwd");
+        assert_eq!(safe_local_name(".."), "_");
+        assert_eq!(safe_local_name("..."), "_");
+        assert_eq!(safe_local_name("   "), "_");
+    }
+
+    #[test]
+    fn windows_hostile_names_are_neutralised() {
+        assert_eq!(safe_local_name("report."), "report");
+        assert_eq!(safe_local_name("report.txt "), "report.txt");
+        assert_eq!(safe_local_name("CON"), "_CON");
+        assert_eq!(safe_local_name("nul.txt"), "_nul.txt");
+        assert_eq!(safe_local_name("a<b>c|d?e*f\"g"), "a_b_c_d_e_f_g");
+        assert_eq!(
+            safe_local_name("console.log"),
+            "console.log",
+            "a name that merely starts like a device name is fine"
+        );
+    }
 
     #[test]
     fn a_second_download_of_the_same_name_lands_beside_the_first() {
