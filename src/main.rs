@@ -10,6 +10,7 @@ mod settings;
 mod settings_view;
 mod sftp;
 mod ssh_client;
+mod tempdir;
 mod terminal;
 mod update;
 

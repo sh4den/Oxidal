@@ -327,9 +327,10 @@ impl OxidalApp {
                     target.credentials(),
                     TERM_ROWS as u16,
                     TERM_COLS as u16,
+                    target.monitoring,
                 );
                 let terminal = cx.new(|cx| {
-                    TerminalView::new(backend, TERM_ROWS, TERM_COLS, Some(stats), window, cx)
+                    TerminalView::new(backend, TERM_ROWS, TERM_COLS, stats, window, cx)
                 });
                 let weak_app = cx.entity().downgrade();
                 let sftp = cx.new(|cx| {
