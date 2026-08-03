@@ -18,6 +18,20 @@ jobs:
         run: |
           echo "version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')" >> "$GITHUB_OUTPUT"
 
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit --deny warnings
+
   build:
     needs: version
     strategy:
@@ -149,6 +163,12 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Publish checksums
+        working-directory: dist
+        run: |
+          find . -maxdepth 1 -type f -printf '%P\n' | sort | xargs sha256sum > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
