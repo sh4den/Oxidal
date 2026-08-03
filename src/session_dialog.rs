@@ -5,9 +5,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window, div, prelude::FluentBuilder as _,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathPromptOptions, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed as _, IndexPath, Sizable as _,
@@ -268,44 +268,47 @@ fn color_picker(state: &Entity<SelectedColor>, cx: &App) -> impl IntoElement {
     let primary = cx.theme().primary;
     let foreground = cx.theme().foreground;
 
-    v_flex().gap_1().child("Color").child(
-        h_flex()
-            .flex_wrap()
-            .gap_1()
-            .children(ItemColor::ALL.iter().map(|color| {
-                let color = *color;
-                let selected = current == color;
-                let state = state.clone();
-                div()
-                    .id(SharedString::from(format!("color-{color:?}")))
-                    .size(gpui::px(28.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_md()
-                    .border_1()
-                    .cursor_pointer()
-                    .map(|this| {
-                        if selected {
-                            this.border_color(primary).bg(primary.opacity(0.12))
-                        } else {
-                            this.border_color(border)
-                        }
-                    })
-                    .child(
-                        div()
-                            .size(gpui::px(14.))
-                            .rounded_full()
-                            .bg(color.hsla().unwrap_or(foreground)),
-                    )
-                    .on_click(move |_, _, cx| {
-                        state.update(cx, |s, cx| {
-                            s.0 = color;
-                            cx.notify();
-                        });
-                    })
-            })),
-    )
+    v_flex()
+        .gap_1()
+        .child("Color")
+        .child(
+            h_flex()
+                .flex_wrap()
+                .gap_1()
+                .children(ItemColor::ALL.iter().map(|color| {
+                    let color = *color;
+                    let selected = current == color;
+                    let state = state.clone();
+                    div()
+                        .id(SharedString::from(format!("color-{color:?}")))
+                        .size(gpui::px(28.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .border_1()
+                        .cursor_pointer()
+                        .map(|this| {
+                            if selected {
+                                this.border_color(primary).bg(primary.opacity(0.12))
+                            } else {
+                                this.border_color(border)
+                            }
+                        })
+                        .child(
+                            div()
+                                .size(gpui::px(14.))
+                                .rounded_full()
+                                .bg(color.hsla().unwrap_or(foreground)),
+                        )
+                        .on_click(move |_, _, cx| {
+                            state.update(cx, |s, cx| {
+                                s.0 = color;
+                                cx.notify();
+                            });
+                        })
+                })),
+        )
 }
 
 #[derive(Clone)]
@@ -1245,22 +1248,21 @@ pub fn open_new_folder_dialog(
             }
         });
 
-        let footer =
-            DialogFooter::new()
-                .child(
-                    Button::new("cancel")
-                        .label("Cancel")
-                        .on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }),
-                )
-                .child(Button::new("save").primary().label("Save").on_click({
-                    let do_save = do_save.clone();
-                    move |_, window, cx| {
-                        do_save(cx);
+        let footer = DialogFooter::new()
+            .child(
+                Button::new("cancel")
+                    .label("Cancel")
+                    .on_click(|_, window, cx| {
                         window.close_dialog(cx);
-                    }
-                }));
+                    }),
+            )
+            .child(Button::new("save").primary().label("Save").on_click({
+                let do_save = do_save.clone();
+                move |_, window, cx| {
+                    do_save(cx);
+                    window.close_dialog(cx);
+                }
+            }));
 
         let metrics = dialog_metrics(window, gpui::px(360.));
 
@@ -1323,22 +1325,21 @@ pub fn open_edit_folder_dialog(
             }
         });
 
-        let footer =
-            DialogFooter::new()
-                .child(
-                    Button::new("cancel")
-                        .label("Cancel")
-                        .on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }),
-                )
-                .child(Button::new("save").primary().label("Save").on_click({
-                    let do_save = do_save.clone();
-                    move |_, window, cx| {
-                        do_save(cx);
+        let footer = DialogFooter::new()
+            .child(
+                Button::new("cancel")
+                    .label("Cancel")
+                    .on_click(|_, window, cx| {
                         window.close_dialog(cx);
-                    }
-                }));
+                    }),
+            )
+            .child(Button::new("save").primary().label("Save").on_click({
+                let do_save = do_save.clone();
+                move |_, window, cx| {
+                    do_save(cx);
+                    window.close_dialog(cx);
+                }
+            }));
 
         let metrics = dialog_metrics(window, gpui::px(360.));
 

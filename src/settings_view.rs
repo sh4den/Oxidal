@@ -172,6 +172,12 @@ impl SettingsView {
         window.push_notification("Terminal font updated", cx);
     }
 
+    fn set_column_hint(&self, show: bool, cx: &mut Context<Self>) {
+        cx.global_mut::<AppSettings>().show_column_hint = show;
+        settings::save_settings(cx.global::<AppSettings>());
+        cx.refresh_windows();
+    }
+
     fn set_dark_mode(&self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
         Theme::change(
             if dark {
@@ -191,6 +197,7 @@ impl SettingsView {
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dark = cx.theme().mode.is_dark();
+        let show_column_hint = cx.global::<AppSettings>().show_column_hint;
 
         v_flex()
             .size_full()
@@ -341,6 +348,45 @@ impl Render for SettingsView {
                                     .label("Use default")
                                     .on_click(cx.listener(|view, _, window, cx| {
                                         view.reset_download_dir(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .max_w(px(360.))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("File list"),
+                    )
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                        "The strip that appears on hover when a file list has more columns than \
+                         fit on screen.",
+                    ))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("column-hint-on")
+                                    .small()
+                                    .label("Show hint")
+                                    .when(show_column_hint, |b| b.primary())
+                                    .when(!show_column_hint, |b| b.outline())
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.set_column_hint(true, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("column-hint-off")
+                                    .small()
+                                    .label("Hide hint")
+                                    .when(!show_column_hint, |b| b.primary())
+                                    .when(show_column_hint, |b| b.outline())
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.set_column_hint(false, cx);
                                     })),
                             ),
                     ),

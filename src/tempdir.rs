@@ -70,9 +70,16 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = private_dir("oxidal-perm").expect("dir");
-        let mode = std::fs::metadata(&dir).expect("metadata").permissions().mode();
+        let mode = std::fs::metadata(&dir)
+            .expect("metadata")
+            .permissions()
+            .mode();
 
-        assert_eq!(mode & 0o777, 0o700, "a staging directory must be owner only");
+        assert_eq!(
+            mode & 0o777,
+            0o700,
+            "a staging directory must be owner only"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

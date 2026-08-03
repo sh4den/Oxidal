@@ -255,7 +255,8 @@ impl Grid {
             }
             .filter(|recycled| recycled.len() == cols)
             .unwrap_or_else(|| vec![Cell::BLANK; cols].into_boxed_slice());
-            self.scrollback.push_back(std::mem::replace(row, replacement));
+            self.scrollback
+                .push_back(std::mem::replace(row, replacement));
         }
     }
 
@@ -908,4 +909,3 @@ fn dec_graphics(ch: char) -> char {
         other => other,
     }
 }
-
