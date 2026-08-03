@@ -217,11 +217,5 @@ fn detail(label: &'static str, value: &str, muted: Hsla) -> impl IntoElement {
                 .text_color(muted)
                 .child(label),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_xs()
-                .child(value.to_string()),
-        )
+        .child(div().flex_1().min_w_0().text_xs().child(value.to_string()))
 }

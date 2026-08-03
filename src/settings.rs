@@ -16,6 +16,12 @@ pub struct AppSettings {
     pub sidebar_width: f32,
     #[serde(default)]
     pub download_dir: Option<String>,
+    #[serde(default = "default_show_column_hint")]
+    pub show_column_hint: bool,
+}
+
+fn default_show_column_hint() -> bool {
+    true
 }
 
 impl Global for AppSettings {}
@@ -46,6 +52,7 @@ impl Default for AppSettings {
             opacity: default_opacity(),
             sidebar_width: default_sidebar_width(),
             download_dir: None,
+            show_column_hint: default_show_column_hint(),
         }
     }
 }

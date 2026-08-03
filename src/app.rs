@@ -329,9 +329,8 @@ impl OxidalApp {
                     TERM_COLS as u16,
                     target.monitoring,
                 );
-                let terminal = cx.new(|cx| {
-                    TerminalView::new(backend, TERM_ROWS, TERM_COLS, stats, window, cx)
-                });
+                let terminal = cx
+                    .new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, stats, window, cx));
                 let weak_app = cx.entity().downgrade();
                 let sftp = cx.new(|cx| {
                     SftpPanel::new(
@@ -479,13 +478,11 @@ impl OxidalApp {
                                     });
                                 }),
                         )
-                        .item(
-                            PopupMenuItem::new("About")
-                                .icon(IconName::Info)
-                                .on_click(|_, window, cx| {
-                                    open_about_dialog(window, cx);
-                                }),
-                        )
+                        .item(PopupMenuItem::new("About").icon(IconName::Info).on_click(
+                            |_, window, cx| {
+                                open_about_dialog(window, cx);
+                            },
+                        ))
                         .separator()
                         .item(
                             PopupMenuItem::new("Exit")
@@ -691,9 +688,7 @@ impl OxidalApp {
                             .when(sessions_active, |this| this.text_color(cx.theme().primary)),
                     )
                     .tooltip("Sessions")
-                    .when(sessions_active, |b| {
-                        b.bg(cx.theme().primary.opacity(0.12))
-                    })
+                    .when(sessions_active, |b| b.bg(cx.theme().primary.opacity(0.12)))
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.set_sidebar_mode(SidebarMode::Sessions, cx);
                     })),
@@ -708,9 +703,7 @@ impl OxidalApp {
                                 .when(explorer_active, |this| this.text_color(cx.theme().primary)),
                         )
                         .tooltip("File Explorer")
-                        .when(explorer_active, |b| {
-                            b.bg(cx.theme().primary.opacity(0.12))
-                        })
+                        .when(explorer_active, |b| b.bg(cx.theme().primary.opacity(0.12)))
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.set_sidebar_mode(SidebarMode::Explorer, cx);
                         })),
@@ -1178,18 +1171,14 @@ fn shortcut(keys: &[&str], label: &'static str, cx: &gpui::App) -> impl IntoElem
         );
     }
 
-    h_flex()
-        .items_center()
-        .gap_3()
-        .child(chips)
-        .child(
-            div()
-                .min_w_0()
-                .text_xs()
-                .text_ellipsis()
-                .text_color(muted)
-                .child(label),
-        )
+    h_flex().items_center().gap_3().child(chips).child(
+        div()
+            .min_w_0()
+            .text_xs()
+            .text_ellipsis()
+            .text_color(muted)
+            .child(label),
+    )
 }
 
 impl Render for OxidalApp {
