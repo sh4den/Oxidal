@@ -800,7 +800,9 @@ fn open_session_dialog(
                             ),
                     )
                 })
-                .child(monitoring_toggle(&monitoring, cx)),
+                .when(matches!(kind, SessionKind::Ssh), |this| {
+                    this.child(monitoring_toggle(&monitoring, cx))
+                }),
             SessionKind::Telnet => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
                 .child(v_flex().gap_1().child("Port").child(Input::new(&port)))
