@@ -12,6 +12,7 @@ mod sftp;
 mod ssh_client;
 mod tempdir;
 mod terminal;
+mod theme;
 mod update;
 
 use gpui::{
@@ -66,7 +67,7 @@ fn main() {
         };
 
         cx.open_window(options, |window, cx| {
-            settings::apply_window_opacity(window, cx);
+            settings::apply_appearance(window, cx);
             let view = cx.new(|cx| OxidalApp::new(window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
