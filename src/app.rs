@@ -327,10 +327,10 @@ impl OxidalApp {
                     target.credentials(),
                     TERM_ROWS as u16,
                     TERM_COLS as u16,
+                    target.monitoring,
                 );
-                let terminal = cx.new(|cx| {
-                    TerminalView::new(backend, TERM_ROWS, TERM_COLS, Some(stats), window, cx)
-                });
+                let terminal = cx
+                    .new(|cx| TerminalView::new(backend, TERM_ROWS, TERM_COLS, stats, window, cx));
                 let weak_app = cx.entity().downgrade();
                 let sftp = cx.new(|cx| {
                     SftpPanel::new(
@@ -478,13 +478,11 @@ impl OxidalApp {
                                     });
                                 }),
                         )
-                        .item(
-                            PopupMenuItem::new("About")
-                                .icon(IconName::Info)
-                                .on_click(|_, window, cx| {
-                                    open_about_dialog(window, cx);
-                                }),
-                        )
+                        .item(PopupMenuItem::new("About").icon(IconName::Info).on_click(
+                            |_, window, cx| {
+                                open_about_dialog(window, cx);
+                            },
+                        ))
                         .separator()
                         .item(
                             PopupMenuItem::new("Exit")
@@ -510,8 +508,6 @@ impl OxidalApp {
         let id = item.id;
         let selected = self.selected_session == Some(id);
         let group_name = SharedString::from(format!("session-{id}"));
-        let folders = self.folders.clone();
-        let session = item.clone();
         let name = SharedString::from(item.name.clone());
         let detail = SharedString::from(item.detail());
         let capacity = self.label_capacity(cx);
@@ -579,14 +575,16 @@ impl OxidalApp {
                             .xsmall()
                             .icon(IconName::Settings2)
                             .tooltip("Edit")
-                            .on_click(cx.listener(move |_view, _, window, cx| {
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                let Some(session) =
+                                    view.sessions.iter().find(|s| s.id == id).cloned()
+                                else {
+                                    return;
+                                };
+                                let folders = view.folders.clone();
                                 let weak_app = cx.weak_entity();
                                 session_dialog::open_edit_session_dialog(
-                                    session.clone(),
-                                    folders.clone(),
-                                    weak_app,
-                                    window,
-                                    cx,
+                                    session, folders, weak_app, window, cx,
                                 );
                             })),
                     )
@@ -690,9 +688,7 @@ impl OxidalApp {
                             .when(sessions_active, |this| this.text_color(cx.theme().primary)),
                     )
                     .tooltip("Sessions")
-                    .when(sessions_active, |b| {
-                        b.bg(cx.theme().primary.opacity(0.12))
-                    })
+                    .when(sessions_active, |b| b.bg(cx.theme().primary.opacity(0.12)))
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.set_sidebar_mode(SidebarMode::Sessions, cx);
                     })),
@@ -707,9 +703,7 @@ impl OxidalApp {
                                 .when(explorer_active, |this| this.text_color(cx.theme().primary)),
                         )
                         .tooltip("File Explorer")
-                        .when(explorer_active, |b| {
-                            b.bg(cx.theme().primary.opacity(0.12))
-                        })
+                        .when(explorer_active, |b| b.bg(cx.theme().primary.opacity(0.12)))
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.set_sidebar_mode(SidebarMode::Explorer, cx);
                         })),
@@ -776,7 +770,7 @@ impl OxidalApp {
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         let capacity = self.label_capacity(cx);
 
-        for folder in self.folders.clone() {
+        for folder in &self.folders {
             let folder_id = folder.id;
             let collapsed = self.collapsed_folders.contains(&folder_id);
             let group_name = SharedString::from(format!("folder-{folder_id}"));
@@ -842,23 +836,27 @@ impl OxidalApp {
                             .gap_1()
                             .invisible()
                             .group_hover(group_name, |this| this.visible())
-                            .child({
-                                let folder = folder.clone();
+                            .child(
                                 Button::new(SharedString::from(format!("edit-folder-{folder_id}")))
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Settings2)
                                     .tooltip("Edit")
-                                    .on_click(cx.listener(move |_view, _, window, cx| {
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        let Some(folder) = view
+                                            .folders
+                                            .iter()
+                                            .find(|f| f.id == folder_id)
+                                            .cloned()
+                                        else {
+                                            return;
+                                        };
                                         let weak_app = cx.weak_entity();
                                         session_dialog::open_edit_folder_dialog(
-                                            folder.clone(),
-                                            weak_app,
-                                            window,
-                                            cx,
+                                            folder, weak_app, window, cx,
                                         );
-                                    }))
-                            })
+                                    })),
+                            )
                             .child(
                                 Button::new(SharedString::from(format!(
                                     "delete-folder-{folder_id}"
@@ -1177,18 +1175,14 @@ fn shortcut(keys: &[&str], label: &'static str, cx: &gpui::App) -> impl IntoElem
         );
     }
 
-    h_flex()
-        .items_center()
-        .gap_3()
-        .child(chips)
-        .child(
-            div()
-                .min_w_0()
-                .text_xs()
-                .text_ellipsis()
-                .text_color(muted)
-                .child(label),
-        )
+    h_flex().items_center().gap_3().child(chips).child(
+        div()
+            .min_w_0()
+            .text_xs()
+            .text_ellipsis()
+            .text_color(muted)
+            .child(label),
+    )
 }
 
 impl Render for OxidalApp {

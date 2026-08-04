@@ -1,13 +1,13 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash as _, Hasher as _};
+use std::ops::Range;
 use std::path::PathBuf;
 
 use gpui::{
     Anchor, AnyElement, AppContext as _, ClickEvent, Context, DragMoveEvent, Empty, EntityId,
     EventEmitter, ExternalPaths, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px, relative,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, relative, svg,
+    uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
@@ -19,15 +19,16 @@ use gpui_component::{
     progress::Progress,
     scroll::Scrollbar,
     skeleton::Skeleton,
+    tooltip::Tooltip,
     v_flex,
 };
 
 use crate::settings::AppSettings;
 
 use super::{
-    FileClient, FileDrag, PanelSide, SftpEntry, SftpEvent, format_kind, format_modified,
-    format_permissions, format_size, has_parent, join_path, join_remote, parent_path,
-    safe_local_name, unique_destination,
+    FileClient, FileDrag, PanelSide, SftpEntry, SftpEvent, display_name, format_kind,
+    format_modified, format_permissions, format_size, has_parent, is_runnable, join_path,
+    join_remote, parent_path, safe_local_name, unique_destination,
 };
 
 pub enum PanelEvent {
@@ -70,6 +71,9 @@ const ICON_COL_WIDTH: f32 = 16.;
 const ROW_PADDING_X: f32 = 8.;
 const COLUMN_GAP: f32 = 8.;
 const NAME_MIN_WIDTH: f32 = 120.;
+const COLUMN_STRIP_WIDTH: f32 = 28.;
+const SCROLL_HINT_LABEL_WIDTH: f32 = 14.;
+const SCROLL_HINT_LABEL_HEIGHT: f32 = 112.;
 const COLUMN_MIN_WIDTH: f32 = 48.;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -175,11 +179,20 @@ pub struct SftpPanel {
     on_show_hidden_changed: Box<dyn Fn(bool, &mut gpui::App)>,
     path_input: gpui::Entity<InputState>,
     synced_path: String,
-    list_scroll: ScrollHandle,
+    list_scroll: UniformListScrollHandle,
     h_scroll: ScrollHandle,
     column_widths: [Option<f32>; ListColumn::COUNT],
     hidden_columns: [bool; ListColumn::COUNT],
     resizing: Option<ColumnResize>,
+    opened_temp_dirs: Vec<PathBuf>,
+}
+
+impl Drop for SftpPanel {
+    fn drop(&mut self) {
+        for dir in &self.opened_temp_dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }
 
 impl SftpPanel {
@@ -349,11 +362,12 @@ impl SftpPanel {
             on_show_hidden_changed: Box::new(on_show_hidden_changed),
             path_input,
             synced_path: String::new(),
-            list_scroll: ScrollHandle::new(),
+            list_scroll: UniformListScrollHandle::new(),
             h_scroll: ScrollHandle::new(),
             column_widths: [None; ListColumn::COUNT],
             hidden_columns: [false; ListColumn::COUNT],
             resizing: None,
+            opened_temp_dirs: Vec::new(),
         }
     }
 
@@ -420,6 +434,12 @@ impl SftpPanel {
         &self.current_path
     }
 
+    fn visible_entries(&self) -> impl Iterator<Item = &SftpEntry> {
+        self.entries
+            .iter()
+            .filter(move |entry| self.show_hidden || !entry.name.starts_with('.'))
+    }
+
     pub fn selected_entry(&self) -> Option<&SftpEntry> {
         let selected = self.selected.as_deref()?;
         self.entries.iter().find(|entry| entry.path == selected)
@@ -446,25 +466,69 @@ impl SftpPanel {
     fn open_file(&mut self, entry: &SftpEntry, cx: &mut Context<Self>) {
         if self.side == PanelSide::Local {
             if let Err(err) = open::that_detached(&entry.path) {
-                self.error = Some(format!("Couldn't open {}: {err}", entry.name));
+                self.error = Some(format!(
+                    "Couldn't open {}: {err}",
+                    display_name(&entry.name)
+                ));
                 cx.notify();
             }
             return;
         }
 
-        let mut hasher = DefaultHasher::new();
-        entry.path.hash(&mut hasher);
-        let dir = std::env::temp_dir()
-            .join("Oxidal")
-            .join(format!("{:016x}", hasher.finish()));
-        if let Err(err) = std::fs::create_dir_all(&dir) {
-            self.error = Some(format!("Couldn't prepare temp folder: {err}"));
+        let name = safe_local_name(&entry.name);
+        if is_runnable(&name) {
+            self.error = Some(format!(
+                "\"{}\" is the kind of file the system would run rather than show. Download it \
+                 with the arrow button and open it yourself if you trust this server.",
+                display_name(&entry.name)
+            ));
             cx.notify();
             return;
         }
+
+        let dir = match crate::tempdir::private_dir("oxidal-open") {
+            Ok(dir) => dir,
+            Err(err) => {
+                self.error = Some(format!("Couldn't prepare temp folder: {err}"));
+                cx.notify();
+                return;
+            }
+        };
         if let FileClient::Remote(client) = &self.client {
-            client.download_and_open(entry.path.clone(), dir.join(safe_local_name(&entry.name)));
+            client.download_and_open(entry.path.clone(), dir.join(name));
+            self.opened_temp_dirs.push(dir);
         }
+    }
+
+    fn hide_column_hint_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .w(px(400.))
+                .title("Hide the scroll hint")
+                .child(
+                    "This strip appears when the columns are wider than the panel. Hiding it \
+                     stops it showing in every file list. You can bring it back from Settings.",
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(Button::new("keep-column-hint").label("Keep it").on_click(
+                            |_, window, cx| {
+                                window.close_dialog(cx);
+                            },
+                        ))
+                        .child(
+                            Button::new("hide-column-hint")
+                                .primary()
+                                .label("Hide")
+                                .on_click(|_, window, cx| {
+                                    cx.global_mut::<AppSettings>().show_column_hint = false;
+                                    crate::settings::save_settings(cx.global::<AppSettings>());
+                                    cx.refresh_windows();
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
     }
 
     fn new_folder_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -513,7 +577,7 @@ impl SftpPanel {
             let name = name.clone();
 
             dialog
-                .title(format!("Rename \"{}\"", entry.name))
+                .title(format!("Rename \"{}\"", display_name(&entry.name)))
                 .child(v_flex().gap_2().w(px(320.)).child(Input::new(&name)))
                 .footer(
                     DialogFooter::new()
@@ -550,7 +614,7 @@ impl SftpPanel {
                 .child(format!(
                     "Delete {} \"{}\"? This cannot be undone.",
                     if entry.is_dir { "folder" } else { "file" },
-                    entry.name
+                    display_name(&entry.name)
                 ))
                 .footer(
                     DialogFooter::new()
@@ -791,6 +855,26 @@ impl SftpPanel {
         header.into_any_element()
     }
 
+    fn render_entries(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
+        uniform_list(
+            "sftp-rows",
+            count,
+            cx.processor(|panel, range: Range<usize>, _, cx| {
+                let panel = &*panel;
+                panel
+                    .visible_entries()
+                    .skip(range.start)
+                    .take(range.len())
+                    .map(|entry| panel.render_row(entry, cx))
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.list_scroll)
+        .size_full()
+        .min_w(relative(1.))
+        .into_any_element()
+    }
+
     fn render_row(&self, entry: &SftpEntry, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.selected.as_deref() == Some(entry.path.as_str());
         let row_entry = entry.clone();
@@ -827,20 +911,25 @@ impl SftpPanel {
                     is_dir: entry.is_dir,
                 },
                 |drag, _, _, cx| {
-                    let label = SharedString::from(drag.name.clone());
+                    let label = SharedString::from(display_name(&drag.name));
                     let is_dir = drag.is_dir;
                     cx.new(|_| DragPreview { label, is_dir })
                 },
             )
-            .child(div().w(px(ICON_COL_WIDTH)).flex_none().child(if entry.is_dir {
-                Icon::new(IconName::Folder)
-                    .small()
-                    .text_color(cx.theme().warning)
-            } else {
-                Icon::new(IconName::File)
-                    .small()
-                    .text_color(cx.theme().muted_foreground)
-            }))
+            .child(
+                div()
+                    .w(px(ICON_COL_WIDTH))
+                    .flex_none()
+                    .child(if entry.is_dir {
+                        Icon::new(IconName::Folder)
+                            .small()
+                            .text_color(cx.theme().warning)
+                    } else {
+                        Icon::new(IconName::File)
+                            .small()
+                            .text_color(cx.theme().muted_foreground)
+                    }),
+            )
             .child(
                 div()
                     .w(px(self.resolved_name_width()))
@@ -850,7 +939,7 @@ impl SftpPanel {
                     .text_sm()
                     .text_ellipsis_middle()
                     .when(entry.is_dir, |this| this.font_weight(FontWeight::MEDIUM))
-                    .child(SharedString::from(entry.name.clone())),
+                    .child(SharedString::from(display_name(&entry.name))),
             );
 
         for column in self.visible_columns() {
@@ -993,17 +1082,11 @@ impl Render for SftpPanel {
         let columns_view = cx.entity();
         let hidden_columns = self.hidden_columns;
         let is_remote_panel = self.side == PanelSide::Remote;
-        let visible: Vec<&SftpEntry> = self
-            .entries
-            .iter()
-            .filter(|entry| self.show_hidden || !entry.name.starts_with('.'))
-            .collect();
-        let no_rows = visible.is_empty();
-        let rows = visible
-            .into_iter()
-            .map(|entry| self.render_row(entry, cx))
-            .collect::<Vec<_>>();
+        let visible_count = self.visible_entries().count();
+        let no_rows = visible_count == 0;
+        let entry_list = (!no_rows).then(|| self.render_entries(visible_count, cx));
         let name_width = self.resolved_name_width();
+        let group_name = SharedString::from(format!("sftp-list-{}", cx.entity_id()));
         // Explicit strip width: a flex child would otherwise be shrunk to the
         // scroll container's width, leaving nothing to scroll horizontally.
         let content_width = 2. * ROW_PADDING_X
@@ -1013,6 +1096,9 @@ impl Render for SftpPanel {
                 .visible_columns()
                 .map(|column| self.column_width(column))
                 .sum::<f32>();
+        let viewport_width = f32::from(self.h_scroll.bounds().size.width);
+        let has_more_columns = viewport_width > 0. && content_width > viewport_width + 1.;
+        let show_column_hint = has_more_columns && cx.global::<AppSettings>().show_column_hint;
 
         v_flex()
             .size_full()
@@ -1043,6 +1129,7 @@ impl Render for SftpPanel {
             .child(
                 div()
                     .id("sftp-list-area")
+                    .group(group_name.clone())
                     .relative()
                     .flex_1()
                     .min_h_0()
@@ -1073,12 +1160,14 @@ impl Render for SftpPanel {
                         this.drag_over::<ExternalPaths>(|style, _, _, cx| {
                             style.bg(cx.theme().primary.opacity(0.08))
                         })
-                        .on_drop(cx.listener(|panel, paths: &ExternalPaths, _, cx| {
-                            panel.upload_paths(paths.paths(), cx);
-                        }))
+                        .on_drop(cx.listener(
+                            |panel, paths: &ExternalPaths, _, cx| {
+                                panel.upload_paths(paths.paths(), cx);
+                            },
+                        ))
                     })
-                    .on_drag_move(cx.listener(
-                        |panel, event: &DragMoveEvent<ColumnDrag>, _, cx| {
+                    .on_drag_move(
+                        cx.listener(|panel, event: &DragMoveEvent<ColumnDrag>, _, cx| {
                             let ColumnDrag(entity_id) = event.drag(cx);
                             if *entity_id != cx.entity_id() {
                                 return;
@@ -1089,8 +1178,8 @@ impl Render for SftpPanel {
                                 panel.set_column_width(resize.column, width);
                                 cx.notify();
                             }
-                        },
-                    ))
+                        }),
+                    )
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|panel, _: &MouseUpEvent, _, cx| {
@@ -1125,11 +1214,9 @@ impl Render for SftpPanel {
                                             .id("sftp-entries")
                                             .flex_1()
                                             .min_h_0()
-                                            .overflow_y_scroll()
-                                            .track_scroll(&self.list_scroll)
-                                            .child(
-                                                v_flex().min_w(relative(1.)).children(rows).when(
-                                                    no_rows,
+                                            .when_some(entry_list, |this, list| this.child(list))
+                                            .when(no_rows, |this| {
+                                                this.child(v_flex().min_w(relative(1.)).map(
                                                     |this| {
                                                         if self.loading {
                                                             const BAR_WIDTHS: [f32; 8] = [
@@ -1176,8 +1263,8 @@ impl Render for SftpPanel {
                                                             )
                                                         }
                                                     },
-                                                ),
-                                            )
+                                                ))
+                                            })
                                             .on_mouse_down(
                                                 MouseButton::Right,
                                                 cx.listener(|panel, _: &MouseDownEvent, _, _| {
@@ -1220,9 +1307,10 @@ impl Render for SftpPanel {
                             .top_0()
                             .right_0()
                             .h(px(HEADER_HEIGHT))
-                            .px_1()
+                            .w(px(COLUMN_STRIP_WIDTH))
                             .flex()
                             .items_center()
+                            .justify_center()
                             .bg(cx.theme().sidebar)
                             .border_b_1()
                             .border_l_1()
@@ -1240,9 +1328,7 @@ impl Render for SftpPanel {
                                                 let columns_view = columns_view.clone();
                                                 menu = menu.item(
                                                     PopupMenuItem::new(column.label())
-                                                        .checked(
-                                                            !hidden_columns[column as usize],
-                                                        )
+                                                        .checked(!hidden_columns[column as usize])
                                                         .on_click(window.listener_for(
                                                             &columns_view,
                                                             move |panel, _, _, cx| {
@@ -1258,7 +1344,47 @@ impl Render for SftpPanel {
                                         }
                                     }),
                             ),
-                    ),
+                    )
+                    .when(show_column_hint, |this| {
+                        this.child(
+                            v_flex()
+                                .id("sftp-scroll-hint")
+                                .occlude()
+                                .absolute()
+                                .top(px(HEADER_HEIGHT))
+                                .bottom_0()
+                                .right_0()
+                                .w(px(COLUMN_STRIP_WIDTH))
+                                .items_center()
+                                .justify_center()
+                                .gap_2()
+                                .bg(cx.theme().popover)
+                                .border_l_1()
+                                .border_color(cx.theme().border)
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .cursor_pointer()
+                                .tooltip(|window, cx| {
+                                    Tooltip::new("Hide this hint").build(window, cx)
+                                })
+                                .invisible()
+                                .group_hover(group_name, |this| this.visible())
+                                .hover(|style| style.visible().bg(cx.theme().accent))
+                                .on_click(cx.listener(|panel, _, window, cx| {
+                                    panel.hide_column_hint_dialog(window, cx);
+                                }))
+                                .child(Icon::new(IconName::ChevronRight).xsmall())
+                                .child(
+                                    svg()
+                                        .path("icons/oxidal/scroll-hint.svg")
+                                        .w(px(SCROLL_HINT_LABEL_WIDTH))
+                                        .h(px(SCROLL_HINT_LABEL_HEIGHT))
+                                        .flex_none()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(Icon::new(IconName::ChevronRight).xsmall()),
+                        )
+                    }),
             )
             .when_some(self.transfer.as_ref(), |this, transfer| {
                 this.child(

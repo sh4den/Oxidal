@@ -32,6 +32,7 @@ const BUNDLED: &[(&str, &[u8])] = bundled_icons![
     "package",
     "plug",
     "router",
+    "scroll-hint",
     "server",
     "shield",
     "signal",

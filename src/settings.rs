@@ -1,9 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui::{App, Global, Window, WindowBackgroundAppearance};
-use gpui_component::Theme;
+use gpui_component::{Theme, ThemeMode, ThemeRegistry};
 use serde::{Deserialize, Serialize};
+
+use crate::theme::ThemeSettings;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -16,6 +19,14 @@ pub struct AppSettings {
     pub sidebar_width: f32,
     #[serde(default)]
     pub download_dir: Option<String>,
+    #[serde(default = "default_show_column_hint")]
+    pub show_column_hint: bool,
+    #[serde(default)]
+    pub theme: ThemeSettings,
+}
+
+fn default_show_column_hint() -> bool {
+    true
 }
 
 impl Global for AppSettings {}
@@ -46,6 +57,18 @@ impl Default for AppSettings {
             opacity: default_opacity(),
             sidebar_width: default_sidebar_width(),
             download_dir: None,
+            show_column_hint: default_show_column_hint(),
+            theme: ThemeSettings::default(),
+        }
+    }
+}
+
+impl AppSettings {
+    pub fn mode(&self) -> ThemeMode {
+        if self.dark_mode {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
         }
     }
 }
@@ -61,17 +84,34 @@ fn default_sidebar_width() -> f32 {
     320.0
 }
 
-pub fn apply_window_opacity(window: &mut Window, cx: &mut App) {
-    let opacity = cx.global::<AppSettings>().opacity.clamp(0.3, 1.0);
+/// Rebuilds the light and dark themes from the user's colors and hands them to
+/// the window, the widget library and the terminal in one go.
+pub fn apply_appearance(window: &mut Window, cx: &mut App) {
+    let settings = cx.global::<AppSettings>().clone();
+    let mode = settings.mode();
+
+    if !cx.has_global::<Theme>() {
+        Theme::change(mode, None, cx);
+    }
+
+    let registry = ThemeRegistry::global(cx);
+    let base_light = (**registry.default_light_theme()).clone();
+    let base_dark = (**registry.default_dark_theme()).clone();
+    {
+        let theme = Theme::global_mut(cx);
+        theme.light_theme = Rc::new(settings.theme.config_over(base_light, ThemeMode::Light));
+        theme.dark_theme = Rc::new(settings.theme.config_over(base_dark, ThemeMode::Dark));
+    }
+    Theme::change(mode, None, cx);
+    cx.set_global(settings.theme.terminal_palette(mode));
+
+    let opacity = settings.opacity.clamp(0.3, 1.0);
     let translucent = opacity < 1.0;
     window.set_background_appearance(if translucent {
         WindowBackgroundAppearance::Transparent
     } else {
         WindowBackgroundAppearance::Opaque
     });
-
-    let mode = cx.global::<Theme>().mode;
-    Theme::change(mode, None, cx);
 
     if translucent {
         let theme = Theme::global_mut(cx);
@@ -105,6 +145,31 @@ pub fn config_dir() -> PathBuf {
         .join("Oxidal")
 }
 
+pub fn prepare_config_dir() -> std::io::Result<PathBuf> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
+pub fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let staging = path.with_extension("tmp");
+    let _ = fs::remove_file(&staging);
+    fs::write(&staging, contents)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o600))?;
+    }
+
+    fs::rename(&staging, path)
+}
+
 fn settings_path() -> PathBuf {
     config_dir().join("settings.json")
 }
@@ -117,12 +182,11 @@ pub fn load_settings() -> AppSettings {
 }
 
 pub fn save_settings(settings: &AppSettings) {
-    let dir = config_dir();
-    if fs::create_dir_all(&dir).is_err() {
+    if prepare_config_dir().is_err() {
         return;
     }
     if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = fs::write(settings_path(), json);
+        let _ = write_private(&settings_path(), &json);
     }
 }
 

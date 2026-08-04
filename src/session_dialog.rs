@@ -5,9 +5,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window, div, prelude::FluentBuilder as _,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathPromptOptions, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed as _, IndexPath, Sizable as _,
@@ -124,6 +124,80 @@ struct SelectedIcon(Option<ItemIcon>);
 
 struct SelectedColor(ItemColor);
 
+struct Monitoring(bool);
+
+fn cleartext_warning(message: &'static str, cx: &App) -> impl IntoElement {
+    h_flex()
+        .gap_2()
+        .items_start()
+        .p_2()
+        .rounded_md()
+        .bg(cx.theme().muted)
+        .child(
+            Icon::new(IconName::TriangleAlert)
+                .xsmall()
+                .text_color(cx.theme().warning),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(message),
+        )
+}
+
+fn monitoring_toggle(state: &Entity<Monitoring>, cx: &App) -> impl IntoElement {
+    let enabled = state.read(cx).0;
+
+    v_flex()
+        .gap_1()
+        .child("Resource Monitoring")
+        .child(
+            h_flex()
+                .gap_2()
+                .child({
+                    let state = state.clone();
+                    Button::new("monitoring-on")
+                        .xsmall()
+                        .label("On")
+                        .when(enabled, |b| b.primary())
+                        .when(!enabled, |b| b.outline())
+                        .on_click(move |_, _, cx| {
+                            state.update(cx, |s, cx| {
+                                s.0 = true;
+                                cx.notify();
+                            });
+                        })
+                })
+                .child({
+                    let state = state.clone();
+                    Button::new("monitoring-off")
+                        .xsmall()
+                        .label("Off")
+                        .when(!enabled, |b| b.primary())
+                        .when(enabled, |b| b.outline())
+                        .on_click(move |_, _, cx| {
+                            state.update(cx, |s, cx| {
+                                s.0 = false;
+                                cx.notify();
+                            });
+                        })
+                }),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(
+                    "Runs a second channel that samples CPU, memory, network and disk once a \
+                     second for the whole session. Turn it off on hosts where the extra commands \
+                     are unwelcome or audited.",
+                ),
+        )
+}
+
 fn icon_picker(state: &Entity<SelectedIcon>, cx: &App) -> impl IntoElement {
     let current = state.read(cx).0;
     let border = cx.theme().border;
@@ -194,44 +268,47 @@ fn color_picker(state: &Entity<SelectedColor>, cx: &App) -> impl IntoElement {
     let primary = cx.theme().primary;
     let foreground = cx.theme().foreground;
 
-    v_flex().gap_1().child("Color").child(
-        h_flex()
-            .flex_wrap()
-            .gap_1()
-            .children(ItemColor::ALL.iter().map(|color| {
-                let color = *color;
-                let selected = current == color;
-                let state = state.clone();
-                div()
-                    .id(SharedString::from(format!("color-{color:?}")))
-                    .size(gpui::px(28.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_md()
-                    .border_1()
-                    .cursor_pointer()
-                    .map(|this| {
-                        if selected {
-                            this.border_color(primary).bg(primary.opacity(0.12))
-                        } else {
-                            this.border_color(border)
-                        }
-                    })
-                    .child(
-                        div()
-                            .size(gpui::px(14.))
-                            .rounded_full()
-                            .bg(color.hsla().unwrap_or(foreground)),
-                    )
-                    .on_click(move |_, _, cx| {
-                        state.update(cx, |s, cx| {
-                            s.0 = color;
-                            cx.notify();
-                        });
-                    })
-            })),
-    )
+    v_flex()
+        .gap_1()
+        .child("Color")
+        .child(
+            h_flex()
+                .flex_wrap()
+                .gap_1()
+                .children(ItemColor::ALL.iter().map(|color| {
+                    let color = *color;
+                    let selected = current == color;
+                    let state = state.clone();
+                    div()
+                        .id(SharedString::from(format!("color-{color:?}")))
+                        .size(gpui::px(28.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .border_1()
+                        .cursor_pointer()
+                        .map(|this| {
+                            if selected {
+                                this.border_color(primary).bg(primary.opacity(0.12))
+                            } else {
+                                this.border_color(border)
+                            }
+                        })
+                        .child(
+                            div()
+                                .size(gpui::px(14.))
+                                .rounded_full()
+                                .bg(color.hsla().unwrap_or(foreground)),
+                        )
+                        .on_click(move |_, _, cx| {
+                            state.update(cx, |s, cx| {
+                                s.0 = color;
+                                cx.notify();
+                            });
+                        })
+                })),
+        )
 }
 
 #[derive(Clone)]
@@ -489,6 +566,7 @@ fn open_session_dialog(
                 .unwrap_or(ItemColor::Default),
         )
     });
+    let monitoring = cx.new(|_cx| Monitoring(existing.as_ref().is_none_or(|s| s.monitoring)));
 
     window.open_dialog(cx, move |dialog, window, cx| {
         let weak_app = weak_app.clone();
@@ -505,6 +583,7 @@ fn open_session_dialog(
         let selected_kind = selected_kind.clone();
         let selected_icon = selected_icon.clone();
         let selected_color = selected_color.clone();
+        let monitoring = monitoring.clone();
         let test_status = test_status.clone();
         let body_scroll = body_scroll.clone();
         let kind = selected_kind.read(cx).0;
@@ -720,10 +799,18 @@ fn open_session_dialog(
                                     ),
                             ),
                     )
+                })
+                .when(matches!(kind, SessionKind::Ssh), |this| {
+                    this.child(monitoring_toggle(&monitoring, cx))
                 }),
             SessionKind::Telnet => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
-                .child(v_flex().gap_1().child("Port").child(Input::new(&port))),
+                .child(v_flex().gap_1().child("Port").child(Input::new(&port)))
+                .child(cleartext_warning(
+                    "Telnet carries everything you type, passwords included, in the clear. Anyone \
+                     between you and the host can read it.",
+                    cx,
+                )),
             SessionKind::Rdp => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
                 .child(v_flex().gap_1().child("Port").child(Input::new(&port)))
@@ -903,6 +990,7 @@ fn open_session_dialog(
             let selected_kind = selected_kind.clone();
             let selected_icon = selected_icon.clone();
             let selected_color = selected_color.clone();
+            let monitoring = monitoring.clone();
             move |cx: &mut App| {
                 let kind = selected_kind.read(cx).0;
                 let mut label = name.read(cx).value().trim().to_string();
@@ -943,6 +1031,7 @@ fn open_session_dialog(
                 session.folder_id = selected_folder.read(cx).0;
                 session.icon = selected_icon.read(cx).0;
                 session.color = selected_color.read(cx).0;
+                session.monitoring = monitoring.read(cx).0;
 
                 let _ = weak_app.update(cx, |app, cx| {
                     if editing_id.is_some() {
@@ -1161,22 +1250,21 @@ pub fn open_new_folder_dialog(
             }
         });
 
-        let footer =
-            DialogFooter::new()
-                .child(
-                    Button::new("cancel")
-                        .label("Cancel")
-                        .on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }),
-                )
-                .child(Button::new("save").primary().label("Save").on_click({
-                    let do_save = do_save.clone();
-                    move |_, window, cx| {
-                        do_save(cx);
+        let footer = DialogFooter::new()
+            .child(
+                Button::new("cancel")
+                    .label("Cancel")
+                    .on_click(|_, window, cx| {
                         window.close_dialog(cx);
-                    }
-                }));
+                    }),
+            )
+            .child(Button::new("save").primary().label("Save").on_click({
+                let do_save = do_save.clone();
+                move |_, window, cx| {
+                    do_save(cx);
+                    window.close_dialog(cx);
+                }
+            }));
 
         let metrics = dialog_metrics(window, gpui::px(360.));
 
@@ -1239,22 +1327,21 @@ pub fn open_edit_folder_dialog(
             }
         });
 
-        let footer =
-            DialogFooter::new()
-                .child(
-                    Button::new("cancel")
-                        .label("Cancel")
-                        .on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }),
-                )
-                .child(Button::new("save").primary().label("Save").on_click({
-                    let do_save = do_save.clone();
-                    move |_, window, cx| {
-                        do_save(cx);
+        let footer = DialogFooter::new()
+            .child(
+                Button::new("cancel")
+                    .label("Cancel")
+                    .on_click(|_, window, cx| {
                         window.close_dialog(cx);
-                    }
-                }));
+                    }),
+            )
+            .child(Button::new("save").primary().label("Save").on_click({
+                let do_save = do_save.clone();
+                move |_, window, cx| {
+                    do_save(cx);
+                    window.close_dialog(cx);
+                }
+            }));
 
         let metrics = dialog_metrics(window, gpui::px(360.));
 

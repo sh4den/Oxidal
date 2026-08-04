@@ -107,7 +107,8 @@ impl SftpWorkspace {
     }
 
     fn send_to_local(&self, remote_path: &str, name: &str, is_dir: bool, local_dir: &str) {
-        let destination = PathBuf::from(local_dir).join(super::safe_local_name(name));
+        let destination =
+            super::unique_destination(&PathBuf::from(local_dir), &super::safe_local_name(name));
         if is_dir {
             self.client
                 .download_dir(remote_path.to_string(), destination);
@@ -181,11 +182,17 @@ impl Render for SftpWorkspace {
         let local_path = SharedString::from(self.local.read(cx).current_path().to_string());
 
         let upload_tooltip = match &local_selection {
-            Some(entry) => format!("Send \"{}\" to the remote folder", entry.name),
+            Some(entry) => format!(
+                "Send \"{}\" to the remote folder",
+                super::display_name(&entry.name)
+            ),
             None => "Select something on the left first".to_string(),
         };
         let download_tooltip = match &remote_selection {
-            Some(entry) => format!("Bring \"{}\" to the local folder", entry.name),
+            Some(entry) => format!(
+                "Bring \"{}\" to the local folder",
+                super::display_name(&entry.name)
+            ),
             None => "Select something on the right first".to_string(),
         };
 

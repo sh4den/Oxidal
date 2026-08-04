@@ -15,18 +15,44 @@ pub enum Color {
 }
 
 impl Color {
-    pub fn as_fg(self) -> Hsla {
+    pub fn as_fg(self, palette: &TerminalPalette) -> Hsla {
         match self {
-            Color::Default | Color::DefaultFg => default_fg(),
-            Color::Indexed(i) => palette_256(i as u16),
+            Color::Default | Color::DefaultFg => palette.foreground,
+            Color::Indexed(i) => palette_256(i as u16, palette),
             Color::Rgb(r, g, b) => rgb_to_hsla(r as f32 / 255., g as f32 / 255., b as f32 / 255.),
         }
     }
 
-    pub fn as_bg(self) -> Option<Hsla> {
+    pub fn as_bg(self, palette: &TerminalPalette) -> Option<Hsla> {
         match self {
             Color::Default => None,
-            other => Some(other.as_fg()),
+            other => Some(other.as_fg(palette)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalPalette {
+    pub background: Hsla,
+    pub foreground: Hsla,
+    pub cursor: Hsla,
+    pub selection: Hsla,
+    pub ansi: [Hsla; 16],
+}
+
+impl Default for TerminalPalette {
+    fn default() -> Self {
+        let mut ansi = [hsla(0., 0., 0.85, 1.); 16];
+        for (index, color) in ansi.iter_mut().enumerate() {
+            *color = ansi_color((index % 8) as u16, index >= 8);
+        }
+
+        Self {
+            background: hsla(0., 0., 0.07, 1.),
+            foreground: hsla(0., 0., 0.85, 1.),
+            cursor: hsla(0., 0., 0.85, 1.),
+            selection: hsla(215. / 360., 0.45, 0.32, 1.),
+            ansi,
         }
     }
 }
@@ -125,14 +151,6 @@ impl Attrs {
     }
 }
 
-fn default_fg() -> Hsla {
-    hsla(0., 0., 0.85, 1.)
-}
-
-pub fn default_bg() -> Hsla {
-    hsla(0., 0., 0.07, 1.)
-}
-
 fn ansi_color(code: u16, bright: bool) -> Hsla {
     let (h, s, l): (f32, f32, f32) = match code {
         0 => (0., 0., if bright { 0.45 } else { 0.15 }),
@@ -188,6 +206,7 @@ pub struct Grid {
     g0_graphics: bool,
     g1_graphics: bool,
     shift_out: bool,
+    reported_colors: (Hsla, Hsla),
 }
 
 impl Grid {
@@ -218,7 +237,17 @@ impl Grid {
             g0_graphics: false,
             g1_graphics: false,
             shift_out: false,
+            reported_colors: (
+                TerminalPalette::default().foreground,
+                TerminalPalette::default().background,
+            ),
         }
+    }
+
+    /// The colors an OSC 10/11 query answers with, so a program that asks what
+    /// it is drawing on gets the theme the user actually sees.
+    pub fn set_reported_colors(&mut self, foreground: Hsla, background: Hsla) {
+        self.reported_colors = (foreground, background);
     }
 
     pub fn alt_active(&self) -> bool {
@@ -255,7 +284,8 @@ impl Grid {
             }
             .filter(|recycled| recycled.len() == cols)
             .unwrap_or_else(|| vec![Cell::BLANK; cols].into_boxed_slice());
-            self.scrollback.push_back(std::mem::replace(row, replacement));
+            self.scrollback
+                .push_back(std::mem::replace(row, replacement));
         }
     }
 
@@ -617,9 +647,9 @@ fn resized_cells(
     rows.into_boxed_slice()
 }
 
-fn palette_256(code: u16) -> Hsla {
+fn palette_256(code: u16, palette: &TerminalPalette) -> Hsla {
     if code < 16 {
-        return ansi_color(code % 8, code >= 8);
+        return palette.ansi[code as usize];
     }
     if code < 232 {
         let c = code - 16;
@@ -865,8 +895,8 @@ impl Perform for Grid {
             return;
         }
         let (code, color) = match params[0] {
-            b"10" => ("10", default_fg()),
-            b"11" => ("11", default_bg()),
+            b"10" => ("10", self.reported_colors.0),
+            b"11" => ("11", self.reported_colors.1),
             _ => return,
         };
         let c = (color.l * 255.) as u16;
@@ -908,4 +938,3 @@ fn dec_graphics(ch: char) -> char {
         other => other,
     }
 }
-

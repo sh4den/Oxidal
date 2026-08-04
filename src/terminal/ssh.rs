@@ -15,7 +15,8 @@ pub fn spawn(
     credentials: SshCredentials,
     rows: u16,
     cols: u16,
-) -> (Backend, async_channel::Receiver<RemoteStats>) {
+    monitoring: bool,
+) -> (Backend, Option<async_channel::Receiver<RemoteStats>>) {
     let (out_tx, out_rx) = async_channel::unbounded::<BackendEvent>();
     let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
     let (resize_tx, resize_rx) = async_channel::unbounded::<(u16, u16)>();
@@ -39,6 +40,7 @@ pub fn spawn(
             credentials,
             rows,
             cols,
+            monitoring,
             out_tx.clone(),
             in_rx,
             resize_rx,
@@ -47,7 +49,10 @@ pub fn spawn(
         let _ = out_tx.send_blocking(BackendEvent::Closed(result.err().map(|e| e.to_string())));
     });
 
-    (Backend::new(out_rx, in_tx, Some(resize_tx)), stats_rx)
+    (
+        Backend::new(out_rx, in_tx, Some(resize_tx)),
+        monitoring.then_some(stats_rx),
+    )
 }
 
 async fn run(
@@ -56,6 +61,7 @@ async fn run(
     credentials: SshCredentials,
     rows: u16,
     cols: u16,
+    monitoring: bool,
     out_tx: async_channel::Sender<BackendEvent>,
     in_rx: async_channel::Receiver<Vec<u8>>,
     resize_rx: async_channel::Receiver<(u16, u16)>,
@@ -69,12 +75,15 @@ async fn run(
         .await?;
     channel.request_shell(false).await?;
 
-    let mut monitor = match session.channel_open_session().await {
-        Ok(ch) => match ch.exec(true, stats::MONITOR_SCRIPT).await {
-            Ok(()) => Some(ch),
+    let mut monitor = match monitoring {
+        false => None,
+        true => match session.channel_open_session().await {
+            Ok(ch) => match ch.exec(true, stats::MONITOR_SCRIPT).await {
+                Ok(()) => Some(ch),
+                Err(_) => None,
+            },
             Err(_) => None,
         },
-        Err(_) => None,
     };
     let mut frames = stats::FrameSplitter::default();
     let mut parser = stats::StatsParser::new(port);

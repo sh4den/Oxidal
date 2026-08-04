@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Oxidal"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -23,6 +23,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "sha2 0.11.0",
  "tokio",
  "ureq",
  "uuid",
@@ -6459,9 +6460,9 @@ dependencies = [
 
 [[package]]
 name = "russh-sftp"
-version = "2.3.0"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ed8949eca4163c18a8f59ff96d32cf61e9c13b9735e21ef32b3907f4aafa1a9"
+checksum = "9de67aace74530a29086db0671fa200c470a58eb380081f28ad512ffb0c5356b"
 dependencies = [
  "bitflags 2.13.1",
  "bytes",
@@ -8023,14 +8024,15 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.18"
+version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
+checksum = "494815d09bf52b5548659851081238f0ca39ff638363907596da739561c62c52"
 dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
  "futures-util",
+ "libc",
  "pin-project-lite",
  "tokio",
 ]

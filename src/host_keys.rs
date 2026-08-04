@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpui::{App, Hsla, IntoElement, ParentElement as _, Styled as _, Window, div, px};
 use gpui_component::{
@@ -36,9 +36,7 @@ type Prompts = (
 
 static PROMPTS: OnceLock<Prompts> = OnceLock::new();
 static PROMPT_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-static REJECTIONS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-
-const REJECTION_MEMORY: Duration = Duration::from_secs(300);
+static REJECTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn prompts() -> &'static Prompts {
     PROMPTS.get_or_init(async_channel::unbounded)
@@ -52,22 +50,17 @@ fn known_hosts_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".ssh").join("known_hosts"))
 }
 
-fn rejected_since(id: &str, started: Instant) -> bool {
+fn was_rejected(id: &str) -> bool {
     REJECTIONS
         .get_or_init(Default::default)
         .lock()
-        .ok()
-        .and_then(|map| map.get(id).copied())
-        .is_some_and(|at| at >= started)
+        .is_ok_and(|rejected| rejected.contains(id))
 }
 
 fn remember_rejection(id: String) {
-    let Ok(mut map) = REJECTIONS.get_or_init(Default::default).lock() else {
-        return;
-    };
-    let now = Instant::now();
-    map.retain(|_, at| now.duration_since(*at) < REJECTION_MEMORY);
-    map.insert(id, now);
+    if let Ok(mut rejected) = REJECTIONS.get_or_init(Default::default).lock() {
+        rejected.insert(id);
+    }
 }
 
 fn refused_message(host: &str, port: u16) -> String {
@@ -83,7 +76,6 @@ fn lookup(host: &str, port: u16, key: &PublicKey, path: &PathBuf) -> Result<bool
 }
 
 pub async fn verify(host: &str, port: u16, key: &PublicKey) -> Result<(), String> {
-    let started = Instant::now();
     let Some(path) = known_hosts_path() else {
         return Err("Could not locate ~/.ssh/known_hosts to verify the host key".to_string());
     };
@@ -99,7 +91,7 @@ pub async fn verify(host: &str, port: u16, key: &PublicKey) -> Result<(), String
 
     let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
     let id = format!("{host}:{port}/{fingerprint}");
-    if rejected_since(&id, started) {
+    if was_rejected(&id) {
         return Err(refused_message(host, port));
     }
 
@@ -225,11 +217,5 @@ fn detail(label: &'static str, value: &str, muted: Hsla) -> impl IntoElement {
                 .text_color(muted)
                 .child(label),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_xs()
-                .child(value.to_string()),
-        )
+        .child(div().flex_1().min_w_0().text_xs().child(value.to_string()))
 }

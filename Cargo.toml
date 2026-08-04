@@ -1,6 +1,6 @@
 [package]
 name = "Oxidal"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 
 [dependencies]
@@ -20,10 +20,11 @@ async-channel = "2"
 vte = "0.15.0"
 portable-pty = "0.9.0"
 russh = "0.62.5"
-russh-sftp = "2.3.0"
+russh-sftp = "2.4.0"
 serialport = "4.9.0"
 chrono = "0.4.45"
 open = "5.4.0"
+sha2 = "0.11"
 tokio = { version = "^1", features = [ "rt", "net", "io-util", "time", "fs", "sync" ] }
 ureq = { version = "3.3.0", features = [ "json" ] }
 
@@ -35,6 +36,12 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 opt-level = 3
