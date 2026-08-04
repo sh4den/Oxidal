@@ -1181,7 +1181,7 @@ fn build_paint(
                 SharedString::from(std::mem::take(text)),
                 font_size,
                 &[run],
-                None,
+                Some(char_width),
             );
             lines.push((
                 shaped,
@@ -1207,16 +1207,12 @@ fn build_paint(
                 underline: cell.underline(),
                 strike: cell.strike(),
             };
-            let ch = cell.ch();
-            if style != Some(cell_style) || !ch.is_ascii() {
+            if style != Some(cell_style) {
                 flush(&mut text, style.take(), start_col);
                 style = Some(cell_style);
                 start_col = col;
             }
-            text.push(ch);
-            if !ch.is_ascii() {
-                flush(&mut text, style.take(), start_col);
-            }
+            text.push(cell.ch());
         }
         flush(&mut text, style, start_col);
     }

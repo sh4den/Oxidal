@@ -1,11 +1,13 @@
+use std::ops::Range;
 use std::path::PathBuf;
 
 use gpui::{
     Anchor, AnyElement, AppContext as _, ClickEvent, Context, DragMoveEvent, Empty, EntityId,
     EventEmitter, ExternalPaths, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px, relative, svg,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, relative, svg,
+    uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
@@ -177,7 +179,7 @@ pub struct SftpPanel {
     on_show_hidden_changed: Box<dyn Fn(bool, &mut gpui::App)>,
     path_input: gpui::Entity<InputState>,
     synced_path: String,
-    list_scroll: ScrollHandle,
+    list_scroll: UniformListScrollHandle,
     h_scroll: ScrollHandle,
     column_widths: [Option<f32>; ListColumn::COUNT],
     hidden_columns: [bool; ListColumn::COUNT],
@@ -360,7 +362,7 @@ impl SftpPanel {
             on_show_hidden_changed: Box::new(on_show_hidden_changed),
             path_input,
             synced_path: String::new(),
-            list_scroll: ScrollHandle::new(),
+            list_scroll: UniformListScrollHandle::new(),
             h_scroll: ScrollHandle::new(),
             column_widths: [None; ListColumn::COUNT],
             hidden_columns: [false; ListColumn::COUNT],
@@ -430,6 +432,12 @@ impl SftpPanel {
 
     pub fn current_path(&self) -> &str {
         &self.current_path
+    }
+
+    fn visible_entries(&self) -> impl Iterator<Item = &SftpEntry> {
+        self.entries
+            .iter()
+            .filter(move |entry| self.show_hidden || !entry.name.starts_with('.'))
     }
 
     pub fn selected_entry(&self) -> Option<&SftpEntry> {
@@ -847,6 +855,26 @@ impl SftpPanel {
         header.into_any_element()
     }
 
+    fn render_entries(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
+        uniform_list(
+            "sftp-rows",
+            count,
+            cx.processor(|panel, range: Range<usize>, _, cx| {
+                let panel = &*panel;
+                panel
+                    .visible_entries()
+                    .skip(range.start)
+                    .take(range.len())
+                    .map(|entry| panel.render_row(entry, cx))
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.list_scroll)
+        .size_full()
+        .min_w(relative(1.))
+        .into_any_element()
+    }
+
     fn render_row(&self, entry: &SftpEntry, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.selected.as_deref() == Some(entry.path.as_str());
         let row_entry = entry.clone();
@@ -1054,16 +1082,9 @@ impl Render for SftpPanel {
         let columns_view = cx.entity();
         let hidden_columns = self.hidden_columns;
         let is_remote_panel = self.side == PanelSide::Remote;
-        let visible: Vec<&SftpEntry> = self
-            .entries
-            .iter()
-            .filter(|entry| self.show_hidden || !entry.name.starts_with('.'))
-            .collect();
-        let no_rows = visible.is_empty();
-        let rows = visible
-            .into_iter()
-            .map(|entry| self.render_row(entry, cx))
-            .collect::<Vec<_>>();
+        let visible_count = self.visible_entries().count();
+        let no_rows = visible_count == 0;
+        let entry_list = (!no_rows).then(|| self.render_entries(visible_count, cx));
         let name_width = self.resolved_name_width();
         let group_name = SharedString::from(format!("sftp-list-{}", cx.entity_id()));
         // Explicit strip width: a flex child would otherwise be shrunk to the
@@ -1193,11 +1214,9 @@ impl Render for SftpPanel {
                                             .id("sftp-entries")
                                             .flex_1()
                                             .min_h_0()
-                                            .overflow_y_scroll()
-                                            .track_scroll(&self.list_scroll)
-                                            .child(
-                                                v_flex().min_w(relative(1.)).children(rows).when(
-                                                    no_rows,
+                                            .when_some(entry_list, |this, list| this.child(list))
+                                            .when(no_rows, |this| {
+                                                this.child(v_flex().min_w(relative(1.)).map(
                                                     |this| {
                                                         if self.loading {
                                                             const BAR_WIDTHS: [f32; 8] = [
@@ -1244,8 +1263,8 @@ impl Render for SftpPanel {
                                                             )
                                                         }
                                                     },
-                                                ),
-                                            )
+                                                ))
+                                            })
                                             .on_mouse_down(
                                                 MouseButton::Right,
                                                 cx.listener(|panel, _: &MouseDownEvent, _, _| {

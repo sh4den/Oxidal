@@ -508,8 +508,6 @@ impl OxidalApp {
         let id = item.id;
         let selected = self.selected_session == Some(id);
         let group_name = SharedString::from(format!("session-{id}"));
-        let folders = self.folders.clone();
-        let session = item.clone();
         let name = SharedString::from(item.name.clone());
         let detail = SharedString::from(item.detail());
         let capacity = self.label_capacity(cx);
@@ -577,14 +575,16 @@ impl OxidalApp {
                             .xsmall()
                             .icon(IconName::Settings2)
                             .tooltip("Edit")
-                            .on_click(cx.listener(move |_view, _, window, cx| {
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                let Some(session) =
+                                    view.sessions.iter().find(|s| s.id == id).cloned()
+                                else {
+                                    return;
+                                };
+                                let folders = view.folders.clone();
                                 let weak_app = cx.weak_entity();
                                 session_dialog::open_edit_session_dialog(
-                                    session.clone(),
-                                    folders.clone(),
-                                    weak_app,
-                                    window,
-                                    cx,
+                                    session, folders, weak_app, window, cx,
                                 );
                             })),
                     )
@@ -770,7 +770,7 @@ impl OxidalApp {
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         let capacity = self.label_capacity(cx);
 
-        for folder in self.folders.clone() {
+        for folder in &self.folders {
             let folder_id = folder.id;
             let collapsed = self.collapsed_folders.contains(&folder_id);
             let group_name = SharedString::from(format!("folder-{folder_id}"));
@@ -836,23 +836,27 @@ impl OxidalApp {
                             .gap_1()
                             .invisible()
                             .group_hover(group_name, |this| this.visible())
-                            .child({
-                                let folder = folder.clone();
+                            .child(
                                 Button::new(SharedString::from(format!("edit-folder-{folder_id}")))
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Settings2)
                                     .tooltip("Edit")
-                                    .on_click(cx.listener(move |_view, _, window, cx| {
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        let Some(folder) = view
+                                            .folders
+                                            .iter()
+                                            .find(|f| f.id == folder_id)
+                                            .cloned()
+                                        else {
+                                            return;
+                                        };
                                         let weak_app = cx.weak_entity();
                                         session_dialog::open_edit_folder_dialog(
-                                            folder.clone(),
-                                            weak_app,
-                                            window,
-                                            cx,
+                                            folder, weak_app, window, cx,
                                         );
-                                    }))
-                            })
+                                    })),
+                            )
                             .child(
                                 Button::new(SharedString::from(format!(
                                     "delete-folder-{folder_id}"
