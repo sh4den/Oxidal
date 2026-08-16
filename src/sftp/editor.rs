@@ -5,15 +5,16 @@ use gpui::{
     div, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Root, Sizable as _, TitleBar,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Root, Rope, Sizable as _, TitleBar,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
     h_flex,
-    input::{Input, InputState, RopeExt as _},
-    text::TextView,
+    input::{Input, InputEvent, InputState, RopeExt as _},
+    text::{TextView, TextViewState},
     v_flex,
 };
+use sha2::{Digest as _, Sha256};
 
 use crate::settings::AppSettings;
 
@@ -32,13 +33,23 @@ pub struct EditorWindow {
     name: SharedString,
     language_label: Option<SharedString>,
     editor: Entity<InputState>,
-    original: String,
+    original_len: usize,
+    original_digest: [u8; 32],
+    modified: bool,
     is_markdown: bool,
-    preview: bool,
+    preview_doc: Option<Entity<TextViewState>>,
     saving: bool,
     status: Option<SaveStatus>,
     handle: AnyWindowHandle,
     close_after_save: bool,
+}
+
+fn digest_rope(rope: &Rope) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for chunk in rope.chunks() {
+        hasher.update(chunk);
+    }
+    hasher.finalize().into()
 }
 
 pub fn open(
@@ -79,12 +90,20 @@ impl EditorWindow {
         };
         let language = extension.clone().unwrap_or_else(|| "text".to_string());
         let is_markdown = matches!(language.as_str(), "md" | "markdown");
+        let original_len = text.len();
+        let original_digest = Sha256::digest(&text).into();
         let editor = cx.new(|cx| {
             InputState::new(window, cx)
                 .code_editor(language)
-                .default_value(text.clone())
+                .default_value(text)
         });
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(&editor, |editor_window, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                editor_window.refresh_modified(cx);
+            }
+        })
+        .detach();
 
         let name = display_name(&name);
         window.set_window_title(&format!("{name} — Oxidal"));
@@ -103,9 +122,11 @@ impl EditorWindow {
             name: SharedString::from(name),
             language_label: extension.map(|ext| SharedString::from(ext.to_uppercase())),
             editor,
-            original: text,
+            original_len,
+            original_digest,
+            modified: false,
             is_markdown,
-            preview: false,
+            preview_doc: None,
             saving: false,
             status: None,
             handle: window.window_handle(),
@@ -113,8 +134,19 @@ impl EditorWindow {
         }
     }
 
+    fn refresh_modified(&mut self, cx: &mut Context<Self>) {
+        let modified = {
+            let rope = self.editor.read(cx).text();
+            rope.len() != self.original_len || digest_rope(rope) != self.original_digest
+        };
+        if modified != self.modified {
+            self.modified = modified;
+            cx.notify();
+        }
+    }
+
     fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.editor.read(cx).value().as_ref() == self.original {
+        if !self.modified {
             return true;
         }
         self.confirm_close_dialog(window, cx);
@@ -170,15 +202,17 @@ impl EditorWindow {
         if self.saving {
             return;
         }
-        let text = self.editor.read(cx).value().to_string();
-        if text == self.original {
+        let text = self.editor.read(cx).text().to_string();
+        let digest: [u8; 32] = Sha256::digest(&text).into();
+        if text.len() == self.original_len && digest == self.original_digest {
             self.close_after_save = false;
             return;
         }
         self.saving = true;
         self.status = None;
+        let len = text.len();
         let handle = self.handle;
-        let ack = self.client.write_file(self.remote.clone(), text.clone().into_bytes());
+        let ack = self.client.write_file(self.remote.clone(), text.into_bytes());
         cx.spawn(async move |this, cx| {
             let result = ack.recv().await;
             let mut close_window = false;
@@ -186,7 +220,8 @@ impl EditorWindow {
                 editor.saving = false;
                 editor.status = Some(match result {
                     Ok(None) => {
-                        editor.original = text;
+                        editor.original_len = len;
+                        editor.original_digest = digest;
                         close_window = editor.close_after_save;
                         SaveStatus::Saved
                     }
@@ -194,6 +229,7 @@ impl EditorWindow {
                     Err(_) => SaveStatus::Failed("The connection is closed".to_string()),
                 });
                 editor.close_after_save = false;
+                editor.refresh_modified(cx);
                 cx.notify();
             });
             if close_window {
@@ -211,17 +247,21 @@ impl Render for EditorWindow {
             let settings = cx.global::<AppSettings>();
             (settings.font_family.clone(), settings.font_size)
         };
-        let (value, position, lines) = {
+        let (position, lines, bytes) = {
             let state = self.editor.read(cx);
-            (state.value(), state.cursor_position(), state.text().lines_len())
+            (
+                state.cursor_position(),
+                state.text().lines_len(),
+                state.text().len(),
+            )
         };
-        let modified = value.as_ref() != self.original;
+        let modified = self.modified;
         let doc_label = SharedString::from(format!(
             "Ln {}, Col {} · {} lines · {}",
             position.line + 1,
             position.character + 1,
             lines,
-            format_size(value.len() as u64),
+            format_size(bytes as u64),
         ));
 
         let status: Option<(Icon, SharedString, gpui::Hsla)> = if self.saving {
@@ -327,7 +367,7 @@ impl Render for EditorWindow {
             )
             .child(
                 div().flex_1().min_h_0().w_full().map(|this| {
-                    if self.preview {
+                    if let Some(doc) = &self.preview_doc {
                         this.child(
                             div()
                                 .id("editor-md-preview")
@@ -335,10 +375,7 @@ impl Render for EditorWindow {
                                 .overflow_y_scroll()
                                 .px_6()
                                 .py_4()
-                                .child(
-                                    TextView::markdown("editor-md-rendered", value)
-                                        .selectable(true),
-                                ),
+                                .child(TextView::new(doc).selectable(true)),
                         )
                     } else {
                         this.child(
@@ -384,14 +421,27 @@ impl Render for EditorWindow {
                             Button::new("editor-preview")
                                 .ghost()
                                 .xsmall()
-                                .icon(if self.preview {
+                                .icon(if self.preview_doc.is_some() {
                                     IconName::EyeOff
                                 } else {
                                     IconName::Eye
                                 })
-                                .label(if self.preview { "Edit" } else { "Preview" })
+                                .label(if self.preview_doc.is_some() {
+                                    "Edit"
+                                } else {
+                                    "Preview"
+                                })
                                 .on_click(cx.listener(|editor, _, _, cx| {
-                                    editor.preview = !editor.preview;
+                                    editor.preview_doc = match editor.preview_doc.take() {
+                                        Some(_) => None,
+                                        None => {
+                                            let text =
+                                                editor.editor.read(cx).text().to_string();
+                                            Some(cx.new(|cx| {
+                                                TextViewState::markdown(&text, cx)
+                                            }))
+                                        }
+                                    };
                                     cx.notify();
                                 })),
                         )
