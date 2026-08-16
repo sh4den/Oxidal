@@ -20,6 +20,7 @@ pub struct HostKeyRequest {
     port: u16,
     algorithm: String,
     fingerprint: String,
+    stored: Vec<String>,
     reply: async_channel::Sender<bool>,
 }
 
@@ -67,12 +68,33 @@ fn refused_message(host: &str, port: u16) -> String {
     format!("The host key for {host}:{port} was not trusted, so the connection was refused")
 }
 
-fn lookup(host: &str, port: u16, key: &PublicKey, path: &PathBuf) -> Result<bool, String> {
-    match russh::keys::check_known_hosts_path(host, port, key, path) {
-        Ok(known) => Ok(known),
-        Err(russh::keys::Error::KeyChanged { line }) => Err(mismatch_message(host, port, line)),
-        Err(e) => Err(format!("Could not read {}: {e}", path.display())),
+enum KeyStatus {
+    Trusted,
+    Unknown,
+    Conflicting(Vec<String>),
+}
+
+fn assess(host: &str, port: u16, key: &PublicKey, path: &PathBuf) -> Result<KeyStatus, String> {
+    let recorded = russh::keys::known_hosts::known_host_keys_path(host, port, path)
+        .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    if recorded.iter().any(|(_, stored)| stored == key) {
+        return Ok(KeyStatus::Trusted);
     }
+    if recorded.is_empty() {
+        return Ok(KeyStatus::Unknown);
+    }
+    Ok(KeyStatus::Conflicting(
+        recorded
+            .iter()
+            .map(|(_, stored)| {
+                format!(
+                    "{} {}",
+                    stored.algorithm(),
+                    stored.fingerprint(HashAlg::Sha256)
+                )
+            })
+            .collect(),
+    ))
 }
 
 pub async fn verify(host: &str, port: u16, key: &PublicKey) -> Result<(), String> {
@@ -80,14 +102,16 @@ pub async fn verify(host: &str, port: u16, key: &PublicKey) -> Result<(), String
         return Err("Could not locate ~/.ssh/known_hosts to verify the host key".to_string());
     };
 
-    if lookup(host, port, key, &path)? {
+    if matches!(assess(host, port, key, &path)?, KeyStatus::Trusted) {
         return Ok(());
     }
 
     let _guard = PROMPT_LOCK.get_or_init(Default::default).lock().await;
-    if lookup(host, port, key, &path)? {
-        return Ok(());
-    }
+    let stored = match assess(host, port, key, &path)? {
+        KeyStatus::Trusted => return Ok(()),
+        KeyStatus::Unknown => Vec::new(),
+        KeyStatus::Conflicting(stored) => stored,
+    };
 
     let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
     let id = format!("{host}:{port}/{fingerprint}");
@@ -101,6 +125,7 @@ pub async fn verify(host: &str, port: u16, key: &PublicKey) -> Result<(), String
         port,
         algorithm: key.algorithm().to_string(),
         fingerprint,
+        stored,
         reply,
     };
     if prompts().0.send(request).await.is_err() {
@@ -120,22 +145,15 @@ pub async fn verify(host: &str, port: u16, key: &PublicKey) -> Result<(), String
         .map_err(|e| format!("Could not write {}: {e}", path.display()))
 }
 
-fn mismatch_message(host: &str, port: u16, line: usize) -> String {
-    let entry = if port == 22 {
-        host.to_string()
+pub fn open_prompt(request: HostKeyRequest, window: &mut Window, cx: &mut App) {
+    if request.stored.is_empty() {
+        open_unknown_prompt(request, window, cx)
     } else {
-        format!("[{host}]:{port}")
-    };
-    format!(
-        "Host key verification failed for {host}:{port}.\n\nThe server offered a key that does \
-         not match the one stored on line {line} of ~/.ssh/known_hosts. This happens when a \
-         server is rebuilt, and it also happens when a connection is being intercepted.\n\nIf \
-         you are certain the change is expected, drop the stored key with:\n    ssh-keygen -R \
-         \"{entry}\""
-    )
+        open_mismatch_prompt(request, window, cx)
+    }
 }
 
-pub fn open_prompt(request: HostKeyRequest, window: &mut Window, cx: &mut App) {
+fn open_unknown_prompt(request: HostKeyRequest, window: &mut Window, cx: &mut App) {
     let request = Rc::new(request);
 
     window.open_dialog(cx, move |dialog, _window, cx| {
@@ -204,6 +222,98 @@ pub fn open_prompt(request: HostKeyRequest, window: &mut Window, cx: &mut App) {
     });
 }
 
+fn open_mismatch_prompt(request: HostKeyRequest, window: &mut Window, cx: &mut App) {
+    let request = Rc::new(request);
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let request = request.clone();
+        let muted = cx.theme().muted_foreground;
+
+        dialog
+            .w(px(560.))
+            .title("Host key does not match")
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_start()
+                            .p_2p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().danger.opacity(0.5))
+                            .bg(cx.theme().danger.opacity(0.1))
+                            .child(
+                                Icon::new(IconName::TriangleAlert)
+                                    .small()
+                                    .text_color(cx.theme().danger)
+                                    .flex_none(),
+                            )
+                            .child(div().flex_1().min_w_0().text_sm().child(format!(
+                                "{}:{} presented a key that matches none of the keys stored \
+                                 for it. If something is intercepting this connection, this \
+                                 is exactly what a machine-in-the-middle attack looks like.",
+                                request.host, request.port
+                            ))),
+                    )
+                    .child(div().flex_1().min_w_0().text_sm().child(
+                        "It can also be legitimate: the same address can serve more than one \
+                         system, such as a dropbear initramfs that unlocks an encrypted disk \
+                         before the installed server boots.",
+                    ))
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .p_3()
+                            .rounded_md()
+                            .bg(cx.theme().muted)
+                            .child(detail("Offered", &request.algorithm, muted))
+                            .child(detail("Fingerprint", &request.fingerprint, muted)),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .p_3()
+                            .rounded_md()
+                            .bg(cx.theme().muted)
+                            .children(request.stored.iter().enumerate().map(|(ix, stored)| {
+                                detail(if ix == 0 { "Stored" } else { "" }, stored, muted)
+                            })),
+                    )
+                    .child(div().text_xs().text_color(muted).child(
+                        "Verify the offered fingerprint against the server through another \
+                         channel before accepting. Accepting adds this key alongside the \
+                         stored ones in ~/.ssh/known_hosts, and both identities will be \
+                         accepted from then on.",
+                    )),
+            )
+            .footer(
+                DialogFooter::new()
+                    .child(Button::new("reject").primary().label("Reject").on_click({
+                        let request = request.clone();
+                        move |_, window, cx| {
+                            request.answer(false);
+                            window.close_dialog(cx);
+                        }
+                    }))
+                    .child(
+                        Button::new("trust-anyway")
+                            .danger()
+                            .label("I know what I'm doing")
+                            .on_click({
+                                let request = request.clone();
+                                move |_, window, cx| {
+                                    request.answer(true);
+                                    window.close_dialog(cx);
+                                }
+                            }),
+                    ),
+            )
+    });
+}
+
 fn detail(label: &'static str, value: &str, muted: Hsla) -> impl IntoElement {
     h_flex()
         .w_full()
@@ -218,4 +328,90 @@ fn detail(label: &'static str, value: &str, muted: Hsla) -> impl IntoElement {
                 .child(label),
         )
         .child(div().flex_1().min_w_0().text_xs().child(value.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FIRST_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    const SECOND_KEY: &str = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHA\
+                              yNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrb\
+                              o5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=";
+
+    fn key(openssh: &str) -> PublicKey {
+        PublicKey::from_openssh(openssh).expect("a well formed public key")
+    }
+
+    #[test]
+    fn a_host_can_carry_more_than_one_trusted_key() {
+        let dir = crate::tempdir::private_dir("oxidal-hosts").expect("dir");
+        let path = dir.join("known_hosts");
+        std::fs::write(&path, format!("vault.test {FIRST_KEY}\n")).expect("file");
+
+        let sshd = key(FIRST_KEY);
+        let dropbear = key(SECOND_KEY);
+
+        assert!(
+            matches!(assess("vault.test", 22, &sshd, &path), Ok(KeyStatus::Trusted)),
+            "the recorded key must connect without a prompt"
+        );
+        assert!(
+            matches!(assess("other.test", 22, &sshd, &path), Ok(KeyStatus::Unknown)),
+            "a host with no entries is unknown, not conflicting"
+        );
+        match assess("vault.test", 22, &dropbear, &path) {
+            Ok(KeyStatus::Conflicting(stored)) => {
+                assert_eq!(stored.len(), 1, "every stored key is shown for comparison");
+                assert!(stored[0].starts_with("ssh-ed25519 SHA256:"));
+            }
+            _ => panic!("a second identity must surface as a conflict, not an error"),
+        }
+
+        russh::keys::known_hosts::learn_known_hosts_path("vault.test", 22, &dropbear, &path)
+            .expect("append");
+
+        assert!(
+            matches!(
+                assess("vault.test", 22, &dropbear, &path),
+                Ok(KeyStatus::Trusted)
+            ),
+            "once accepted, the second identity connects without a prompt"
+        );
+        assert!(
+            matches!(assess("vault.test", 22, &sshd, &path), Ok(KeyStatus::Trusted)),
+            "accepting the second identity must not evict the first"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_nonstandard_port_keeps_its_own_identities() {
+        let dir = crate::tempdir::private_dir("oxidal-ports").expect("dir");
+        let path = dir.join("known_hosts");
+        std::fs::write(
+            &path,
+            format!("vault.test {FIRST_KEY}\n[vault.test]:2222 {SECOND_KEY}\n"),
+        )
+        .expect("file");
+
+        let sshd = key(FIRST_KEY);
+        let dropbear = key(SECOND_KEY);
+
+        assert!(matches!(
+            assess("vault.test", 2222, &dropbear, &path),
+            Ok(KeyStatus::Trusted)
+        ));
+        assert!(
+            matches!(
+                assess("vault.test", 2222, &sshd, &path),
+                Ok(KeyStatus::Conflicting(_))
+            ),
+            "port 22's key does not vouch for port 2222"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
