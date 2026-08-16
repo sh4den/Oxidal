@@ -200,6 +200,7 @@ async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntr
             .cmp(&a.is_dir)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
+    entries.shrink_to_fit();
 
     Ok(entries)
 }
@@ -372,7 +373,7 @@ async fn do_read(
 
     let result = async {
         let mut file = sftp.open(remote).await?;
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(total as usize);
         let mut chunk = vec![0u8; CHUNK_SIZE];
         loop {
             let n = file.read(&mut chunk).await?;
