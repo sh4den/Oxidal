@@ -1,6 +1,6 @@
 [package]
 name = "Oxidal"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2024"
 
 [dependencies]
@@ -47,7 +47,7 @@ opt-level = 3
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 debug = 0
 strip = "symbols"
