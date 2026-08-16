@@ -1,5 +1,6 @@
 use std::ops::Range;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
 use gpui::{
     Anchor, AnyElement, AppContext as _, ClickEvent, Context, DragMoveEvent, Empty, EntityId,
@@ -23,7 +24,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, EditUploadMode, RemoteOpenMode};
 
 use super::{
     FileClient, FileDrag, PanelSide, SftpEntry, SftpEvent, display_name, format_kind,
@@ -155,6 +156,29 @@ struct TransferState {
     total: Option<u64>,
 }
 
+const EDIT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const EDIT_SETTLE_TIME: Duration = Duration::from_millis(500);
+const EDITOR_MAX_BYTES: u64 = 1024 * 1024;
+
+struct EditWatch {
+    remote: String,
+    local: PathBuf,
+    baseline: Option<SystemTime>,
+    prompting: bool,
+}
+
+fn file_mtime(path: &std::path::Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+fn edited_label(local: &std::path::Path, remote: &str) -> String {
+    let raw = local
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| remote.to_string());
+    display_name(&raw)
+}
+
 impl TransferState {
     fn percent(&self) -> f32 {
         match self.total {
@@ -185,6 +209,8 @@ pub struct SftpPanel {
     hidden_columns: [bool; ListColumn::COUNT],
     resizing: Option<ColumnResize>,
     opened_temp_dirs: Vec<PathBuf>,
+    edit_watches: Vec<EditWatch>,
+    pending_edits: Vec<SftpEntry>,
 }
 
 impl Drop for SftpPanel {
@@ -322,11 +348,22 @@ impl SftpPanel {
                                 if let Some(err) = error {
                                     panel.error = Some(err);
                                 }
+                                panel.arm_edit_watches();
                                 if panel.side == PanelSide::Remote {
                                     panel.client.list(panel.current_path.clone());
                                 }
                                 cx.emit(PanelEvent::TransferFinished);
                                 cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(SftpEvent::FileLoaded { remote, result }) => {
+                        if this
+                            .update(cx, |panel, cx| {
+                                panel.finish_editor_load(&remote, result, cx);
                             })
                             .is_err()
                         {
@@ -346,6 +383,21 @@ impl SftpPanel {
             }
         })
         .detach();
+
+        if side == PanelSide::Remote {
+            cx.spawn_in(window, async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(EDIT_POLL_INTERVAL).await;
+                    let alive = this.update_in(cx, |panel, window, cx| {
+                        panel.poll_edit_watches(window, cx);
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
 
         Self {
             client,
@@ -368,6 +420,8 @@ impl SftpPanel {
             hidden_columns: [false; ListColumn::COUNT],
             resizing: None,
             opened_temp_dirs: Vec::new(),
+            edit_watches: Vec::new(),
+            pending_edits: Vec::new(),
         }
     }
 
@@ -453,14 +507,156 @@ impl SftpPanel {
         self.navigate(self.current_path.clone(), cx);
     }
 
-    fn open_entry(&mut self, entry: &SftpEntry, cx: &mut Context<Self>) {
+    fn open_entry(&mut self, entry: &SftpEntry, window: &mut Window, cx: &mut Context<Self>) {
         if entry.is_dir {
             self.navigate(entry.path.clone(), cx);
         } else {
             self.selected = Some(entry.path.clone());
-            self.open_file(entry, cx);
+            match self.side {
+                PanelSide::Local => self.open_file(entry, cx),
+                PanelSide::Remote => self.open_remote(entry, window, cx),
+            }
             cx.notify();
         }
+    }
+
+    fn open_remote(&mut self, entry: &SftpEntry, window: &mut Window, cx: &mut Context<Self>) {
+        match cx.global::<AppSettings>().remote_open {
+            Some(RemoteOpenMode::Editor) => self.open_in_editor(entry, cx),
+            Some(RemoteOpenMode::DefaultApp) => self.open_file(entry, cx),
+            Some(RemoteOpenMode::Ask) => self.choose_open_dialog(entry.clone(), window, cx),
+            None => self.first_open_dialog(entry.clone(), window, cx),
+        }
+    }
+
+    fn first_open_dialog(&self, entry: SftpEntry, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity();
+
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let entry = entry.clone();
+            let name = display_name(&entry.name);
+
+            let choose = move |mode: RemoteOpenMode| {
+                let view = view.clone();
+                let entry = entry.clone();
+                move |_: &ClickEvent, window: &mut Window, cx: &mut gpui::App| {
+                    cx.global_mut::<AppSettings>().remote_open = Some(mode);
+                    crate::settings::save_settings(cx.global::<AppSettings>());
+                    window.close_dialog(cx);
+                    view.update(cx, |panel, cx| match mode {
+                        RemoteOpenMode::Editor => panel.open_in_editor(&entry, cx),
+                        RemoteOpenMode::DefaultApp => panel.open_file(&entry, cx),
+                        RemoteOpenMode::Ask => {
+                            panel.choose_open_dialog(entry.clone(), window, cx)
+                        }
+                    });
+                }
+            };
+
+            dialog
+                .w(px(480.))
+                .title("How should remote files open?")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(format!(
+                            "You double-clicked \"{name}\". Oxidal can open remote files in \
+                             its built-in editor or hand them to the app your system uses for \
+                             that file type."
+                        ))
+                        .child(
+                            h_flex()
+                                .items_start()
+                                .gap_2()
+                                .p_2p5()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(cx.theme().warning.opacity(0.5))
+                                .bg(cx.theme().warning.opacity(0.12))
+                                .child(
+                                    Icon::new(IconName::TriangleAlert)
+                                        .small()
+                                        .text_color(cx.theme().warning)
+                                        .flex_none(),
+                                )
+                                .child(div().flex_1().min_w_0().text_sm().child(
+                                    "Opening with another app writes a temporary copy of the \
+                                     remote file to this computer's disk. While it exists, any \
+                                     process running under your account can read it, and after \
+                                     deletion it may remain recoverable by anyone with access \
+                                     to the disk unless the volume is encrypted. The built-in \
+                                     editor keeps the file in Oxidal's memory and uploads it \
+                                     straight back to the server.",
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("You can change this anytime in Settings → Files."),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("first-open-ask")
+                                .label("Ask each time")
+                                .on_click(choose(RemoteOpenMode::Ask)),
+                        )
+                        .child(
+                            Button::new("first-open-default")
+                                .label("Default app")
+                                .on_click(choose(RemoteOpenMode::DefaultApp)),
+                        )
+                        .child(
+                            Button::new("first-open-editor")
+                                .primary()
+                                .label("Built-in editor")
+                                .on_click(choose(RemoteOpenMode::Editor)),
+                        ),
+                )
+        });
+    }
+
+    fn choose_open_dialog(&self, entry: SftpEntry, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let view = view.clone();
+            let entry = entry.clone();
+            let name = display_name(&entry.name);
+            let editor_entry = entry.clone();
+            let editor_view = view.clone();
+
+            dialog
+                .w(px(420.))
+                .title(format!("Open \"{name}\""))
+                .child(
+                    "The built-in editor keeps the file in memory. The default app writes a \
+                     temporary copy to this computer's disk.",
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(Button::new("choose-open-default").label("Default app").on_click(
+                            move |_, window, cx| {
+                                window.close_dialog(cx);
+                                view.update(cx, |panel, cx| panel.open_file(&entry, cx));
+                            },
+                        ))
+                        .child(
+                            Button::new("choose-open-editor")
+                                .primary()
+                                .label("Built-in editor")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    editor_view.update(cx, |panel, cx| {
+                                        panel.open_in_editor(&editor_entry, cx)
+                                    });
+                                }),
+                        ),
+                )
+        });
     }
 
     fn open_file(&mut self, entry: &SftpEntry, cx: &mut Context<Self>) {
@@ -486,6 +682,11 @@ impl SftpPanel {
             return;
         }
 
+        self.download_and_watch(entry, cx);
+    }
+
+    fn download_and_watch(&mut self, entry: &SftpEntry, cx: &mut Context<Self>) {
+        let name = safe_local_name(&entry.name);
         let dir = match crate::tempdir::private_dir("oxidal-open") {
             Ok(dir) => dir,
             Err(err) => {
@@ -495,9 +696,286 @@ impl SftpPanel {
             }
         };
         if let FileClient::Remote(client) = &self.client {
-            client.download_and_open(entry.path.clone(), dir.join(name));
+            let local = dir.join(name);
+            client.download_and_open(entry.path.clone(), local.clone());
             self.opened_temp_dirs.push(dir);
+            self.edit_watches.retain(|watch| watch.remote != entry.path);
+            self.edit_watches.push(EditWatch {
+                remote: entry.path.clone(),
+                local,
+                baseline: None,
+                prompting: false,
+            });
         }
+    }
+
+    fn open_in_editor(&mut self, entry: &SftpEntry, cx: &mut Context<Self>) {
+        let FileClient::Remote(client) = &self.client else {
+            return;
+        };
+        if entry.size > EDITOR_MAX_BYTES {
+            self.error = Some(format!(
+                "\"{}\" is {}, too large for the built-in editor. Right-click it and choose \
+                 \"Open in default app\" or \"Download\".",
+                display_name(&entry.name),
+                super::format_size(entry.size)
+            ));
+            cx.notify();
+            return;
+        }
+        self.pending_edits.retain(|pending| pending.path != entry.path);
+        self.pending_edits.push(entry.clone());
+        client.read_file(entry.path.clone());
+        cx.notify();
+    }
+
+    fn finish_editor_load(
+        &mut self,
+        remote: &str,
+        result: Result<Vec<u8>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self
+            .pending_edits
+            .iter()
+            .position(|pending| pending.path == remote)
+        else {
+            return;
+        };
+        let entry = self.pending_edits.remove(ix);
+        match result {
+            Err(err) => {
+                self.error = Some(err);
+                cx.notify();
+            }
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => {
+                    let FileClient::Remote(client) = &self.client else {
+                        return;
+                    };
+                    if let Err(err) = super::editor::open(
+                        client.clone(),
+                        entry.path.clone(),
+                        entry.name.clone(),
+                        text,
+                        cx,
+                    ) {
+                        self.error = Some(format!(
+                            "Couldn't open an editor window for {}: {err}",
+                            display_name(&entry.name)
+                        ));
+                        cx.notify();
+                    }
+                }
+                Err(_) => {
+                    self.error = Some(format!(
+                        "\"{}\" isn't a text file, so the built-in editor can't show it. \
+                         Right-click it and choose \"Open in default app\" or \"Download\".",
+                        display_name(&entry.name)
+                    ));
+                    cx.notify();
+                }
+            },
+        }
+    }
+
+    fn arm_edit_watches(&mut self) {
+        for watch in &mut self.edit_watches {
+            if watch.baseline.is_none() {
+                watch.baseline = file_mtime(&watch.local);
+            }
+        }
+    }
+
+    fn poll_edit_watches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let FileClient::Remote(client) = self.client.clone() else {
+            return;
+        };
+        for ix in 0..self.edit_watches.len() {
+            let watch = &self.edit_watches[ix];
+            if watch.prompting {
+                continue;
+            }
+            let Some(baseline) = watch.baseline else {
+                continue;
+            };
+            let Some(mtime) = file_mtime(&watch.local) else {
+                continue;
+            };
+            if mtime == baseline {
+                continue;
+            }
+            if matches!(mtime.elapsed(), Ok(age) if age < EDIT_SETTLE_TIME) {
+                continue;
+            }
+            let remote = watch.remote.clone();
+            let local = watch.local.clone();
+            match cx.global::<AppSettings>().edit_upload {
+                Some(EditUploadMode::Auto) => {
+                    self.edit_watches[ix].baseline = Some(mtime);
+                    client.upload(local, remote);
+                }
+                Some(EditUploadMode::Ask) => {
+                    self.edit_watches[ix].prompting = true;
+                    self.ask_edit_upload_dialog(remote, local, window, cx);
+                }
+                None => {
+                    self.edit_watches[ix].prompting = true;
+                    self.first_edit_upload_dialog(remote, local, window, cx);
+                }
+            }
+        }
+    }
+
+    fn resolve_edit_upload(&mut self, remote: &str, upload: bool, cx: &mut Context<Self>) {
+        let Some(watch) = self
+            .edit_watches
+            .iter_mut()
+            .find(|watch| watch.remote == remote)
+        else {
+            return;
+        };
+        watch.prompting = false;
+        watch.baseline = file_mtime(&watch.local);
+        if upload && let FileClient::Remote(client) = &self.client {
+            client.upload(watch.local.clone(), remote.to_string());
+        }
+        cx.notify();
+    }
+
+    fn first_edit_upload_dialog(
+        &self,
+        remote: String,
+        local: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let name = edited_label(&local, &remote);
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let view = view.clone();
+            let remote = remote.clone();
+
+            dialog
+                .w(px(440.))
+                .title("Upload edited file?")
+                .child(format!(
+                    "\"{name}\" has changed on your computer. Oxidal can send your edits back \
+                     to the server whenever you save. You can change this later in Settings."
+                ))
+                .on_close({
+                    let view = view.clone();
+                    let remote = remote.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |panel, cx| {
+                            panel.resolve_edit_upload(&remote, false, cx)
+                        });
+                    }
+                })
+                .footer(
+                    DialogFooter::new()
+                        .child(Button::new("edit-upload-ask").label("Ask each time").on_click({
+                            let view = view.clone();
+                            let remote = remote.clone();
+                            move |_, window, cx| {
+                                cx.global_mut::<AppSettings>().edit_upload =
+                                    Some(EditUploadMode::Ask);
+                                crate::settings::save_settings(cx.global::<AppSettings>());
+                                view.update(cx, |panel, cx| {
+                                    panel.resolve_edit_upload(&remote, true, cx)
+                                });
+                                window.close_dialog(cx);
+                            }
+                        }))
+                        .child(
+                            Button::new("edit-upload-auto")
+                                .primary()
+                                .label("Always upload")
+                                .on_click({
+                                    let view = view.clone();
+                                    let remote = remote.clone();
+                                    move |_, window, cx| {
+                                        cx.global_mut::<AppSettings>().edit_upload =
+                                            Some(EditUploadMode::Auto);
+                                        crate::settings::save_settings(cx.global::<AppSettings>());
+                                        view.update(cx, |panel, cx| {
+                                            panel.resolve_edit_upload(&remote, true, cx)
+                                        });
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
+    fn ask_edit_upload_dialog(
+        &self,
+        remote: String,
+        local: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let name = edited_label(&local, &remote);
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let view = view.clone();
+            let remote = remote.clone();
+
+            dialog
+                .w(px(420.))
+                .title("Upload changes?")
+                .child(format!(
+                    "\"{name}\" has changed on your computer. Upload it back to {}?",
+                    display_name(&remote)
+                ))
+                .on_ok({
+                    let view = view.clone();
+                    let remote = remote.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |panel, cx| {
+                            panel.resolve_edit_upload(&remote, true, cx)
+                        });
+                        true
+                    }
+                })
+                .on_close({
+                    let view = view.clone();
+                    let remote = remote.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |panel, cx| {
+                            panel.resolve_edit_upload(&remote, false, cx)
+                        });
+                    }
+                })
+                .footer(
+                    DialogFooter::new()
+                        .child(Button::new("edit-upload-skip").label("Skip").on_click({
+                            let view = view.clone();
+                            let remote = remote.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |panel, cx| {
+                                    panel.resolve_edit_upload(&remote, false, cx)
+                                });
+                                window.close_dialog(cx);
+                            }
+                        }))
+                        .child(Button::new("edit-upload-send").primary().label("Upload").on_click(
+                            {
+                                let view = view.clone();
+                                let remote = remote.clone();
+                                move |_, window, cx| {
+                                    view.update(cx, |panel, cx| {
+                                        panel.resolve_edit_upload(&remote, true, cx)
+                                    });
+                                    window.close_dialog(cx);
+                                }
+                            },
+                        )),
+                )
+        });
     }
 
     fn hide_column_hint_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -894,9 +1372,9 @@ impl SftpPanel {
             .when(!selected, |this| {
                 this.hover(|this| this.bg(cx.theme().accent))
             })
-            .on_click(cx.listener(move |panel, event: &ClickEvent, _, cx| {
+            .on_click(cx.listener(move |panel, event: &ClickEvent, window, cx| {
                 if event.click_count() >= 2 {
-                    panel.open_entry(&row_entry_click, cx);
+                    panel.open_entry(&row_entry_click, window, cx);
                 } else {
                     panel.selected = Some(row_entry_click.path.clone());
                     cx.emit(PanelEvent::SelectionChanged);
@@ -994,9 +1472,18 @@ fn entry_menu(
     window: &mut Window,
 ) -> PopupMenu {
     let mut menu = menu;
+    if !entry.is_dir && is_remote {
+        let edit_entry = entry.clone();
+        menu = menu.item(PopupMenuItem::new("Edit").on_click(
+            window.listener_for(view, move |panel, _, _, cx| {
+                panel.open_in_editor(&edit_entry, cx)
+            }),
+        ));
+    }
     if !entry.is_dir {
         let open_entry = entry.clone();
-        menu = menu.item(PopupMenuItem::new("Open").on_click(
+        let label = if is_remote { "Open in default app" } else { "Open" };
+        menu = menu.item(PopupMenuItem::new(label).on_click(
             window.listener_for(view, move |panel, _, _, cx| {
                 panel.open_file(&open_entry, cx)
             }),

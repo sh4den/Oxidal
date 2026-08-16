@@ -17,7 +17,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::settings::{self, AppSettings};
+use crate::settings::{self, AppSettings, EditUploadMode, RemoteOpenMode};
 use crate::terminal::grid::TerminalPalette;
 use crate::theme::{ColorSlot, GROUPS, ThemeSettings, all_slots};
 
@@ -235,6 +235,18 @@ impl SettingsView {
         cx.global_mut::<AppSettings>().show_column_hint = show;
         settings::save_settings(cx.global::<AppSettings>());
         cx.refresh_windows();
+    }
+
+    fn set_edit_upload(&self, mode: EditUploadMode, cx: &mut Context<Self>) {
+        cx.global_mut::<AppSettings>().edit_upload = Some(mode);
+        settings::save_settings(cx.global::<AppSettings>());
+        cx.notify();
+    }
+
+    fn set_remote_open(&self, mode: RemoteOpenMode, cx: &mut Context<Self>) {
+        cx.global_mut::<AppSettings>().remote_open = Some(mode);
+        settings::save_settings(cx.global::<AppSettings>());
+        cx.notify();
     }
 
     fn set_dark_mode(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -737,6 +749,52 @@ impl SettingsView {
             cx,
         );
 
+        let remote_open = cx.global::<AppSettings>().remote_open;
+        let open_toggle = h_flex().gap_1p5().children(
+            [
+                (
+                    "remote-open-editor",
+                    "Built-in editor",
+                    IconName::SquareTerminal,
+                    RemoteOpenMode::Editor,
+                ),
+                (
+                    "remote-open-default",
+                    "Default app",
+                    IconName::ExternalLink,
+                    RemoteOpenMode::DefaultApp,
+                ),
+                (
+                    "remote-open-ask",
+                    "Ask each time",
+                    IconName::Bell,
+                    RemoteOpenMode::Ask,
+                ),
+            ]
+            .map(|(id, label, icon, mode)| {
+                let selected = remote_open == Some(mode);
+                Button::new(id)
+                    .small()
+                    .icon(icon)
+                    .label(label)
+                    .when(selected, |b| b.primary())
+                    .when(!selected, |b| b.outline())
+                    .on_click(
+                        cx.listener(move |view, _, _, cx| view.set_remote_open(mode, cx)),
+                    )
+            }),
+        );
+
+        let edit_upload = cx.global::<AppSettings>().edit_upload;
+        let edit_upload_toggle = toggle_pair(
+            ("edit-upload-ask", "Ask each time", IconName::Bell),
+            ("edit-upload-auto", "Upload automatically", IconName::ArrowUp),
+            edit_upload != Some(EditUploadMode::Auto),
+            |view, _, cx| view.set_edit_upload(EditUploadMode::Ask, cx),
+            |view, _, cx| view.set_edit_upload(EditUploadMode::Auto, cx),
+            cx,
+        );
+
         v_flex()
             .gap_5()
             .child(field(
@@ -769,6 +827,25 @@ impl SettingsView {
                                     })),
                             ),
                     ),
+                muted,
+            ))
+            .child(field(
+                "Opening remote files",
+                Some(
+                    "How a double-clicked remote file opens. The built-in editor keeps the \
+                     file in Oxidal's memory; the default app writes a temporary copy to \
+                     this computer's disk.",
+                ),
+                open_toggle,
+                muted,
+            ))
+            .child(field(
+                "Edited remote files",
+                Some(
+                    "When a file opened from a remote server is saved on this computer, Oxidal \
+                     can upload the changes back automatically or ask first.",
+                ),
+                edit_upload_toggle,
                 muted,
             ))
             .child(field(

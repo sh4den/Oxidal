@@ -143,6 +143,7 @@ fn read_dir(path: &str) -> std::io::Result<Vec<SftpEntry>> {
             .cmp(&a.is_dir)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
+    entries.shrink_to_fit();
 
     Ok(entries)
 }

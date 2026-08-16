@@ -1,12 +1,14 @@
 [package]
 name = "Oxidal"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2024"
 
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", features = [
+    "tree-sitter-languages",
+] }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -45,7 +47,7 @@ opt-level = 3
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 debug = 0
 strip = "symbols"
