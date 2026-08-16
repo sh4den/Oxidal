@@ -1,4 +1,5 @@
 mod client;
+pub mod editor;
 mod local;
 mod panel;
 mod workspace;
@@ -48,6 +49,14 @@ enum SftpCommand {
         local: PathBuf,
         open_when_done: bool,
     },
+    Read {
+        remote: String,
+    },
+    Write {
+        remote: String,
+        bytes: Vec<u8>,
+        ack: async_channel::Sender<Option<String>>,
+    },
     UploadDir {
         local: PathBuf,
         remote: String,
@@ -81,6 +90,10 @@ enum SftpEvent {
     },
     TransferFinished {
         error: Option<String>,
+    },
+    FileLoaded {
+        remote: String,
+        result: Result<Vec<u8>, String>,
     },
     Closed(Option<String>),
 }
@@ -144,6 +157,28 @@ impl SftpClient {
             local,
             open_when_done: true,
         });
+    }
+
+    pub fn read_file(&self, remote: impl Into<String>) {
+        let _ = self
+            .commands
+            .send_blocking(SftpCommand::Read {
+                remote: remote.into(),
+            });
+    }
+
+    pub fn write_file(
+        &self,
+        remote: impl Into<String>,
+        bytes: Vec<u8>,
+    ) -> async_channel::Receiver<Option<String>> {
+        let (ack_tx, ack_rx) = async_channel::bounded(1);
+        let _ = self.commands.send_blocking(SftpCommand::Write {
+            remote: remote.into(),
+            bytes,
+            ack: ack_tx,
+        });
+        ack_rx
     }
 
     pub fn upload_dir(&self, local: PathBuf, remote: impl Into<String>) {
