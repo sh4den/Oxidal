@@ -119,6 +119,14 @@ async fn run(
                     send_error(&out_tx, format!("Couldn't open {}: {err}", local.display())).await;
                 }
             }
+            SftpCommand::Read { remote } => {
+                let result = do_read(&sftp, &remote, &out_tx).await;
+                let _ = out_tx.send(SftpEvent::FileLoaded { remote, result }).await;
+            }
+            SftpCommand::Write { remote, bytes, ack } => {
+                do_write(&sftp, &remote, &bytes, &ack, &out_tx).await;
+                list_and_send(&sftp, current_dir.clone(), &out_tx).await;
+            }
             SftpCommand::UploadDir { local, remote } => {
                 do_upload_dir(&sftp, &local, &remote, &out_tx).await;
                 list_and_send(&sftp, current_dir.clone(), &out_tx).await;
@@ -335,6 +343,99 @@ async fn do_download(
     let mut done = 0u64;
     let result = copy_down(sftp, remote, local, out_tx, &mut done).await;
     finish_transfer(out_tx, result).await
+}
+
+const MAX_READ: u64 = 10 * 1024 * 1024;
+
+async fn do_read(
+    sftp: &SftpSession,
+    remote: &str,
+    out_tx: &async_channel::Sender<SftpEvent>,
+) -> Result<Vec<u8>, String> {
+    let total = match sftp.metadata(remote).await {
+        Ok(metadata) => metadata.len(),
+        Err(err) => return Err(format!("Couldn't read {remote}: {err}")),
+    };
+    if total > MAX_READ {
+        return Err(format!(
+            "{remote} is {}, too large to open here",
+            super::format_size(total)
+        ));
+    }
+
+    let _ = out_tx
+        .send(SftpEvent::TransferStarted {
+            label: transfer_label(std::path::Path::new(remote), remote),
+            total: Some(total),
+        })
+        .await;
+
+    let result = async {
+        let mut file = sftp.open(remote).await?;
+        let mut buf = Vec::new();
+        let mut chunk = vec![0u8; CHUNK_SIZE];
+        loop {
+            let n = file.read(&mut chunk).await?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if buf.len() as u64 > MAX_READ {
+                anyhow::bail!("the file grew past the size limit while reading");
+            }
+            let _ = out_tx
+                .send(SftpEvent::TransferProgress {
+                    transferred: buf.len() as u64,
+                })
+                .await;
+        }
+        file.shutdown().await?;
+        anyhow::Ok(buf)
+    }
+    .await;
+
+    let _ = out_tx
+        .send(SftpEvent::TransferFinished { error: None })
+        .await;
+    result.map_err(|err| format!("Couldn't read {remote}: {err}"))
+}
+
+async fn do_write(
+    sftp: &SftpSession,
+    remote: &str,
+    bytes: &[u8],
+    ack: &async_channel::Sender<Option<String>>,
+    out_tx: &async_channel::Sender<SftpEvent>,
+) {
+    let _ = out_tx
+        .send(SftpEvent::TransferStarted {
+            label: transfer_label(std::path::Path::new(remote), remote),
+            total: Some(bytes.len() as u64),
+        })
+        .await;
+
+    let result = async {
+        let mut file = sftp.create(remote).await?;
+        let mut done = 0u64;
+        for chunk in bytes.chunks(CHUNK_SIZE) {
+            file.write_all(chunk).await?;
+            done += chunk.len() as u64;
+            let _ = out_tx
+                .send(SftpEvent::TransferProgress { transferred: done })
+                .await;
+        }
+        file.shutdown().await?;
+        anyhow::Ok(())
+    }
+    .await;
+
+    let error = result.err().map(|err| err.to_string());
+    let _ = out_tx
+        .send(SftpEvent::TransferFinished {
+            error: error.clone(),
+        })
+        .await;
+    let _ = ack.send(error).await;
 }
 
 struct PlannedFile<L, R> {

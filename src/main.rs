@@ -24,7 +24,7 @@ use gpui_component::{Root, Theme, ThemeMode, TitleBar};
 use crate::app::OxidalApp;
 use crate::terminal::view::{CopySelection, CutSelection, PasteClipboard, SendTab, SendTabPrev};
 
-const APP_ID: &str = "oxidal";
+pub const APP_ID: &str = "oxidal";
 
 fn main() {
     let application = gpui_platform::application().with_assets(crate::assets::Assets);
@@ -40,6 +40,11 @@ fn main() {
             KeyBinding::new("secondary-x", CutSelection, Some("Terminal")),
             KeyBinding::new("secondary-v", PasteClipboard, Some("Terminal")),
             KeyBinding::new("secondary-shift-v", PasteClipboard, Some("Terminal")),
+            KeyBinding::new(
+                "secondary-s",
+                crate::sftp::editor::SaveFile,
+                Some("EditorWindow"),
+            ),
         ]);
 
         let settings = settings::load_settings();

@@ -8,6 +8,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::ThemeSettings;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditUploadMode {
+    Auto,
+    Ask,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteOpenMode {
+    Editor,
+    DefaultApp,
+    Ask,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub font_family: String,
@@ -21,6 +36,10 @@ pub struct AppSettings {
     pub download_dir: Option<String>,
     #[serde(default = "default_show_column_hint")]
     pub show_column_hint: bool,
+    #[serde(default)]
+    pub edit_upload: Option<EditUploadMode>,
+    #[serde(default)]
+    pub remote_open: Option<RemoteOpenMode>,
     #[serde(default)]
     pub theme: ThemeSettings,
 }
@@ -58,6 +77,8 @@ impl Default for AppSettings {
             sidebar_width: default_sidebar_width(),
             download_dir: None,
             show_column_hint: default_show_column_hint(),
+            edit_upload: None,
+            remote_open: None,
             theme: ThemeSettings::default(),
         }
     }
@@ -265,6 +286,54 @@ mod tests {
             restored.resolved_download_dir(),
             PathBuf::from("/srv/incoming")
         );
+    }
+
+    #[test]
+    fn settings_saved_before_edited_file_uploads_leave_the_choice_unmade() {
+        let existing = r#"{
+            "font_family": "Menlo",
+            "font_size": 14.0,
+            "dark_mode": false
+        }"#;
+
+        let settings: AppSettings =
+            serde_json::from_str(existing).expect("a file from before the setting should load");
+        assert!(
+            settings.edit_upload.is_none(),
+            "no stored choice means the first save asks"
+        );
+
+        let settings = AppSettings {
+            edit_upload: Some(EditUploadMode::Auto),
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&settings).expect("serialize");
+        let restored: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.edit_upload, Some(EditUploadMode::Auto));
+    }
+
+    #[test]
+    fn the_open_mode_starts_unchosen_and_survives_a_round_trip() {
+        let existing = r#"{
+            "font_family": "Menlo",
+            "font_size": 14.0,
+            "dark_mode": false
+        }"#;
+
+        let settings: AppSettings =
+            serde_json::from_str(existing).expect("a file from before the setting should load");
+        assert!(
+            settings.remote_open.is_none(),
+            "no stored choice means the first double click asks"
+        );
+
+        let settings = AppSettings {
+            remote_open: Some(RemoteOpenMode::Editor),
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&settings).expect("serialize");
+        let restored: AppSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.remote_open, Some(RemoteOpenMode::Editor));
     }
 
     #[test]
