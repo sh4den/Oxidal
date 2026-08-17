@@ -4,6 +4,7 @@ use russh::{Channel, ChannelMsg};
 
 use super::backend::{Backend, BackendEvent};
 use super::stats::{self, RemoteStats};
+use crate::proxy::ProxyConfig;
 use crate::ssh_client::{self, SshCredentials};
 
 // Bounds how long the transport thread lingers waiting for the disconnect to flush.
@@ -13,6 +14,7 @@ pub fn spawn(
     host: String,
     port: u16,
     credentials: SshCredentials,
+    proxy: Option<ProxyConfig>,
     rows: u16,
     cols: u16,
     monitoring: bool,
@@ -38,6 +40,7 @@ pub fn spawn(
             host,
             port,
             credentials,
+            proxy,
             rows,
             cols,
             monitoring,
@@ -59,6 +62,7 @@ async fn run(
     host: String,
     port: u16,
     credentials: SshCredentials,
+    proxy: Option<ProxyConfig>,
     rows: u16,
     cols: u16,
     monitoring: bool,
@@ -67,7 +71,7 @@ async fn run(
     resize_rx: async_channel::Receiver<(u16, u16)>,
     stats_tx: async_channel::Sender<RemoteStats>,
 ) -> anyhow::Result<()> {
-    let session = ssh_client::connect(host, port, credentials).await?;
+    let session = ssh_client::connect(host, port, credentials, proxy).await?;
 
     let mut channel = session.channel_open_session().await?;
     channel

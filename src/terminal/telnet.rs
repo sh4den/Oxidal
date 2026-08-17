@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::net::TcpStream;
 
 use super::backend::{Backend, BackendEvent};
+use crate::proxy::ProxyConfig;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -28,7 +28,7 @@ const TERM_NAME: &[u8] = b"xterm-256color";
 
 const MAX_SUBNEG: usize = 512;
 
-pub fn spawn(host: String, port: u16, rows: u16, cols: u16) -> Backend {
+pub fn spawn(host: String, port: u16, proxy: Option<ProxyConfig>, rows: u16, cols: u16) -> Backend {
     let (out_tx, out_rx) = async_channel::unbounded::<BackendEvent>();
     let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
     let (resize_tx, resize_rx) = async_channel::unbounded::<(u16, u16)>();
@@ -48,6 +48,7 @@ pub fn spawn(host: String, port: u16, rows: u16, cols: u16) -> Backend {
         let result = runtime.block_on(run(
             host,
             port,
+            proxy,
             rows,
             cols,
             out_tx.clone(),
@@ -63,25 +64,16 @@ pub fn spawn(host: String, port: u16, rows: u16, cols: u16) -> Backend {
 async fn run(
     host: String,
     port: u16,
+    proxy: Option<ProxyConfig>,
     rows: u16,
     cols: u16,
     out_tx: async_channel::Sender<BackendEvent>,
     in_rx: async_channel::Receiver<Vec<u8>>,
     resize_rx: async_channel::Receiver<(u16, u16)>,
 ) -> anyhow::Result<()> {
-    let mut stream = match tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        TcpStream::connect((host.as_str(), port)),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(e)) => anyhow::bail!("Could not reach {host}:{port}: {e}"),
-        Err(_) => anyhow::bail!("Timed out connecting to {host}:{port}"),
-    };
-    let _ = stream.set_nodelay(true);
+    let stream = crate::proxy::open_stream(&host, port, proxy.as_ref(), CONNECT_TIMEOUT).await?;
 
-    let (mut reader, mut writer) = stream.split();
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let mut telnet = Telnet::new(rows, cols);
     writer.write_all(&telnet.initial_offers()).await?;
 
@@ -581,7 +573,7 @@ mod tests {
             (offers, replies)
         });
 
-        let backend = spawn(addr.ip().to_string(), addr.port(), 24, 80);
+        let backend = spawn(addr.ip().to_string(), addr.port(), None, 24, 80);
 
         let mut display = Vec::new();
         while !display.ends_with(b"login: ") {

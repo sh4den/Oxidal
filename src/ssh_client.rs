@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use russh::client;
 use secrecy::{ExposeSecret as _, SecretString};
-use tokio::net::TcpStream;
+
+use crate::proxy::ProxyConfig;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(150);
@@ -98,6 +99,7 @@ pub async fn connect(
     host: String,
     port: u16,
     credentials: SshCredentials,
+    proxy: Option<ProxyConfig>,
 ) -> anyhow::Result<client::Handle<Handler>> {
     let config = Arc::new(client::Config {
         inactivity_timeout: None,
@@ -113,16 +115,7 @@ pub async fn connect(
         rejection: rejection.clone(),
     };
 
-    let stream = match tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        TcpStream::connect((host.as_str(), port)),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(e)) => anyhow::bail!("Could not reach {host}:{port}: {e}"),
-        Err(_) => anyhow::bail!("Timed out connecting to {host}:{port}"),
-    };
+    let stream = crate::proxy::open_stream(&host, port, proxy.as_ref(), CONNECT_TIMEOUT).await?;
 
     let mut session = match tokio::time::timeout(
         HANDSHAKE_TIMEOUT,

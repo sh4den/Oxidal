@@ -4,6 +4,7 @@ mod app;
 mod assets;
 mod credentials;
 mod host_keys;
+mod proxy;
 mod session;
 mod session_dialog;
 mod settings;
