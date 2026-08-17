@@ -24,7 +24,10 @@ use serialport::SerialPortType;
 use uuid::Uuid;
 
 use crate::app::OxidalApp;
-use crate::session::{ItemColor, ItemIcon, Session, SessionFolder, SessionKind};
+use crate::proxy::ProxyConfig;
+use crate::session::{
+    ItemColor, ItemIcon, Session, SessionFolder, SessionKind, default_proxy_port,
+};
 use crate::ssh_client::SshCredentials;
 
 struct DialogMetrics {
@@ -525,6 +528,45 @@ fn open_session_dialog(
                 .to_string(),
         )
     });
+    let proxy_host = cx.new(|cx| {
+        InputState::new(window, cx)
+            .default_value(
+                existing
+                    .as_ref()
+                    .map(|s| s.proxy_host.clone())
+                    .unwrap_or_default(),
+            )
+            .placeholder("proxy.example.com")
+    });
+    let proxy_port = cx.new(|cx| {
+        InputState::new(window, cx).default_value(
+            existing
+                .as_ref()
+                .map(|s| s.proxy_port)
+                .unwrap_or_else(default_proxy_port)
+                .to_string(),
+        )
+    });
+    let proxy_username = cx.new(|cx| {
+        InputState::new(window, cx)
+            .default_value(
+                existing
+                    .as_ref()
+                    .map(|s| s.proxy_username.clone())
+                    .unwrap_or_default(),
+            )
+            .placeholder("username")
+    });
+    let proxy_password = cx.new(|cx| {
+        InputState::new(window, cx)
+            .default_value(
+                existing
+                    .as_ref()
+                    .map(|s| s.proxy_password.expose_secret().to_string())
+                    .unwrap_or_default(),
+            )
+            .masked(true)
+    });
 
     let existing_key = existing.as_ref().and_then(|s| s.private_key_path.clone());
     let key_choices = key_options(existing_key.as_deref());
@@ -577,6 +619,10 @@ fn open_session_dialog(
         let password = password.clone();
         let passphrase = passphrase.clone();
         let baud = baud.clone();
+        let proxy_host = proxy_host.clone();
+        let proxy_port = proxy_port.clone();
+        let proxy_username = proxy_username.clone();
+        let proxy_password = proxy_password.clone();
         let private_key = private_key.clone();
         let serial_port = serial_port.clone();
         let selected_folder = selected_folder.clone();
@@ -677,6 +723,50 @@ fn open_session_dialog(
                         .text_color(cx.theme().muted_foreground)
                         .child("Saved encrypted in your system credential store"),
                 )
+        };
+
+        let proxy_configured = !proxy_host.read(cx).value().trim().is_empty();
+        let proxy_fields = |cx: &App| {
+            v_flex()
+                .gap_3()
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child("SOCKS5 Proxy (optional)")
+                        .child(Input::new(&proxy_host))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Leave empty to connect directly"),
+                        ),
+                )
+                .when(proxy_configured, |this| {
+                    this.child(
+                        v_flex()
+                            .gap_1()
+                            .child("Proxy Port")
+                            .child(Input::new(&proxy_port)),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child("Proxy Username (optional)")
+                            .child(Input::new(&proxy_username)),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child("Proxy Password (optional)")
+                            .child(Input::new(&proxy_password))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Saved encrypted in your system credential store"),
+                            ),
+                    )
+                })
         };
 
         body = match kind {
@@ -800,12 +890,14 @@ fn open_session_dialog(
                             ),
                     )
                 })
+                .child(proxy_fields(cx))
                 .when(matches!(kind, SessionKind::Ssh), |this| {
                     this.child(monitoring_toggle(&monitoring, cx))
                 }),
             SessionKind::Telnet => body
                 .child(v_flex().gap_1().child("Host").child(Input::new(&host)))
                 .child(v_flex().gap_1().child("Port").child(Input::new(&port)))
+                .child(proxy_fields(cx))
                 .child(cleartext_warning(
                     "Telnet carries everything you type, passwords included, in the clear. Anyone \
                      between you and the host can read it.",
@@ -893,6 +985,10 @@ fn open_session_dialog(
             let private_key = private_key.clone();
             let serial_port = serial_port.clone();
             let baud = baud.clone();
+            let proxy_host = proxy_host.clone();
+            let proxy_port = proxy_port.clone();
+            let proxy_username = proxy_username.clone();
+            let proxy_password = proxy_password.clone();
             let test_status = test_status.clone();
             footer = footer.child(
                 Button::new("test-connection")
@@ -941,6 +1037,13 @@ fn open_session_dialog(
                             .filter(|v| !v.trim().is_empty());
                         let baud_value =
                             baud.read(cx).value().to_string().parse().unwrap_or(115_200);
+                        let proxy_value = proxy_config(
+                            kind,
+                            proxy_host.read(cx).value().trim(),
+                            proxy_port.read(cx).value().trim(),
+                            proxy_username.read(cx).value().trim(),
+                            &proxy_password.read(cx).value(),
+                        );
 
                         test_status.update(cx, |s, cx| {
                             s.0 = TestState::Testing;
@@ -956,6 +1059,7 @@ fn open_session_dialog(
                                 key_value,
                                 SecretString::from(passphrase.read(cx).value().to_string()),
                             ),
+                            proxy_value,
                             baud_value,
                         );
                         let test_status = test_status.clone();
@@ -984,6 +1088,10 @@ fn open_session_dialog(
             let password = password.clone();
             let passphrase = passphrase.clone();
             let baud = baud.clone();
+            let proxy_host = proxy_host.clone();
+            let proxy_port = proxy_port.clone();
+            let proxy_username = proxy_username.clone();
+            let proxy_password = proxy_password.clone();
             let private_key = private_key.clone();
             let serial_port = serial_port.clone();
             let selected_folder = selected_folder.clone();
@@ -1028,6 +1136,18 @@ fn open_session_dialog(
                     Some(_) => SecretString::from(passphrase.read(cx).value().to_string()),
                     None => SecretString::default(),
                 };
+                if let Some(proxy) = proxy_config(
+                    kind,
+                    proxy_host.read(cx).value().trim(),
+                    proxy_port.read(cx).value().trim(),
+                    proxy_username.read(cx).value().trim(),
+                    &proxy_password.read(cx).value(),
+                ) {
+                    session.proxy_host = proxy.host;
+                    session.proxy_port = proxy.port;
+                    session.proxy_username = proxy.username;
+                    session.proxy_password = proxy.password;
+                }
                 session.folder_id = selected_folder.read(cx).0;
                 session.icon = selected_icon.read(cx).0;
                 session.color = selected_color.read(cx).0;
@@ -1156,11 +1276,35 @@ fn port_options(extra: Option<&str>) -> Vec<PortOption> {
     options
 }
 
+fn proxy_config(
+    kind: SessionKind,
+    host: &str,
+    port: &str,
+    username: &str,
+    password: &str,
+) -> Option<ProxyConfig> {
+    if host.is_empty()
+        || !matches!(
+            kind,
+            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Telnet
+        )
+    {
+        return None;
+    }
+    Some(ProxyConfig {
+        host: host.to_string(),
+        port: port.parse().unwrap_or_else(|_| default_proxy_port()),
+        username: username.to_string(),
+        password: SecretString::from(password),
+    })
+}
+
 fn run_connection_test(
     kind: SessionKind,
     host: String,
     port: u16,
     credentials: SshCredentials,
+    proxy: Option<ProxyConfig>,
     baud_rate: u32,
 ) -> async_channel::Receiver<Result<String, String>> {
     let (tx, rx) = async_channel::bounded(1);
@@ -1172,12 +1316,32 @@ fn run_connection_test(
                 .open()
                 .map(|_| format!("Opened {host} at {baud_rate} baud"))
                 .map_err(|e| format!("Could not open {host}: {e}")),
-            SessionKind::Telnet | SessionKind::Rdp => tcp_check(&host, port),
-            SessionKind::Ssh | SessionKind::Sftp => ssh_check(host, port, credentials),
+            SessionKind::Telnet => stream_check(host, port, proxy),
+            SessionKind::Rdp => tcp_check(&host, port),
+            SessionKind::Ssh | SessionKind::Sftp => ssh_check(host, port, credentials, proxy),
         };
         let _ = tx.send_blocking(result);
     });
     rx
+}
+
+fn stream_check(host: String, port: u16, proxy: Option<ProxyConfig>) -> Result<String, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    runtime.block_on(async {
+        crate::proxy::open_stream(&host, port, proxy.as_ref(), Duration::from_secs(5))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(match proxy {
+            Some(proxy) => format!(
+                "{host}:{port} is reachable through {}:{}",
+                proxy.host, proxy.port
+            ),
+            None => format!("{host}:{port} is reachable"),
+        })
+    })
 }
 
 fn tcp_check(host: &str, port: u16) -> Result<String, String> {
@@ -1195,13 +1359,18 @@ fn tcp_check(host: &str, port: u16) -> Result<String, String> {
     Err(last_err)
 }
 
-fn ssh_check(host: String, port: u16, credentials: SshCredentials) -> Result<String, String> {
+fn ssh_check(
+    host: String,
+    port: u16,
+    credentials: SshCredentials,
+    proxy: Option<ProxyConfig>,
+) -> Result<String, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     runtime.block_on(async {
-        let connect = crate::ssh_client::connect(host.clone(), port, credentials);
+        let connect = crate::ssh_client::connect(host.clone(), port, credentials, proxy);
         match connect.await {
             Err(e) => Err(e.to_string()),
             Ok(handle) => {

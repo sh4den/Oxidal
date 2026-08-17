@@ -6,6 +6,7 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::FileType;
 
 use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote, safe_local_name};
+use crate::proxy::ProxyConfig;
 use crate::ssh_client::{self, SshCredentials};
 
 const CHUNK_SIZE: usize = 64 * 1024;
@@ -16,6 +17,7 @@ pub fn spawn(
     host: String,
     port: u16,
     credentials: SshCredentials,
+    proxy: Option<ProxyConfig>,
     initial_path: String,
 ) -> SftpClient {
     let (out_tx, out_rx) = async_channel::unbounded::<SftpEvent>();
@@ -37,6 +39,7 @@ pub fn spawn(
             host,
             port,
             credentials,
+            proxy,
             initial_path,
             out_tx.clone(),
             cmd_rx,
@@ -54,11 +57,12 @@ async fn run(
     host: String,
     port: u16,
     credentials: SshCredentials,
+    proxy: Option<ProxyConfig>,
     initial_path: String,
     out_tx: async_channel::Sender<SftpEvent>,
     cmd_rx: async_channel::Receiver<SftpCommand>,
 ) -> anyhow::Result<()> {
-    let session = ssh_client::connect(host, port, credentials).await?;
+    let session = ssh_client::connect(host, port, credentials, proxy).await?;
 
     let channel = session.channel_open_session().await?;
     channel.request_subsystem(true, "sftp").await?;

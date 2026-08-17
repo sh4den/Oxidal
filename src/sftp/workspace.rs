@@ -27,6 +27,7 @@ impl SftpWorkspace {
         host: String,
         port: u16,
         credentials: crate::ssh_client::SshCredentials,
+        proxy: Option<crate::proxy::ProxyConfig>,
         show_hidden: bool,
         on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + Clone + 'static,
         window: &mut Window,
@@ -38,7 +39,7 @@ impl SftpWorkspace {
             SharedString::from(format!("{}@{host}:{port}", credentials.username))
         };
 
-        let client = super::spawn(host, port, credentials, ".".to_string());
+        let client = super::spawn(host, port, credentials, proxy, ".".to_string());
 
         let remote = cx.new({
             let client = client.clone();

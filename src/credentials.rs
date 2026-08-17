@@ -13,6 +13,10 @@ fn passphrase_entry(id: Uuid) -> Option<Entry> {
     Entry::new(SERVICE, &format!("{id}:key-passphrase")).ok()
 }
 
+fn proxy_entry(id: Uuid) -> Option<Entry> {
+    Entry::new(SERVICE, &format!("{id}:proxy-password")).ok()
+}
+
 fn store(entry: Option<Entry>, secret: &SecretString) {
     let Some(entry) = entry else { return };
     let secret = secret.expose_secret();
@@ -46,8 +50,19 @@ pub fn load_key_passphrase(id: Uuid) -> Option<SecretString> {
     load(passphrase_entry(id))
 }
 
+pub fn store_proxy_password(id: Uuid, password: &SecretString) {
+    store(proxy_entry(id), password);
+}
+
+pub fn load_proxy_password(id: Uuid) -> Option<SecretString> {
+    load(proxy_entry(id))
+}
+
 pub fn delete_password(id: Uuid) {
-    for entry in [entry(id), passphrase_entry(id)].into_iter().flatten() {
+    for entry in [entry(id), passphrase_entry(id), proxy_entry(id)]
+        .into_iter()
+        .flatten()
+    {
         let _ = entry.delete_credential();
     }
 }

@@ -205,6 +205,7 @@ impl OxidalApp {
     pub fn add_session(&mut self, new_session: Session, cx: &mut Context<Self>) {
         crate::credentials::store_password(new_session.id, &new_session.password);
         crate::credentials::store_key_passphrase(new_session.id, &new_session.key_passphrase);
+        crate::credentials::store_proxy_password(new_session.id, &new_session.proxy_password);
         self.sessions.push(new_session);
         session::save_sessions(&self.sessions);
         cx.notify();
@@ -216,6 +217,7 @@ impl OxidalApp {
             updated.show_hidden_files = existing.show_hidden_files;
             crate::credentials::store_password(updated.id, &updated.password);
             crate::credentials::store_key_passphrase(updated.id, &updated.key_passphrase);
+            crate::credentials::store_proxy_password(updated.id, &updated.proxy_password);
             *existing = updated;
             session::save_sessions(&self.sessions);
             cx.notify();
@@ -325,6 +327,7 @@ impl OxidalApp {
                     target.host.clone(),
                     target.port,
                     target.credentials(),
+                    target.proxy(),
                     TERM_ROWS as u16,
                     TERM_COLS as u16,
                     target.monitoring,
@@ -337,6 +340,7 @@ impl OxidalApp {
                         target.host.clone(),
                         target.port,
                         target.credentials(),
+                        target.proxy(),
                         target.show_hidden_files,
                         move |value, cx| {
                             let _ = weak_app
@@ -352,6 +356,7 @@ impl OxidalApp {
                 let backend = terminal::telnet::spawn(
                     target.host.clone(),
                     target.port,
+                    target.proxy(),
                     TERM_ROWS as u16,
                     TERM_COLS as u16,
                 );
@@ -376,6 +381,7 @@ impl OxidalApp {
                         target.host.clone(),
                         target.port,
                         target.credentials(),
+                        target.proxy(),
                         target.show_hidden_files,
                         move |value, cx| {
                             let _ = weak_app
