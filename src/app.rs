@@ -7,7 +7,8 @@ use crate::terminal::{self, TerminalView};
 use gpui::{
     AppContext as _, Context, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowHandle, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use gpui_component::button::Button;
@@ -24,7 +25,7 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -112,6 +113,7 @@ pub struct OxidalApp {
     sidebar_collapsed: bool,
     sidebar_state: Entity<ResizableState>,
     update_state: UpdateState,
+    session_windows: HashMap<Option<Uuid>, WindowHandle<Root>>,
 }
 
 impl OxidalApp {
@@ -152,6 +154,26 @@ impl OxidalApp {
             sidebar_collapsed: false,
             sidebar_state: cx.new(|_| ResizableState::default()),
             update_state: UpdateState::Idle,
+            session_windows: HashMap::new(),
+        }
+    }
+
+    pub fn folders(&self) -> &[SessionFolder] {
+        &self.folders
+    }
+
+    fn open_session_window(&mut self, existing: Option<Session>, cx: &mut Context<Self>) {
+        let key = existing.as_ref().map(|s| s.id);
+        if let Some(&handle) = self.session_windows.get(&key)
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            return;
+        }
+        let weak_app = cx.entity().downgrade();
+        if let Some(handle) = session_dialog::open_session_window(existing, weak_app, cx) {
+            self.session_windows.insert(key, handle);
         }
     }
 
@@ -233,6 +255,9 @@ impl OxidalApp {
 
     fn delete_session(&mut self, id: Uuid, cx: &mut Context<Self>) {
         crate::credentials::delete_password(id);
+        if let Some(handle) = self.session_windows.remove(&Some(id)) {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
         self.sessions.retain(|s| s.id != id);
         session::save_sessions(&self.sessions);
         if self.selected_session == Some(id) {
@@ -581,17 +606,13 @@ impl OxidalApp {
                             .xsmall()
                             .icon(IconName::Settings2)
                             .tooltip("Edit")
-                            .on_click(cx.listener(move |view, _, window, cx| {
+                            .on_click(cx.listener(move |view, _, _window, cx| {
                                 let Some(session) =
                                     view.sessions.iter().find(|s| s.id == id).cloned()
                                 else {
                                     return;
                                 };
-                                let folders = view.folders.clone();
-                                let weak_app = cx.weak_entity();
-                                session_dialog::open_edit_session_dialog(
-                                    session, folders, weak_app, window, cx,
-                                );
+                                view.open_session_window(Some(session), cx);
                             })),
                     )
                     .child(
@@ -941,11 +962,8 @@ impl OxidalApp {
                                     .xsmall()
                                     .icon(IconName::Plus)
                                     .tooltip("New Session")
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        let folders = view.folders.clone();
-                                        session_dialog::open_new_session_dialog(
-                                            folders, window, cx,
-                                        );
+                                    .on_click(cx.listener(|view, _, _window, cx| {
+                                        view.open_session_window(None, cx);
                                     })),
                             ),
                     ),
