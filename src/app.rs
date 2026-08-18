@@ -123,6 +123,7 @@ impl OxidalApp {
             let requests = crate::host_keys::requests();
             while let Ok(request) = requests.recv().await {
                 let opened = cx.update_window(window_handle, |_, window, cx| {
+                    window.activate_window();
                     crate::host_keys::open_prompt(request, window, cx);
                 });
                 if opened.is_err() {
