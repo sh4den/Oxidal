@@ -1,8 +1,8 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{App, Hsla, IntoElement, ParentElement as _, Styled as _, Window, div, px};
 use gpui_component::{
@@ -14,6 +14,7 @@ use gpui_component::{
 use russh::keys::ssh_key::{HashAlg, PublicKey};
 
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
+const REJECTION_TTL: Duration = Duration::from_secs(8);
 
 pub struct HostKeyRequest {
     host: String,
@@ -37,7 +38,7 @@ type Prompts = (
 
 static PROMPTS: OnceLock<Prompts> = OnceLock::new();
 static PROMPT_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-static REJECTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static REJECTIONS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
 fn prompts() -> &'static Prompts {
     PROMPTS.get_or_init(async_channel::unbounded)
@@ -55,12 +56,17 @@ fn was_rejected(id: &str) -> bool {
     REJECTIONS
         .get_or_init(Default::default)
         .lock()
-        .is_ok_and(|rejected| rejected.contains(id))
+        .is_ok_and(|rejected| {
+            rejected
+                .get(id)
+                .is_some_and(|at| at.elapsed() < REJECTION_TTL)
+        })
 }
 
 fn remember_rejection(id: String) {
     if let Ok(mut rejected) = REJECTIONS.get_or_init(Default::default).lock() {
-        rejected.insert(id);
+        rejected.retain(|_, at| at.elapsed() < REJECTION_TTL);
+        rejected.insert(id, Instant::now());
     }
 }
 
@@ -354,11 +360,17 @@ mod tests {
         let dropbear = key(SECOND_KEY);
 
         assert!(
-            matches!(assess("vault.test", 22, &sshd, &path), Ok(KeyStatus::Trusted)),
+            matches!(
+                assess("vault.test", 22, &sshd, &path),
+                Ok(KeyStatus::Trusted)
+            ),
             "the recorded key must connect without a prompt"
         );
         assert!(
-            matches!(assess("other.test", 22, &sshd, &path), Ok(KeyStatus::Unknown)),
+            matches!(
+                assess("other.test", 22, &sshd, &path),
+                Ok(KeyStatus::Unknown)
+            ),
             "a host with no entries is unknown, not conflicting"
         );
         match assess("vault.test", 22, &dropbear, &path) {
@@ -380,7 +392,10 @@ mod tests {
             "once accepted, the second identity connects without a prompt"
         );
         assert!(
-            matches!(assess("vault.test", 22, &sshd, &path), Ok(KeyStatus::Trusted)),
+            matches!(
+                assess("vault.test", 22, &sshd, &path),
+                Ok(KeyStatus::Trusted)
+            ),
             "accepting the second identity must not evict the first"
         );
 

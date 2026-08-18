@@ -275,6 +275,14 @@ pub struct Session {
     #[serde(default)]
     pub private_key_path: Option<String>,
     #[serde(default)]
+    pub proxy_host: String,
+    #[serde(default = "default_proxy_port")]
+    pub proxy_port: u16,
+    #[serde(default)]
+    pub proxy_username: String,
+    #[serde(skip)]
+    pub proxy_password: SecretString,
+    #[serde(default)]
     pub folder_id: Option<Uuid>,
     #[serde(default)]
     pub show_hidden_files: bool,
@@ -322,6 +330,10 @@ fn default_baud_rate() -> u32 {
     115_200
 }
 
+pub fn default_proxy_port() -> u16 {
+    1080
+}
+
 impl Session {
     pub fn new(name: impl Into<String>, kind: SessionKind) -> Self {
         Self {
@@ -335,6 +347,10 @@ impl Session {
             key_passphrase: SecretString::default(),
             baud_rate: default_baud_rate(),
             private_key_path: None,
+            proxy_host: String::new(),
+            proxy_port: default_proxy_port(),
+            proxy_username: String::new(),
+            proxy_password: SecretString::default(),
             folder_id: None,
             show_hidden_files: false,
             monitoring: default_monitoring(),
@@ -357,6 +373,16 @@ impl Session {
             self.private_key_path.clone(),
             self.key_passphrase.clone(),
         )
+    }
+
+    pub fn proxy(&self) -> Option<crate::proxy::ProxyConfig> {
+        let host = self.proxy_host.trim();
+        (!host.is_empty()).then(|| crate::proxy::ProxyConfig {
+            host: host.to_string(),
+            port: self.proxy_port,
+            username: self.proxy_username.trim().to_string(),
+            password: self.proxy_password.clone(),
+        })
     }
 
     pub fn detail(&self) -> String {
@@ -414,6 +440,9 @@ pub fn load_sessions() -> Vec<Session> {
         }
         if let Some(passphrase) = crate::credentials::load_key_passphrase(session.id) {
             session.key_passphrase = passphrase;
+        }
+        if let Some(password) = crate::credentials::load_proxy_password(session.id) {
+            session.proxy_password = password;
         }
     }
     sessions

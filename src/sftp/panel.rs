@@ -226,12 +226,13 @@ impl SftpPanel {
         host: String,
         port: u16,
         credentials: crate::ssh_client::SshCredentials,
+        proxy: Option<crate::proxy::ProxyConfig>,
         show_hidden: bool,
         on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let client = super::spawn(host, port, credentials, ".".to_string());
+        let client = super::spawn(host, port, credentials, proxy, ".".to_string());
         Self::from_client(
             FileClient::Remote(client),
             show_hidden,
