@@ -1,0 +1,58 @@
+name: 💡 Feature request
+description: Suggest something Oxidal should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Oxidal is early software with a deliberately narrow scope: every session kind in one window, native, on all three platforms. Suggestions that fit that shape are the easiest to act on.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before requesting
+      options:
+        - label: I searched the existing issues and this hasn't been suggested yet
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Sessions and the sidebar
+        - SSH
+        - SFTP and file transfer
+        - Telnet
+        - Serial
+        - Local shell
+        - Terminal emulation
+        - Monitoring
+        - UI, themes and settings
+        - Packaging and installers
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem?
+      description: What are you trying to do that Oxidal makes awkward or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+      description: Describe the behaviour you have in mind. If another tool already does this well, naming it is useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+    validations:
+      required: false
