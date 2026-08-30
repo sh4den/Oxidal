@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::LazyLock;
 
 use gpui::{Hsla, hsla};
 use vte::{Params, Perform};
@@ -647,19 +648,29 @@ fn resized_cells(
     rows.into_boxed_slice()
 }
 
+static CUBE_AND_GREYS: LazyLock<[Hsla; 240]> = LazyLock::new(|| {
+    let mut table = [hsla(0., 0., 0., 1.); 240];
+    for (offset, slot) in table.iter_mut().enumerate() {
+        let code = offset as u16 + 16;
+        *slot = if code < 232 {
+            let c = code - 16;
+            let r = c / 36;
+            let g = (c % 36) / 6;
+            let b = c % 6;
+            rgb_to_hsla(r as f32 / 5., g as f32 / 5., b as f32 / 5.)
+        } else {
+            let level = (code - 232) as f32 / 23.;
+            rgb_to_hsla(level, level, level)
+        };
+    }
+    table
+});
+
 fn palette_256(code: u16, palette: &TerminalPalette) -> Hsla {
     if code < 16 {
         return palette.ansi[code as usize];
     }
-    if code < 232 {
-        let c = code - 16;
-        let r = c / 36;
-        let g = (c % 36) / 6;
-        let b = c % 6;
-        return rgb_to_hsla(r as f32 / 5., g as f32 / 5., b as f32 / 5.);
-    }
-    let level = (code - 232) as f32 / 23.;
-    rgb_to_hsla(level, level, level)
+    CUBE_AND_GREYS[(code as usize - 16).min(239)]
 }
 
 fn rgb_to_hsla(r: f32, g: f32, b: f32) -> Hsla {
