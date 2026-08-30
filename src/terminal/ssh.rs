@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use russh::{Channel, ChannelMsg};
 
-use super::backend::{Backend, BackendEvent};
+use super::backend::{Backend, BackendEvent, EVENT_CAPACITY};
 use super::stats::{self, RemoteStats};
 use crate::proxy::ProxyConfig;
 use crate::ssh_client::{self, SshCredentials};
@@ -19,7 +19,7 @@ pub fn spawn(
     cols: u16,
     monitoring: bool,
 ) -> (Backend, Option<async_channel::Receiver<RemoteStats>>) {
-    let (out_tx, out_rx) = async_channel::unbounded::<BackendEvent>();
+    let (out_tx, out_rx) = async_channel::bounded::<BackendEvent>(EVENT_CAPACITY);
     let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
     let (resize_tx, resize_rx) = async_channel::unbounded::<(u16, u16)>();
     let (stats_tx, stats_rx) = async_channel::unbounded::<RemoteStats>();
