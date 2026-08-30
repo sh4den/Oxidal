@@ -116,6 +116,12 @@ impl Cell {
     pub fn dim(self) -> bool {
         self.ch_flags & FLAG_DIM != 0
     }
+
+    fn is_blank(self) -> bool {
+        self.ch_flags == ' ' as u32
+            && matches!(self.fg, Color::Default)
+            && matches!(self.bg, Color::Default)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -285,8 +291,8 @@ impl Grid {
             }
             .filter(|recycled| recycled.len() == cols)
             .unwrap_or_else(|| vec![Cell::BLANK; cols].into_boxed_slice());
-            self.scrollback
-                .push_back(std::mem::replace(row, replacement));
+            let line = std::mem::replace(row, replacement);
+            self.scrollback.push_back(trim_trailing_blanks(line));
         }
     }
 
@@ -627,6 +633,19 @@ impl Grid {
         self.cursor_row = self.cursor_row.min(self.rows - 1);
         self.cursor_col = self.cursor_col.min(self.cols.saturating_sub(1));
     }
+}
+
+fn trim_trailing_blanks(line: Box<[Cell]>) -> Box<[Cell]> {
+    let used = line
+        .iter()
+        .rposition(|cell| !cell.is_blank())
+        .map_or(0, |last| last + 1);
+    if used == line.len() {
+        return line;
+    }
+    let mut line = line.into_vec();
+    line.truncate(used);
+    line.into_boxed_slice()
 }
 
 fn resized_cells(
