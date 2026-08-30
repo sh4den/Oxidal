@@ -357,9 +357,14 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = cx.global::<AppSettings>().clone();
-        let font_family = SharedString::from(settings.font_family.clone());
-        let font_size = settings.font_size.clamp(8.0, 32.0);
+        let (font_family, font_size, opacity) = {
+            let settings = cx.global::<AppSettings>();
+            (
+                SharedString::from(settings.font_family.clone()),
+                settings.font_size.clamp(8.0, 32.0),
+                settings.opacity.clamp(0.3, 1.0),
+            )
+        };
         let line_height = font_size * 1.43;
         let closed_message = self.closed_message.clone();
 
@@ -369,13 +374,10 @@ impl Render for TerminalView {
         self.scroll_offset = self.scroll_offset.min(self.grid.scrollback_len());
         let scroll_offset = self.scroll_offset;
 
-        let surface_opacity = {
-            let opacity = settings.opacity.clamp(0.3, 1.0);
-            if opacity < 1.0 && cx.theme().mode.is_dark() {
-                0.
-            } else {
-                opacity
-            }
+        let surface_opacity = if opacity < 1.0 && cx.theme().mode.is_dark() {
+            0.
+        } else {
+            opacity
         };
         let (surface, surface_foreground) = {
             let palette = cx.global::<TerminalPalette>();
