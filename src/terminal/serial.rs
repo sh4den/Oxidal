@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use super::backend::{Backend, BackendEvent};
+use super::backend::{Backend, BackendEvent, EVENT_CAPACITY};
 
 pub fn spawn(port_name: String, baud_rate: u32) -> anyhow::Result<Backend> {
     let mut writer = serialport::new(&port_name, baud_rate)
@@ -11,7 +11,7 @@ pub fn spawn(port_name: String, baud_rate: u32) -> anyhow::Result<Backend> {
         .open()?;
     let mut reader = writer.try_clone()?;
 
-    let (out_tx, out_rx) = async_channel::unbounded::<BackendEvent>();
+    let (out_tx, out_rx) = async_channel::bounded::<BackendEvent>(EVENT_CAPACITY);
     let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
 
     // The port stays open until both handles are dropped, and a quiet port only

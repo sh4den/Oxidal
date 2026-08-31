@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use super::backend::{Backend, BackendEvent};
+use super::backend::{Backend, BackendEvent, EVENT_CAPACITY};
 use crate::proxy::ProxyConfig;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,7 +29,7 @@ const TERM_NAME: &[u8] = b"xterm-256color";
 const MAX_SUBNEG: usize = 512;
 
 pub fn spawn(host: String, port: u16, proxy: Option<ProxyConfig>, rows: u16, cols: u16) -> Backend {
-    let (out_tx, out_rx) = async_channel::unbounded::<BackendEvent>();
+    let (out_tx, out_rx) = async_channel::bounded::<BackendEvent>(EVENT_CAPACITY);
     let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
     let (resize_tx, resize_rx) = async_channel::unbounded::<(u16, u16)>();
 

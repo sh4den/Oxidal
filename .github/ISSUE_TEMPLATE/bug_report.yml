@@ -1,0 +1,127 @@
+name: 🐛 Bug report
+description: Something in Oxidal behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        Terminal emulation has a long tail of edge cases, so the details below are what make a bug fixable. If you hit a rendering problem, the escape sequences and the remote program that produced them are the single most useful thing you can include.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before reporting
+      options:
+        - label: I searched the existing issues and this hasn't been reported yet
+          required: true
+        - label: I'm on the latest release, or I've checked the problem still exists there
+          required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Oxidal version
+      description: The release you're running, or the commit hash if you built from source.
+      placeholder: v0.5.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows (x86_64)
+        - Windows (arm64)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (amd64)
+        - Linux (arm64)
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      description: On Linux, the distribution and whether you're on X11 or Wayland is worth adding.
+      placeholder: Windows 11 24H2 / macOS 15.2 / Fedora 41, Wayland
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Windows installer (.exe)
+        - macOS disk image (.dmg)
+        - Debian/Ubuntu package (.deb)
+        - Portable build (.zip / .tar.gz)
+        - Built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: session-kind
+    attributes:
+      label: Session kind
+      description: RDP is listed for completeness, but it has no backend yet and is expected to tell you so.
+      options:
+        - SSH
+        - SFTP
+        - Telnet
+        - Serial
+        - Local
+        - RDP
+        - Not specific to one session kind
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open an SSH session to ...
+        2. Run ...
+        3. Resize the pane
+        4. The last line is duplicated
+    validations:
+      required: true
+
+  - type: textarea
+    id: terminal-details
+    attributes:
+      label: Terminal details
+      description: |
+        For rendering, scrolling or key handling bugs. Which remote program was on screen (vim, htop, less, tmux), the `TERM` value, and the escape sequences if you can capture them, for example with `script` or by piping through `cat -v`.
+    validations:
+      required: false
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Console output
+      description: If Oxidal crashed or you launched it from a terminal, paste anything it printed, including panic messages. Redact hostnames and usernames as you see fit.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots or a short recording help a lot for UI bugs. Please don't attach `sessions.json` without stripping hostnames first.
+    validations:
+      required: false
