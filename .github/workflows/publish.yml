@@ -180,7 +180,16 @@ jobs:
           TAG="v${{ needs.version.outputs.version }}"
           REPO_URL="https://github.com/${{ github.repository }}"
 
-          PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -n 1)
+          PREV_TAG=""
+          for CANDIDATE in $(git tag --list 'v*' --sort=-v:refname); do
+            [ "$CANDIDATE" = "$TAG" ] && continue
+            if git merge-base --is-ancestor "$CANDIDATE^{commit}" HEAD 2>/dev/null; then
+              PREV_TAG="$CANDIDATE"
+              break
+            fi
+            echo "::warning::$CANDIDATE is not an ancestor of HEAD, skipping it as the release base"
+          done
+
           if [ -n "$PREV_TAG" ]; then
             RANGE="$PREV_TAG..HEAD"
           else
