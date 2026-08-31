@@ -3,7 +3,9 @@ use std::sync::Mutex;
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-use super::backend::{Backend, BackendEvent};
+use super::backend::{Backend, BackendEvent, EVENT_CAPACITY};
+
+const READ_BUF: usize = 64 * 1024;
 
 fn default_shell() -> String {
     if cfg!(windows) {
@@ -37,14 +39,14 @@ pub fn spawn(rows: u16, cols: u16) -> anyhow::Result<Backend> {
     let master = Mutex::new(pair.master);
     let writer = Mutex::new(writer);
 
-    let (out_tx, out_rx) = async_channel::unbounded::<BackendEvent>();
+    let (out_tx, out_rx) = async_channel::bounded::<BackendEvent>(EVENT_CAPACITY);
     let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
     let (resize_tx, resize_rx) = async_channel::unbounded::<(u16, u16)>();
 
     {
         let out_tx = out_tx.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
+            let mut buf = vec![0u8; READ_BUF];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => {
