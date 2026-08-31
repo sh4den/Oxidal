@@ -1,8 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: 🔐 Report a security vulnerability
-    url: https://github.com/sh4den/Oxidal/security/advisories/new
-    about: Please report vulnerabilities privately rather than opening a public issue.
-  - name: 📖 Contributing guide
-    url: https://github.com/sh4den/Oxidal/blob/main/CONTRIBUTING.md
-    about: Build instructions, branching and the commit message convention.

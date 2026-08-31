@@ -21,19 +21,9 @@ impl client::Handler for Handler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::PublicKeyOrCertificate,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        let checked = match server_public_key {
-            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => {
-                crate::host_keys::verify(&self.host, self.port, key).await
-            }
-            russh::keys::PublicKeyOrCertificate::Certificate(_) => Err(format!(
-                "{} offered a host certificate, which Oxidal cannot verify",
-                self.host
-            )),
-        };
-
-        match checked {
+        match crate::host_keys::verify(&self.host, self.port, server_public_key).await {
             Ok(()) => Ok(true),
             Err(message) => {
                 if let Ok(mut rejection) = self.rejection.lock() {

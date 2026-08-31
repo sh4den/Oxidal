@@ -5,7 +5,7 @@ use gpui::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, Div, FocusHandle, Font, FontWeight,
     Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement as _, Pixels, Point, Render,
-    ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, Task, TextAlign,
+    ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, TextAlign,
     TextRun, UnderlineStyle, Window, actions, canvas, div, fill, hsla, point,
     prelude::FluentBuilder as _, px, relative, size,
 };
@@ -17,11 +17,6 @@ use super::stats::{DiskInfo, RemoteStats};
 use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
-const AUTOSCROLL_TICK: Duration = Duration::from_millis(16);
-const AUTOSCROLL_MIN: f32 = 8.;
-const AUTOSCROLL_MAX: f32 = 400.;
-const AUTOSCROLL_RANGE: f32 = 8.;
-const AUTOSCROLL_POWER: f32 = 2.;
 
 const CLIPBOARD_SHARES_CONTROL_KEY: bool = !cfg!(target_os = "macos");
 
@@ -96,8 +91,7 @@ pub struct TerminalView {
     cpu_history: VecDeque<f32>,
     selection: Option<Selection>,
     layout: Option<(Bounds<Pixels>, Pixels, Pixels)>,
-    scroll_offset: f32,
-    drag_task: Option<Task<()>>,
+    scroll_offset: usize,
 }
 
 impl TerminalView {
@@ -138,10 +132,10 @@ impl TerminalView {
                                 if !replies.is_empty() {
                                     view.backend.write_input(&replies);
                                 }
-                                if view.scroll_offset > 0. {
+                                if view.scroll_offset > 0 {
                                     let pushed = view.grid.screen_top_line() - top_before;
-                                    view.scroll_offset = (view.scroll_offset + pushed as f32)
-                                        .min(view.grid.scrollback_len() as f32);
+                                    view.scroll_offset = (view.scroll_offset + pushed)
+                                        .min(view.grid.scrollback_len());
                                 }
                                 cx.notify();
                             })
@@ -210,8 +204,7 @@ impl TerminalView {
             cpu_history: VecDeque::new(),
             selection: None,
             layout: None,
-            scroll_offset: 0.,
-            drag_task: None,
+            scroll_offset: 0,
         }
     }
 
@@ -220,88 +213,32 @@ impl TerminalView {
             let page = self.grid.rows.max(1);
             match event.keystroke.key.as_str() {
                 "pageup" => {
-                    self.scroll_by(page as f32);
+                    self.scroll_lines(page as isize);
                     return;
                 }
                 "pagedown" => {
-                    self.scroll_by(-(page as f32));
+                    self.scroll_lines(-(page as isize));
                     return;
                 }
                 _ => {}
             }
         }
         if let Some(bytes) = translate_key(event, self.grid.application_cursor_keys) {
-            self.scroll_offset = 0.;
+            self.scroll_offset = 0;
             self.selection = None;
             self.backend.write_input(&bytes);
         }
     }
 
-    fn scroll_by(&mut self, lines: f32) {
-        let max = self.grid.scrollback_len() as f32;
-        self.scroll_offset = (self.scroll_offset + lines).clamp(0., max);
+    fn scroll_lines(&mut self, delta: isize) {
+        self.scroll_offset = self
+            .scroll_offset
+            .saturating_add_signed(delta)
+            .min(self.grid.scrollback_len());
     }
 
-    fn top_line(&self) -> f64 {
-        self.grid.screen_top_line() as f64 - self.scroll_offset as f64
-    }
-
-    fn autoscroll_speed(&self, position: Point<Pixels>) -> f32 {
-        let Some((bounds, _, line_height)) = self.layout else {
-            return 0.;
-        };
-        if line_height <= px(0.) {
-            return 0.;
-        }
-        let over = if position.y < bounds.origin.y {
-            (bounds.origin.y - position.y) / line_height
-        } else if position.y > bounds.bottom() {
-            -((position.y - bounds.bottom()) / line_height)
-        } else {
-            return 0.;
-        };
-        let ratio = (over.abs() / AUTOSCROLL_RANGE).clamp(0., 1.);
-        let speed =
-            AUTOSCROLL_MIN + (AUTOSCROLL_MAX - AUTOSCROLL_MIN) * ratio.powf(AUTOSCROLL_POWER);
-        if over > 0. { speed } else { -speed }
-    }
-
-    fn drag_scroll_tick(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
-        if !self.selection.is_some_and(|selection| selection.dragging) {
-            return false;
-        }
-        let position = window.mouse_position();
-        let speed = self.autoscroll_speed(position);
-        let before = self.scroll_offset;
-        if speed != 0. {
-            self.scroll_by(speed * AUTOSCROLL_TICK.as_secs_f32());
-        }
-        let mut changed = self.scroll_offset != before;
-        if let Some(cell) = self.cell_at(position, true)
-            && let Some(selection) = self.selection.as_mut()
-            && selection.head != cell
-        {
-            selection.head = cell;
-            changed = true;
-        }
-        if changed {
-            cx.notify();
-        }
-        true
-    }
-
-    fn start_drag_scroll(&mut self, window: &Window, cx: &mut Context<Self>) {
-        self.drag_task = Some(cx.spawn_in(window, async move |this, cx| {
-            loop {
-                cx.background_executor().timer(AUTOSCROLL_TICK).await;
-                let running = this
-                    .update_in(cx, |view, window, cx| view.drag_scroll_tick(window, cx))
-                    .unwrap_or(false);
-                if !running {
-                    break;
-                }
-            }
-        }));
+    fn line_at(&self, visual_row: usize) -> usize {
+        (self.grid.screen_top_line() + visual_row).saturating_sub(self.scroll_offset)
     }
 
     fn resize(&mut self, rows: usize, cols: usize, cx: &mut Context<Self>) {
@@ -316,29 +253,25 @@ impl TerminalView {
 
     fn cell_at(&self, position: Point<Pixels>, clamp: bool) -> Option<(usize, usize)> {
         let (bounds, char_width, line_height) = self.layout?;
-        if char_width <= px(0.) || line_height <= px(0.) {
+        if char_width <= px(0.) {
             return None;
         }
         if !clamp && !bounds.contains(&position) {
             return None;
         }
         let col = ((position.x - bounds.origin.x) / char_width).floor() as isize;
-        let top = self.top_line();
-        let offset = ((position.y - bounds.origin.y) / line_height) as f64;
-        let first = top.floor().max(0.);
-        let last = (top + self.grid.rows as f64).ceil() - 1.;
-        let line = (top + offset).floor().clamp(first, last.max(first));
+        let row = ((position.y - bounds.origin.y) / line_height).floor() as isize;
         Some((
-            line.max(0.) as usize,
+            row.clamp(0, self.grid.rows as isize - 1) as usize,
             col.clamp(0, self.grid.cols as isize - 1) as usize,
         ))
     }
 
-    fn send_mouse(&mut self, button: u8, line: usize, col: usize, press: bool, drag: bool) {
+    fn send_mouse(&mut self, button: u8, row: usize, col: usize, press: bool, drag: bool) {
         if self.grid.mouse_mode == 0 {
             return;
         }
-        let row = line.saturating_sub(self.grid.screen_top_line());
+        let row = row.saturating_sub(self.scroll_offset);
         let code = button + if drag { 32 } else { 0 };
         let bytes = if self.grid.mouse_sgr {
             format!(
@@ -399,7 +332,7 @@ impl TerminalView {
     }
 
     fn paste(&mut self, text: &str) {
-        self.scroll_offset = 0.;
+        self.scroll_offset = 0;
         self.selection = None;
         let text = sanitize_paste(text);
         if self.grid.bracketed_paste {
@@ -413,7 +346,6 @@ impl TerminalView {
     }
 
     fn end_drag(&mut self) {
-        self.drag_task = None;
         if let Some(selection) = self.selection.as_mut() {
             selection.dragging = false;
         }
@@ -425,29 +357,25 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (font_family, font_size, opacity) = {
-            let settings = cx.global::<AppSettings>();
-            (
-                SharedString::from(settings.font_family.clone()),
-                settings.font_size.clamp(8.0, 32.0),
-                settings.opacity.clamp(0.3, 1.0),
-            )
-        };
+        let settings = cx.global::<AppSettings>().clone();
+        let font_family = SharedString::from(settings.font_family.clone());
+        let font_size = settings.font_size.clamp(8.0, 32.0);
         let line_height = font_size * 1.43;
         let closed_message = self.closed_message.clone();
 
         if self.grid.alt_active() {
-            self.scroll_offset = 0.;
+            self.scroll_offset = 0;
         }
-        self.scroll_offset = self
-            .scroll_offset
-            .clamp(0., self.grid.scrollback_len() as f32);
-        let scrolled_lines = self.scroll_offset.round() as usize;
+        self.scroll_offset = self.scroll_offset.min(self.grid.scrollback_len());
+        let scroll_offset = self.scroll_offset;
 
-        let surface_opacity = if opacity < 1.0 && cx.theme().mode.is_dark() {
-            0.
-        } else {
-            opacity
+        let surface_opacity = {
+            let opacity = settings.opacity.clamp(0.3, 1.0);
+            if opacity < 1.0 && cx.theme().mode.is_dark() {
+                0.
+            } else {
+                opacity
+            }
         };
         let (surface, surface_foreground) = {
             let palette = cx.global::<TerminalPalette>();
@@ -504,7 +432,7 @@ impl Render for TerminalView {
                     let selection = view.selection.map(|s| s.range());
                     build_paint(
                         &view.grid,
-                        view.top_line(),
+                        view.scroll_offset.min(view.grid.scrollback_len()),
                         selection,
                         bounds,
                         char_width,
@@ -539,25 +467,25 @@ impl Render for TerminalView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SendTab, _window, cx| {
-                view.scroll_offset = 0.;
+                view.scroll_offset = 0;
                 view.backend.write_input(b"\t");
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SendTabPrev, _window, cx| {
-                view.scroll_offset = 0.;
+                view.scroll_offset = 0;
                 view.backend.write_input(b"\x1b[Z");
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CopySelection, _window, cx| {
                 if !view.copy_selection(cx) && CLIPBOARD_SHARES_CONTROL_KEY {
-                    view.scroll_offset = 0.;
+                    view.scroll_offset = 0;
                     view.backend.write_input(b"\x03");
                 }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CutSelection, _window, cx| {
                 if !view.copy_selection(cx) && CLIPBOARD_SHARES_CONTROL_KEY {
-                    view.scroll_offset = 0.;
+                    view.scroll_offset = 0;
                     view.backend.write_input(b"\x18");
                 }
                 cx.notify();
@@ -578,15 +506,14 @@ impl Render for TerminalView {
                         }
                         view.selection = None;
                     } else {
-                        view.selection =
-                            view.cell_at(event.position, false).map(|cell| Selection {
+                        view.selection = view.cell_at(event.position, false).map(|(row, col)| {
+                            let cell = (view.line_at(row), col);
+                            Selection {
                                 anchor: cell,
                                 head: cell,
                                 dragging: true,
-                            });
-                        if view.selection.is_some() {
-                            view.start_drag_scroll(window, cx);
-                        }
+                            }
+                        });
                     }
                     cx.notify();
                 }),
@@ -662,7 +589,9 @@ impl Render for TerminalView {
             )
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _window, cx| {
                 if event.pressed_button == Some(MouseButton::Left) {
-                    let cell = view.cell_at(event.position, true);
+                    let cell = view
+                        .cell_at(event.position, true)
+                        .map(|(row, col)| (view.line_at(row), col));
                     if let (Some(cell), Some(selection)) = (cell, view.selection.as_mut())
                         && selection.dragging
                         && selection.head != cell
@@ -691,7 +620,6 @@ impl Render for TerminalView {
                 if dy == px(0.) {
                     return;
                 }
-                let scrolled = dy / line_height;
                 let lines = ((dy.abs() / line_height).ceil() as usize).clamp(1, 5);
                 let up = dy > px(0.);
                 if view.grid.mouse_mode != 0 && !event.modifiers.shift {
@@ -712,7 +640,8 @@ impl Render for TerminalView {
                         view.backend.write_input(seq);
                     }
                 } else {
-                    view.scroll_by(scrolled);
+                    let lines = lines as isize;
+                    view.scroll_lines(if up { lines } else { -lines });
                 }
                 cx.notify();
             }))
@@ -737,7 +666,7 @@ impl Render for TerminalView {
                     .flex_col()
                     .relative()
                     .child(canvas(measure, paint).w_full().flex_1().min_h_0())
-                    .when(scrolled_lines > 0, |this| {
+                    .when(scroll_offset > 0, |this| {
                         this.child(
                             div()
                                 .absolute()
@@ -749,10 +678,10 @@ impl Render for TerminalView {
                                 .bg(hsla(0., 0., 0.16, 0.9))
                                 .text_xs()
                                 .text_color(hsla(0., 0., 0.7, 1.))
-                                .child(if scrolled_lines == 1 {
+                                .child(if scroll_offset == 1 {
                                     "1 line up".to_string()
                                 } else {
-                                    format!("{scrolled_lines} lines up")
+                                    format!("{scroll_offset} lines up")
                                 }),
                         )
                     })
@@ -1159,7 +1088,7 @@ fn fmt_rate(bytes_per_sec: f64) -> String {
 
 fn build_paint(
     grid: &Grid,
-    top: f64,
+    scroll_offset: usize,
     selection: Option<((usize, usize), (usize, usize))>,
     bounds: Bounds<Pixels>,
     char_width: Pixels,
@@ -1169,22 +1098,20 @@ fn build_paint(
     palette: &TerminalPalette,
     window: &Window,
 ) -> (Vec<PaintQuad>, Vec<(ShapedLine, Point<Pixels>)>) {
-    let mut quads = Vec::with_capacity(grid.rows + 1);
-    let mut lines = Vec::with_capacity(grid.rows + 1);
+    let mut quads = Vec::with_capacity(grid.rows);
+    let mut lines = Vec::with_capacity(grid.rows);
 
-    let first = top.floor().max(0.);
-    let shift = line_height * (top - first) as f32;
-    let top_line = first as usize;
+    let top_line = grid.screen_top_line().saturating_sub(scroll_offset);
     let cursor = grid
         .cursor_visible
         .then_some((grid.screen_top_line() + grid.cursor_row, grid.cursor_col));
 
-    for row in 0..=grid.rows {
+    for row in 0..grid.rows {
         let line_id = top_line + row;
         let Some(cells) = grid.line_cells(line_id) else {
             continue;
         };
-        let y = bounds.origin.y + line_height * row as f32 - shift;
+        let y = bounds.origin.y + line_height * row as f32;
         let cell = |col: usize| -> Cell { cells.get(col).copied().unwrap_or(Cell::BLANK) };
 
         let cell_bg = |col: usize| -> Option<Hsla> {

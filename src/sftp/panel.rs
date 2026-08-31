@@ -193,7 +193,6 @@ pub struct SftpPanel {
     side: PanelSide,
     current_path: String,
     entries: Vec<SftpEntry>,
-    visible: Vec<usize>,
     selected: Option<String>,
     context_entry: Option<SftpEntry>,
     loading: bool,
@@ -406,7 +405,6 @@ impl SftpPanel {
             side,
             current_path: "/".to_string(),
             entries: Vec::new(),
-            visible: Vec::new(),
             selected: None,
             context_entry: None,
             loading: true,
@@ -491,25 +489,10 @@ impl SftpPanel {
         &self.current_path
     }
 
-    fn rebuild_visible(&mut self) {
-        let show_hidden = self.show_hidden;
-        let mut visible = std::mem::take(&mut self.visible);
-        visible.clear();
-        visible.extend(
-            self.entries
-                .iter()
-                .enumerate()
-                .filter(|(_, entry)| show_hidden || !entry.name.starts_with('.'))
-                .map(|(index, _)| index),
-        );
-        self.visible = visible;
-    }
-
-    fn entry_at(&self, path: &str) -> Option<SftpEntry> {
+    fn visible_entries(&self) -> impl Iterator<Item = &SftpEntry> {
         self.entries
             .iter()
-            .find(|entry| entry.path == path)
-            .cloned()
+            .filter(move |entry| self.show_hidden || !entry.name.starts_with('.'))
     }
 
     pub fn selected_entry(&self) -> Option<&SftpEntry> {
@@ -1357,13 +1340,10 @@ impl SftpPanel {
             count,
             cx.processor(|panel, range: Range<usize>, _, cx| {
                 let panel = &*panel;
-                let end = range.end.min(panel.visible.len());
                 panel
-                    .visible
-                    .get(range.start..end)
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter_map(|index| panel.entries.get(*index))
+                    .visible_entries()
+                    .skip(range.start)
+                    .take(range.len())
                     .map(|entry| panel.render_row(entry, cx))
                     .collect::<Vec<_>>()
             }),
@@ -1376,8 +1356,8 @@ impl SftpPanel {
 
     fn render_row(&self, entry: &SftpEntry, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.selected.as_deref() == Some(entry.path.as_str());
-        let menu_path = entry.path.clone();
-        let click_path = entry.path.clone();
+        let row_entry = entry.clone();
+        let row_entry_click = entry.clone();
 
         let mut row = h_flex()
             .id(SharedString::from(format!("sftp-entry-{}", entry.path)))
@@ -1395,11 +1375,9 @@ impl SftpPanel {
             })
             .on_click(cx.listener(move |panel, event: &ClickEvent, window, cx| {
                 if event.click_count() >= 2 {
-                    if let Some(entry) = panel.entry_at(&click_path) {
-                        panel.open_entry(&entry, window, cx);
-                    }
+                    panel.open_entry(&row_entry_click, window, cx);
                 } else {
-                    panel.selected = Some(click_path.clone());
+                    panel.selected = Some(row_entry_click.path.clone());
                     cx.emit(PanelEvent::SelectionChanged);
                     cx.notify();
                 }
@@ -1476,8 +1454,8 @@ impl SftpPanel {
         row.on_mouse_down(
             MouseButton::Right,
             cx.listener(move |panel, _: &MouseDownEvent, _, cx| {
-                panel.context_entry = panel.entry_at(&menu_path);
-                panel.selected = Some(menu_path.clone());
+                panel.context_entry = Some(row_entry.clone());
+                panel.selected = Some(row_entry.path.clone());
                 cx.stop_propagation();
                 cx.emit(PanelEvent::SelectionChanged);
                 cx.notify();
@@ -1592,8 +1570,7 @@ impl Render for SftpPanel {
         let columns_view = cx.entity();
         let hidden_columns = self.hidden_columns;
         let is_remote_panel = self.side == PanelSide::Remote;
-        self.rebuild_visible();
-        let visible_count = self.visible.len();
+        let visible_count = self.visible_entries().count();
         let no_rows = visible_count == 0;
         let entry_list = (!no_rows).then(|| self.render_entries(visible_count, cx));
         let name_width = self.resolved_name_width();

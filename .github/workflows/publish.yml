@@ -158,11 +158,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -172,153 +167,20 @@ jobs:
       - name: Publish checksums
         working-directory: dist
         run: |
-          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs sha256sum > SHA256SUMS
+          find . -maxdepth 1 -type f -printf '%P\n' | sort | xargs sha256sum > SHA256SUMS
           cat SHA256SUMS
-
-      - name: Generate release notes
-        run: |
-          TAG="v${{ needs.version.outputs.version }}"
-          REPO_URL="https://github.com/${{ github.repository }}"
-
-          PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -n 1)
-          if [ -n "$PREV_TAG" ]; then
-            RANGE="$PREV_TAG..HEAD"
-          else
-            RANGE="HEAD"
-          fi
-
-          TMP=$(mktemp -d)
-          COUNT=0
-
-          while IFS=$'\t' read -r sha short subject; do
-            case "$subject" in
-              [Bb]ump\ [0-9]*|[Bb]ump\ v[0-9]*|[Uu]pdate\ v[0-9]*|[Rr]elease\ v[0-9]*) continue ;;
-              [Uu]pdate\ version*|[Vv]ersion\ [0-9]*|[Vv]ersion\ bump*) continue ;;
-            esac
-
-            type=""; scope=""; breaking=""; desc="$subject"
-            if [[ "$subject" =~ ^([A-Za-z]+)(\(([^\)]*)\))?(!)?:[[:space:]]*(.*)$ ]]; then
-              type=$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')
-              scope=$(printf '%s' "${BASH_REMATCH[3]}" | tr '[:upper:]' '[:lower:]')
-              breaking="${BASH_REMATCH[4]}"
-              desc="${BASH_REMATCH[5]}"
-            fi
-
-            if [ -n "$scope" ]; then
-              line="- **${scope}**: ${desc} ([\`${short}\`](${REPO_URL}/commit/${sha}))"
-            else
-              line="- ${desc} ([\`${short}\`](${REPO_URL}/commit/${sha}))"
-            fi
-            COUNT=$((COUNT + 1))
-
-            if [ -n "$breaking" ]; then
-              echo "$line" >> "$TMP/breaking"
-              continue
-            fi
-
-            case "$scope" in
-              security|*security*|hardening)  echo "$line" >> "$TMP/security"; continue ;;
-              deps|dependencies|dep)          echo "$line" >> "$TMP/deps"; continue ;;
-              ci|cd|workflow|workflows|actions|release) echo "$line" >> "$TMP/ci"; continue ;;
-            esac
-
-            case "$type" in
-              feat|feature|feats)                                echo "$line" >> "$TMP/feat" ;;
-              fix|fixes|hotfix|bugfix|bug)                       echo "$line" >> "$TMP/fix" ;;
-              security|sec)                                      echo "$line" >> "$TMP/security" ;;
-              perf|performance|optim)                            echo "$line" >> "$TMP/perf" ;;
-              deps|dep)                                          echo "$line" >> "$TMP/deps" ;;
-              docs|doc)                                          echo "$line" >> "$TMP/docs" ;;
-              ci|cd|build|packaging|workflow)                    echo "$line" >> "$TMP/ci" ;;
-              chore|chores|refactor|style|test|tests|cleanup)    echo "$line" >> "$TMP/maint" ;;
-              *)
-                case "$subject" in
-                  [Bb]ump\ *|[Uu]pgrade\ *)                      echo "$line" >> "$TMP/deps" ;;
-                  *README*|*readme*|*LICENSE*|*license*|*doc*)   echo "$line" >> "$TMP/docs" ;;
-                  *)                                             echo "$line" >> "$TMP/other" ;;
-                esac
-                ;;
-            esac
-          done < <(git log --no-merges --pretty=tformat:"%H%x09%h%x09%s" "$RANGE")
-
-          COMMITS="commits"
-          if [ "$COUNT" = "1" ]; then
-            COMMITS="commit"
-          fi
-
-          BODY=release-notes.md
-          {
-            echo "## What's Changed"
-            echo
-            if [ -n "$PREV_TAG" ]; then
-              STAT=$(git diff --shortstat "$PREV_TAG..HEAD" | sed 's/^ *//')
-              echo "_${COUNT} ${COMMITS} since [\`${PREV_TAG}\`](${REPO_URL}/releases/tag/${PREV_TAG}) — ${STAT}_"
-            else
-              echo "_${COUNT} ${COMMITS} in the first release_"
-            fi
-            echo
-          } > "$BODY"
-
-          add_section() {
-            if [ -s "$2" ]; then
-              { echo "### $1"; echo; cat "$2"; echo; } >> "$BODY"
-            fi
-          }
-          add_section "💥 Breaking changes"  "$TMP/breaking"
-          add_section "🚀 Features"          "$TMP/feat"
-          add_section "🐛 Bug fixes"         "$TMP/fix"
-          add_section "🔐 Security"          "$TMP/security"
-          add_section "⚡ Performance"       "$TMP/perf"
-          add_section "📦 Dependencies"      "$TMP/deps"
-          add_section "📚 Documentation"     "$TMP/docs"
-          add_section "🏗️ Build & CI"        "$TMP/ci"
-          add_section "🧹 Maintenance"       "$TMP/maint"
-          add_section "🔀 Other changes"     "$TMP/other"
-
-          CONTRIBUTORS=$(git log --no-merges --pretty=tformat:'%an' "$RANGE" | grep -v '\[bot\]' | sort -u)
-          if [ -n "$CONTRIBUTORS" ]; then
-            {
-              echo "### 👥 Contributors"
-              echo
-              echo "$CONTRIBUTORS" | sed 's/^/- /'
-              echo
-            } >> "$BODY"
-          fi
-
-          {
-            echo "### 📥 Downloads"
-            echo
-            echo "Installers (Windows setup, macOS dmg, Debian/Ubuntu deb) and portable builds for Windows (x86_64, arm64), Linux (amd64, arm64) and macOS (Intel, Apple Silicon) are attached below."
-            echo
-            echo "**macOS first launch:** builds are not notarized. If macOS blocks the app, allow it in System Settings > Privacy & Security > \"Open Anyway\", or run:"
-            echo
-            echo '```'
-            echo "xattr -dr com.apple.quarantine /Applications/Oxidal.app"
-            echo '```'
-            echo
-            echo "<details><summary>🔑 SHA256 checksums</summary>"
-            echo
-            echo '```'
-            cat dist/SHA256SUMS
-            echo '```'
-            echo
-            echo "</details>"
-            echo
-          } >> "$BODY"
-
-          if [ -n "$PREV_TAG" ]; then
-            echo "**Full Changelog**: ${REPO_URL}/compare/${PREV_TAG}...${TAG}" >> "$BODY"
-          else
-            echo "**Full Changelog**: ${REPO_URL}/commits/${TAG}" >> "$BODY"
-          fi
-
-          echo "--- release notes ---"
-          cat "$BODY"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.version }}
           name: 📦 Release v${{ needs.version.outputs.version }}
-          body_path: release-notes.md
+          generate_release_notes: true
           files: dist/*
+          body: |
+            Installers (Windows setup, macOS dmg, Debian/Ubuntu deb) and portable builds for Windows (x86_64, arm64), Linux (amd64, arm64) and macOS (Intel, Apple Silicon) are attached below.
+
+            **macOS first launch:** builds are not notarized. If macOS blocks the app, allow it in System Settings > Privacy & Security > "Open Anyway", or run:
+            ```
+            xattr -dr com.apple.quarantine /Applications/Oxidal.app
+            ```

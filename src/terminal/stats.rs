@@ -28,41 +28,31 @@ pub struct RemoteStats {
 #[derive(Default)]
 pub struct FrameSplitter {
     buf: Vec<u8>,
-    scanned: usize,
-    starts: Vec<usize>,
 }
 
 impl FrameSplitter {
     pub fn push(&mut self, data: &[u8]) -> Vec<String> {
         self.buf.extend_from_slice(data);
 
-        let mut i = self.scanned;
+        let mut starts = Vec::new();
+        let mut i = 0;
         while i + MARKER.len() <= self.buf.len() {
             if &self.buf[i..i + MARKER.len()] == MARKER {
-                self.starts.push(i);
+                starts.push(i);
                 i += MARKER.len();
             } else {
                 i += 1;
             }
         }
-        self.scanned = i;
-
-        if self.starts.len() < 2 {
+        if starts.len() < 2 {
             return Vec::new();
         }
 
-        let mut frames = Vec::with_capacity(self.starts.len() - 1);
-        for pair in self.starts.windows(2) {
-            frames.push(
-                String::from_utf8_lossy(&self.buf[pair[0] + MARKER.len()..pair[1]]).into_owned(),
-            );
-        }
-
-        let cut = self.starts[self.starts.len() - 1];
-        self.buf.drain(..cut);
-        self.scanned -= cut;
-        self.starts.clear();
-        self.starts.push(0);
+        let frames = starts
+            .windows(2)
+            .map(|w| String::from_utf8_lossy(&self.buf[w[0] + MARKER.len()..w[1]]).into_owned())
+            .collect();
+        self.buf.drain(..*starts.last().unwrap());
         frames
     }
 }

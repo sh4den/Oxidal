@@ -1,10 +1,8 @@
-use std::io::SeekFrom;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use russh_sftp::client::SftpSession;
-use russh_sftp::client::fs::File;
 use russh_sftp::protocol::FileType;
 
 use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote, safe_local_name};
@@ -12,32 +10,8 @@ use crate::proxy::ProxyConfig;
 use crate::ssh_client::{self, SshCredentials};
 
 const CHUNK_SIZE: usize = 64 * 1024;
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
-const DOWNLOAD_CHUNK: usize = 128 * 1024;
-const PARALLEL_DOWNLOAD_MIN: u64 = 2 * DOWNLOAD_CHUNK as u64;
 // Bounds how long the transport thread lingers waiting for the disconnect to flush.
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-
-struct Progress {
-    last: Instant,
-}
-
-impl Progress {
-    fn new() -> Self {
-        Self {
-            last: Instant::now(),
-        }
-    }
-
-    fn due(&mut self) -> bool {
-        let now = Instant::now();
-        if now.duration_since(self.last) >= PROGRESS_INTERVAL {
-            self.last = now;
-            return true;
-        }
-        false
-    }
-}
 
 pub fn spawn(
     host: String,
@@ -253,7 +227,6 @@ async fn copy_up(
     let mut local_file = tokio::fs::File::open(local).await?;
     let mut remote_file = sftp.create(remote).await?;
     let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut progress = Progress::new();
     loop {
         let n = local_file.read(&mut buf).await?;
         if n == 0 {
@@ -261,16 +234,11 @@ async fn copy_up(
         }
         remote_file.write_all(&buf[..n]).await?;
         *done += n as u64;
-        if progress.due() {
-            let _ = out_tx
-                .send(SftpEvent::TransferProgress { transferred: *done })
-                .await;
-        }
+        let _ = out_tx
+            .send(SftpEvent::TransferProgress { transferred: *done })
+            .await;
     }
     remote_file.shutdown().await?;
-    let _ = out_tx
-        .send(SftpEvent::TransferProgress { transferred: *done })
-        .await;
     Ok(())
 }
 
@@ -283,111 +251,6 @@ async fn create_new(local: &std::path::Path) -> std::io::Result<tokio::fs::File>
 }
 
 async fn copy_down(
-    sftp: &SftpSession,
-    remote: &str,
-    local: &std::path::Path,
-    size: u64,
-    out_tx: &async_channel::Sender<SftpEvent>,
-    done: &mut u64,
-) -> anyhow::Result<()> {
-    if size >= PARALLEL_DOWNLOAD_MIN {
-        if let Some(streams) = open_streams(sftp, remote).await {
-            return copy_down_parallel(local, size, streams, out_tx, done).await;
-        }
-    }
-    copy_down_sequential(sftp, remote, local, out_tx, done).await
-}
-
-async fn open_streams(sftp: &SftpSession, remote: &str) -> Option<[File; 4]> {
-    let first = sftp.open(remote).await.ok()?;
-    let second = sftp.open(remote).await.ok()?;
-    let third = sftp.open(remote).await.ok()?;
-    let fourth = sftp.open(remote).await.ok()?;
-    Some([first, second, third, fourth])
-}
-
-fn round_range(base: u64, index: usize, size: u64) -> (u64, usize) {
-    let start = base + (index * DOWNLOAD_CHUNK) as u64;
-    let len = size.saturating_sub(start).min(DOWNLOAD_CHUNK as u64) as usize;
-    (start, len)
-}
-
-async fn read_range(file: &mut File, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
-    if len == 0 {
-        return Ok(Vec::new());
-    }
-    file.seek(SeekFrom::Start(offset)).await?;
-    let mut buf = vec![0u8; len];
-    file.read_exact(&mut buf).await?;
-    Ok(buf)
-}
-
-async fn copy_down_parallel(
-    local: &std::path::Path,
-    size: u64,
-    streams: [File; 4],
-    out_tx: &async_channel::Sender<SftpEvent>,
-    done: &mut u64,
-) -> anyhow::Result<()> {
-    let [mut first, mut second, mut third, mut fourth] = streams;
-    let mut local_file = create_new(local).await.map_err(|err| {
-        if err.kind() == std::io::ErrorKind::AlreadyExists {
-            anyhow::anyhow!(
-                "{} already exists, so nothing was written over it",
-                local.display()
-            )
-        } else {
-            anyhow::anyhow!("couldn't create {}: {err}", local.display())
-        }
-    })?;
-
-    let mut progress = Progress::new();
-    let mut offset = 0u64;
-    while offset < size {
-        let (first_at, first_len) = round_range(offset, 0, size);
-        let (second_at, second_len) = round_range(offset, 1, size);
-        let (third_at, third_len) = round_range(offset, 2, size);
-        let (fourth_at, fourth_len) = round_range(offset, 3, size);
-
-        let chunks = tokio::try_join!(
-            read_range(&mut first, first_at, first_len),
-            read_range(&mut second, second_at, second_len),
-            read_range(&mut third, third_at, third_len),
-            read_range(&mut fourth, fourth_at, fourth_len),
-        )?;
-
-        let mut round = 0u64;
-        for chunk in [chunks.0, chunks.1, chunks.2, chunks.3] {
-            if chunk.is_empty() {
-                continue;
-            }
-            local_file.write_all(&chunk).await?;
-            round += chunk.len() as u64;
-        }
-        if round == 0 {
-            break;
-        }
-        offset += round;
-        *done += round;
-        if progress.due() {
-            let _ = out_tx
-                .send(SftpEvent::TransferProgress { transferred: *done })
-                .await;
-        }
-    }
-
-    let _ = first.shutdown().await;
-    let _ = second.shutdown().await;
-    let _ = third.shutdown().await;
-    let _ = fourth.shutdown().await;
-    local_file.flush().await?;
-    let _ = out_tx
-        .send(SftpEvent::TransferProgress { transferred: *done })
-        .await;
-    Ok(())
-}
-
-async fn copy_down_sequential(
     sftp: &SftpSession,
     remote: &str,
     local: &std::path::Path,
@@ -406,7 +269,6 @@ async fn copy_down_sequential(
         }
     })?;
     let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut progress = Progress::new();
     loop {
         let n = remote_file.read(&mut buf).await?;
         if n == 0 {
@@ -414,17 +276,12 @@ async fn copy_down_sequential(
         }
         local_file.write_all(&buf[..n]).await?;
         *done += n as u64;
-        if progress.due() {
-            let _ = out_tx
-                .send(SftpEvent::TransferProgress { transferred: *done })
-                .await;
-        }
+        let _ = out_tx
+            .send(SftpEvent::TransferProgress { transferred: *done })
+            .await;
     }
     remote_file.shutdown().await?;
     local_file.flush().await?;
-    let _ = out_tx
-        .send(SftpEvent::TransferProgress { transferred: *done })
-        .await;
     Ok(())
 }
 
@@ -489,7 +346,7 @@ async fn do_download(
         .await;
 
     let mut done = 0u64;
-    let result = copy_down(sftp, remote, local, total, out_tx, &mut done).await;
+    let result = copy_down(sftp, remote, local, out_tx, &mut done).await;
     finish_transfer(out_tx, result).await
 }
 
@@ -522,7 +379,6 @@ async fn do_read(
         let mut file = sftp.open(remote).await?;
         let mut buf = Vec::with_capacity(total as usize);
         let mut chunk = vec![0u8; CHUNK_SIZE];
-        let mut progress = Progress::new();
         loop {
             let n = file.read(&mut chunk).await?;
             if n == 0 {
@@ -532,13 +388,11 @@ async fn do_read(
             if buf.len() as u64 > MAX_READ {
                 anyhow::bail!("the file grew past the size limit while reading");
             }
-            if progress.due() {
-                let _ = out_tx
-                    .send(SftpEvent::TransferProgress {
-                        transferred: buf.len() as u64,
-                    })
-                    .await;
-            }
+            let _ = out_tx
+                .send(SftpEvent::TransferProgress {
+                    transferred: buf.len() as u64,
+                })
+                .await;
         }
         file.shutdown().await?;
         anyhow::Ok(buf)
@@ -568,15 +422,12 @@ async fn do_write(
     let result = async {
         let mut file = sftp.create(remote).await?;
         let mut done = 0u64;
-        let mut progress = Progress::new();
         for chunk in bytes.chunks(CHUNK_SIZE) {
             file.write_all(chunk).await?;
             done += chunk.len() as u64;
-            if progress.due() {
-                let _ = out_tx
-                    .send(SftpEvent::TransferProgress { transferred: done })
-                    .await;
-            }
+            let _ = out_tx
+                .send(SftpEvent::TransferProgress { transferred: done })
+                .await;
         }
         file.shutdown().await?;
         anyhow::Ok(())
@@ -722,15 +573,7 @@ async fn do_download_dir(
         }
         let mut done = 0u64;
         for file in &files {
-            copy_down(
-                sftp,
-                &file.source,
-                &file.destination,
-                file.size,
-                out_tx,
-                &mut done,
-            )
-            .await?;
+            copy_down(sftp, &file.source, &file.destination, out_tx, &mut done).await?;
         }
         anyhow::Ok(())
     }

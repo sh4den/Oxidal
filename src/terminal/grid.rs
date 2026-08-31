@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::sync::LazyLock;
 
 use gpui::{Hsla, hsla};
 use vte::{Params, Perform};
@@ -115,12 +114,6 @@ impl Cell {
 
     pub fn dim(self) -> bool {
         self.ch_flags & FLAG_DIM != 0
-    }
-
-    fn is_blank(self) -> bool {
-        self.ch_flags == ' ' as u32
-            && matches!(self.fg, Color::Default)
-            && matches!(self.bg, Color::Default)
     }
 }
 
@@ -291,8 +284,8 @@ impl Grid {
             }
             .filter(|recycled| recycled.len() == cols)
             .unwrap_or_else(|| vec![Cell::BLANK; cols].into_boxed_slice());
-            let line = std::mem::replace(row, replacement);
-            self.scrollback.push_back(trim_trailing_blanks(line));
+            self.scrollback
+                .push_back(std::mem::replace(row, replacement));
         }
     }
 
@@ -635,19 +628,6 @@ impl Grid {
     }
 }
 
-fn trim_trailing_blanks(line: Box<[Cell]>) -> Box<[Cell]> {
-    let used = line
-        .iter()
-        .rposition(|cell| !cell.is_blank())
-        .map_or(0, |last| last + 1);
-    if used == line.len() {
-        return line;
-    }
-    let mut line = line.into_vec();
-    line.truncate(used);
-    line.into_boxed_slice()
-}
-
 fn resized_cells(
     cells: Box<[Box<[Cell]>]>,
     new_rows: usize,
@@ -667,29 +647,19 @@ fn resized_cells(
     rows.into_boxed_slice()
 }
 
-static CUBE_AND_GREYS: LazyLock<[Hsla; 240]> = LazyLock::new(|| {
-    let mut table = [hsla(0., 0., 0., 1.); 240];
-    for (offset, slot) in table.iter_mut().enumerate() {
-        let code = offset as u16 + 16;
-        *slot = if code < 232 {
-            let c = code - 16;
-            let r = c / 36;
-            let g = (c % 36) / 6;
-            let b = c % 6;
-            rgb_to_hsla(r as f32 / 5., g as f32 / 5., b as f32 / 5.)
-        } else {
-            let level = (code - 232) as f32 / 23.;
-            rgb_to_hsla(level, level, level)
-        };
-    }
-    table
-});
-
 fn palette_256(code: u16, palette: &TerminalPalette) -> Hsla {
     if code < 16 {
         return palette.ansi[code as usize];
     }
-    CUBE_AND_GREYS[(code as usize - 16).min(239)]
+    if code < 232 {
+        let c = code - 16;
+        let r = c / 36;
+        let g = (c % 36) / 6;
+        let b = c % 6;
+        return rgb_to_hsla(r as f32 / 5., g as f32 / 5., b as f32 / 5.);
+    }
+    let level = (code - 232) as f32 / 23.;
+    rgb_to_hsla(level, level, level)
 }
 
 fn rgb_to_hsla(r: f32, g: f32, b: f32) -> Hsla {

@@ -1,5 +1,3 @@
-pub const EVENT_CAPACITY: usize = 64;
-
 pub enum BackendEvent {
     Data(Vec<u8>),
     Closed(Option<String>),
