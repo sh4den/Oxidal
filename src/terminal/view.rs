@@ -5,7 +5,7 @@ use gpui::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, Div, FocusHandle, Font, FontWeight,
     Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement as _, Pixels, Point, Render,
-    ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, TextAlign,
+    ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, Task, TextAlign,
     TextRun, UnderlineStyle, Window, actions, canvas, div, fill, hsla, point,
     prelude::FluentBuilder as _, px, relative, size,
 };
@@ -17,6 +17,11 @@ use super::stats::{DiskInfo, RemoteStats};
 use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
+const AUTOSCROLL_TICK: Duration = Duration::from_millis(16);
+const AUTOSCROLL_MIN: f32 = 8.;
+const AUTOSCROLL_MAX: f32 = 400.;
+const AUTOSCROLL_RANGE: f32 = 8.;
+const AUTOSCROLL_POWER: f32 = 2.;
 
 const CLIPBOARD_SHARES_CONTROL_KEY: bool = !cfg!(target_os = "macos");
 
@@ -92,6 +97,7 @@ pub struct TerminalView {
     selection: Option<Selection>,
     layout: Option<(Bounds<Pixels>, Pixels, Pixels)>,
     scroll_offset: f32,
+    drag_task: Option<Task<()>>,
 }
 
 impl TerminalView {
@@ -205,6 +211,7 @@ impl TerminalView {
             selection: None,
             layout: None,
             scroll_offset: 0.,
+            drag_task: None,
         }
     }
 
@@ -237,6 +244,64 @@ impl TerminalView {
 
     fn top_line(&self) -> f64 {
         self.grid.screen_top_line() as f64 - self.scroll_offset as f64
+    }
+
+    fn autoscroll_speed(&self, position: Point<Pixels>) -> f32 {
+        let Some((bounds, _, line_height)) = self.layout else {
+            return 0.;
+        };
+        if line_height <= px(0.) {
+            return 0.;
+        }
+        let over = if position.y < bounds.origin.y {
+            (bounds.origin.y - position.y) / line_height
+        } else if position.y > bounds.bottom() {
+            -((position.y - bounds.bottom()) / line_height)
+        } else {
+            return 0.;
+        };
+        let ratio = (over.abs() / AUTOSCROLL_RANGE).clamp(0., 1.);
+        let speed =
+            AUTOSCROLL_MIN + (AUTOSCROLL_MAX - AUTOSCROLL_MIN) * ratio.powf(AUTOSCROLL_POWER);
+        if over > 0. { speed } else { -speed }
+    }
+
+    fn drag_scroll_tick(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        if !self.selection.is_some_and(|selection| selection.dragging) {
+            return false;
+        }
+        let position = window.mouse_position();
+        let speed = self.autoscroll_speed(position);
+        let before = self.scroll_offset;
+        if speed != 0. {
+            self.scroll_by(speed * AUTOSCROLL_TICK.as_secs_f32());
+        }
+        let mut changed = self.scroll_offset != before;
+        if let Some(cell) = self.cell_at(position, true)
+            && let Some(selection) = self.selection.as_mut()
+            && selection.head != cell
+        {
+            selection.head = cell;
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
+        true
+    }
+
+    fn start_drag_scroll(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.drag_task = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AUTOSCROLL_TICK).await;
+                let running = this
+                    .update_in(cx, |view, window, cx| view.drag_scroll_tick(window, cx))
+                    .unwrap_or(false);
+                if !running {
+                    break;
+                }
+            }
+        }));
     }
 
     fn resize(&mut self, rows: usize, cols: usize, cx: &mut Context<Self>) {
@@ -348,6 +413,7 @@ impl TerminalView {
     }
 
     fn end_drag(&mut self) {
+        self.drag_task = None;
         if let Some(selection) = self.selection.as_mut() {
             selection.dragging = false;
         }
@@ -518,6 +584,9 @@ impl Render for TerminalView {
                                 head: cell,
                                 dragging: true,
                             });
+                        if view.selection.is_some() {
+                            view.start_drag_scroll(window, cx);
+                        }
                     }
                     cx.notify();
                 }),
