@@ -18,6 +18,7 @@ use gpui_component::{
     button::ButtonVariants as _,
     dialog::DialogFooter,
     h_flex,
+    input::{Input, InputEvent, InputState},
     notification::Notification,
     resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
@@ -47,7 +48,7 @@ const WORD_MOVE_MODIFIER: &str = if cfg!(target_os = "macos") {
 };
 
 // Row chrome around a label: margins, padding, icon, gaps and the hover buttons.
-const ROW_CHROME_WIDTH: f32 = 116.;
+const ROW_CHROME_WIDTH: f32 = 132.;
 const APPROX_CHAR_WIDTH: f32 = 7.;
 
 fn label_capacity(sidebar_width: gpui::Pixels) -> usize {
@@ -89,6 +90,77 @@ struct OpenTab {
     content: TabContent,
 }
 
+#[derive(Clone)]
+struct SessionDrag {
+    id: Uuid,
+    name: SharedString,
+    icon: SharedString,
+    color: Option<Hsla>,
+}
+
+impl Render for SessionDrag {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().primary)
+            .bg(cx.theme().popover)
+            .shadow_md()
+            .text_xs()
+            .child(
+                Icon::empty()
+                    .path(self.icon.clone())
+                    .xsmall()
+                    .when_some(self.color, |this, color| this.text_color(color)),
+            )
+            .child(self.name.clone())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DropTarget {
+    Before(Uuid),
+    Into(Option<Uuid>),
+}
+
+fn reorder_sessions(sessions: &mut Vec<Session>, id: Uuid, target: DropTarget) -> bool {
+    let Some(index) = sessions.iter().position(|s| s.id == id) else {
+        return false;
+    };
+    let mut session = sessions.remove(index);
+    match target {
+        DropTarget::Before(target_id) => {
+            let Some(at) = sessions.iter().position(|s| s.id == target_id) else {
+                sessions.insert(index, session);
+                return false;
+            };
+            session.folder_id = sessions[at].folder_id;
+            sessions.insert(at, session);
+        }
+        DropTarget::Into(folder_id) => {
+            session.folder_id = folder_id;
+            sessions.push(session);
+        }
+    }
+    true
+}
+
+fn matches_filter(session: &Session, query: &str) -> bool {
+    query.is_empty()
+        || [
+            session.name.as_str(),
+            session.host.as_str(),
+            session.username.as_str(),
+            session.kind.label(),
+        ]
+        .iter()
+        .any(|field| field.to_lowercase().contains(query))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SidebarMode {
     Sessions,
@@ -112,6 +184,7 @@ pub struct OxidalApp {
     sidebar_mode: SidebarMode,
     sidebar_collapsed: bool,
     sidebar_state: Entity<ResizableState>,
+    filter: Entity<InputState>,
     update_state: UpdateState,
     session_windows: HashMap<Option<Uuid>, WindowHandle<Root>>,
 }
@@ -144,6 +217,14 @@ impl OxidalApp {
         })
         .detach();
 
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter sessions"));
+        cx.subscribe(&filter, |_: &mut Self, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+
         Self {
             sessions: session::load_sessions(),
             folders: session::load_folders(),
@@ -154,6 +235,7 @@ impl OxidalApp {
             sidebar_mode: SidebarMode::Sessions,
             sidebar_collapsed: false,
             sidebar_state: cx.new(|_| ResizableState::default()),
+            filter,
             update_state: UpdateState::Idle,
             session_windows: HashMap::new(),
         }
@@ -307,6 +389,25 @@ impl OxidalApp {
             self.collapsed_folders.insert(id);
         }
         cx.notify();
+    }
+
+    fn move_session(&mut self, id: Uuid, target: DropTarget, cx: &mut Context<Self>) {
+        if !reorder_sessions(&mut self.sessions, id, target) {
+            return;
+        }
+        if let DropTarget::Into(Some(folder_id)) = target {
+            self.collapsed_folders.remove(&folder_id);
+        }
+        session::save_sessions(&self.sessions);
+        cx.notify();
+    }
+
+    fn filter_query(&self, cx: &gpui::App) -> String {
+        self.filter.read(cx).value().trim().to_lowercase()
+    }
+
+    fn is_open(&self, id: Uuid) -> bool {
+        self.tabs.iter().any(|tab| tab.session_id == Some(id))
     }
 
     fn open_settings_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -539,24 +640,49 @@ impl OxidalApp {
     fn render_session_row(&self, item: &Session, cx: &mut Context<Self>) -> impl IntoElement {
         let id = item.id;
         let selected = self.selected_session == Some(id);
+        let open = self.is_open(id);
         let group_name = SharedString::from(format!("session-{id}"));
         let name = SharedString::from(item.name.clone());
-        let detail = SharedString::from(item.detail());
+        let icon = item.display_icon();
+        let color = item.color.hsla();
+        let accent = color.unwrap_or(cx.theme().primary);
+        let detail = SharedString::from(match item.kind {
+            SessionKind::Local => item.detail(),
+            kind => format!("{} · {}", kind.label(), item.detail()),
+        });
         let capacity = self.label_capacity(cx);
+        let hover_bg = cx.theme().sidebar_accent.opacity(0.5);
 
         h_flex()
             .id(SharedString::from(format!("session-{id}")))
             .group(group_name.clone())
+            .relative()
             .items_center()
             .gap_2()
             .px_2()
-            .py_1()
+            .pt(px(2.))
+            .pb_1()
             .mx_1()
             .rounded_md()
+            .border_t_2()
+            .border_color(gpui::transparent_black())
             .cursor_pointer()
             .when(selected, |this| {
                 this.bg(cx.theme().sidebar_accent)
                     .text_color(cx.theme().sidebar_accent_foreground)
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top(px(6.))
+                            .bottom(px(6.))
+                            .w(px(3.))
+                            .rounded_full()
+                            .bg(accent),
+                    )
+            })
+            .when(!selected, |this| {
+                this.hover(move |style| style.bg(hover_bg))
             })
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
@@ -568,23 +694,69 @@ impl OxidalApp {
                     }
                 }),
             )
+            .on_drag(
+                SessionDrag {
+                    id,
+                    name: name.clone(),
+                    icon: icon.clone(),
+                    color,
+                },
+                |drag, _, _, cx| cx.new(|_| drag.clone()),
+            )
+            .can_drop(move |drag, _, _| {
+                drag.downcast_ref::<SessionDrag>()
+                    .is_some_and(|drag| drag.id != id)
+            })
+            .drag_over::<SessionDrag>(|style, _, _, cx| style.border_color(cx.theme().primary))
+            .on_drop(cx.listener(move |view, drag: &SessionDrag, _, cx| {
+                view.move_session(drag.id, DropTarget::Before(id), cx);
+            }))
             .child(
-                Icon::empty()
-                    .path(item.display_icon())
-                    .small()
-                    .when_some(item.color.hsla(), |this, color| this.text_color(color)),
+                div()
+                    .flex_none()
+                    .size(px(24.))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(match color {
+                        Some(color) => color.opacity(0.18),
+                        None => cx.theme().sidebar_foreground.opacity(0.1),
+                    })
+                    .child(
+                        Icon::empty()
+                            .path(icon)
+                            .small()
+                            .when_some(color, |this, color| this.text_color(color)),
+                    ),
             )
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
                     .child(
-                        truncating_label(
-                            SharedString::from(format!("name-{id}")),
-                            name.clone(),
-                            capacity,
-                        )
-                        .text_sm(),
+                        h_flex()
+                            .items_center()
+                            .gap_1p5()
+                            .min_w_0()
+                            .child(
+                                truncating_label(
+                                    SharedString::from(format!("name-{id}")),
+                                    name.clone(),
+                                    capacity,
+                                )
+                                .min_w_0()
+                                .text_sm(),
+                            )
+                            .when(open, |this| {
+                                this.child(
+                                    div()
+                                        .flex_none()
+                                        .size(px(6.))
+                                        .rounded_full()
+                                        .bg(cx.theme().success),
+                                )
+                            }),
                     )
                     .child(
                         truncating_label(
@@ -794,114 +966,127 @@ impl OxidalApp {
             .child(div().flex_1().min_h_0().overflow_hidden().child(content))
     }
 
-    fn render_sessions_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+    fn render_folder_row(
+        &self,
+        folder: &SessionFolder,
+        count: usize,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let folder_id = folder.id;
+        let group_name = SharedString::from(format!("folder-{folder_id}"));
         let capacity = self.label_capacity(cx);
+        let hover_bg = cx.theme().sidebar_accent.opacity(0.5);
+
+        h_flex()
+            .id(SharedString::from(format!("folder-{folder_id}")))
+            .group(group_name.clone())
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .mx_1()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover_bg))
+            .drag_over::<SessionDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.12)))
+            .on_drop(cx.listener(move |view, drag: &SessionDrag, _, cx| {
+                view.move_session(drag.id, DropTarget::Into(Some(folder_id)), cx);
+            }))
+            .on_click(cx.listener(move |view, _, _, cx| {
+                view.toggle_folder_collapsed(folder_id, cx);
+            }))
+            .child(
+                Icon::new(if collapsed {
+                    IconName::ChevronRight
+                } else {
+                    IconName::ChevronDown
+                })
+                .xsmall()
+                .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                Icon::empty()
+                    .path(folder.display_icon())
+                    .small()
+                    .when_some(folder.color.hsla(), |this, color| this.text_color(color)),
+            )
+            .child(
+                truncating_label(
+                    SharedString::from(format!("folder-name-{folder_id}")),
+                    SharedString::from(folder.name.clone()),
+                    capacity,
+                )
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .px_1p5()
+                    .rounded_full()
+                    .text_xs()
+                    .bg(cx.theme().sidebar_accent)
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(count.to_string())),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .invisible()
+                    .group_hover(group_name, |this| this.visible())
+                    .child(
+                        Button::new(SharedString::from(format!("edit-folder-{folder_id}")))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Settings2)
+                            .tooltip("Edit")
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                let Some(folder) =
+                                    view.folders.iter().find(|f| f.id == folder_id).cloned()
+                                else {
+                                    return;
+                                };
+                                let weak_app = cx.weak_entity();
+                                session_dialog::open_edit_folder_dialog(
+                                    folder, weak_app, window, cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("delete-folder-{folder_id}")))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Delete)
+                            .tooltip("Delete Folder")
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.delete_folder(folder_id, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_sessions_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let query = self.filter_query(cx);
+        let filtering = !query.is_empty();
+        let muted = cx.theme().muted_foreground;
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
 
         for folder in &self.folders {
             let folder_id = folder.id;
-            let collapsed = self.collapsed_folders.contains(&folder_id);
-            let group_name = SharedString::from(format!("folder-{folder_id}"));
             let children: Vec<&Session> = self
                 .sessions
                 .iter()
-                .filter(|s| s.folder_id == Some(folder_id))
+                .filter(|s| s.folder_id == Some(folder_id) && matches_filter(s, &query))
                 .collect();
-
-            rows.push(
-                h_flex()
-                    .id(SharedString::from(format!("folder-{folder_id}")))
-                    .group(group_name.clone())
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .mx_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.toggle_folder_collapsed(folder_id, cx);
-                    }))
-                    .child(
-                        Icon::new(if collapsed {
-                            IconName::ChevronRight
-                        } else {
-                            IconName::ChevronDown
-                        })
-                        .xsmall(),
-                    )
-                    .child(
-                        Icon::empty()
-                            .path(folder.display_icon())
-                            .small()
-                            .when_some(folder.color.hsla(), |this, color| this.text_color(color)),
-                    )
-                    .child(
-                        truncating_label(
-                            SharedString::from(format!("folder-name-{folder_id}")),
-                            SharedString::from(folder.name.clone()),
-                            capacity,
-                        )
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD),
-                    )
-                    .when(collapsed && !children.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .flex_none()
-                                .px_1p5()
-                                .rounded_full()
-                                .text_xs()
-                                .bg(cx.theme().sidebar_accent)
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(children.len().to_string())),
-                        )
-                    })
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .invisible()
-                            .group_hover(group_name, |this| this.visible())
-                            .child(
-                                Button::new(SharedString::from(format!("edit-folder-{folder_id}")))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Settings2)
-                                    .tooltip("Edit")
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        let Some(folder) = view
-                                            .folders
-                                            .iter()
-                                            .find(|f| f.id == folder_id)
-                                            .cloned()
-                                        else {
-                                            return;
-                                        };
-                                        let weak_app = cx.weak_entity();
-                                        session_dialog::open_edit_folder_dialog(
-                                            folder, weak_app, window, cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!(
-                                    "delete-folder-{folder_id}"
-                                )))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Delete)
-                                .tooltip("Delete Folder")
-                                .on_click(cx.listener(
-                                    move |view, _, _, cx| {
-                                        view.delete_folder(folder_id, cx);
-                                    },
-                                )),
-                            ),
-                    )
-                    .into_any_element(),
-            );
+            if filtering && children.is_empty() {
+                continue;
+            }
+            let collapsed = !filtering && self.collapsed_folders.contains(&folder_id);
+            rows.push(self.render_folder_row(folder, children.len(), collapsed, cx));
 
             if !collapsed && !children.is_empty() {
                 let nested: Vec<gpui::AnyElement> = children
@@ -920,9 +1105,79 @@ impl OxidalApp {
             }
         }
 
-        for item in self.sessions.iter().filter(|s| s.folder_id.is_none()) {
-            rows.push(self.render_session_row(item, cx).into_any_element());
+        let loose: Vec<&Session> = self
+            .sessions
+            .iter()
+            .filter(|s| s.folder_id.is_none() && matches_filter(s, &query))
+            .collect();
+        if !loose.is_empty() {
+            if !rows.is_empty() {
+                let first = loose[0].id;
+                rows.push(
+                    h_flex()
+                        .id("ungrouped-sessions")
+                        .items_center()
+                        .gap_2()
+                        .mx_1()
+                        .mt_2()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .drag_over::<SessionDrag>(|style, _, _, cx| {
+                            style.bg(cx.theme().primary.opacity(0.12))
+                        })
+                        .on_drop(cx.listener(move |view, drag: &SessionDrag, _, cx| {
+                            view.move_session(drag.id, DropTarget::Before(first), cx);
+                        }))
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(muted)
+                                .child("Other"),
+                        )
+                        .child(div().flex_1().h(px(1.)).bg(cx.theme().sidebar_border))
+                        .into_any_element(),
+                );
+            }
+            rows.extend(
+                loose
+                    .iter()
+                    .map(|item| self.render_session_row(item, cx).into_any_element()),
+            );
         }
+
+        if rows.is_empty() {
+            rows.push(
+                div()
+                    .px_3()
+                    .py_4()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(if filtering {
+                        "No sessions match"
+                    } else {
+                        "No sessions yet. Press + to add one."
+                    })
+                    .into_any_element(),
+            );
+        }
+
+        rows.push(
+            div()
+                .id("sessions-drop-tail")
+                .flex_1()
+                .min_h(px(32.))
+                .mx_1()
+                .rounded_md()
+                .drag_over::<SessionDrag>(|style, _, _, cx| {
+                    style.bg(cx.theme().primary.opacity(0.12))
+                })
+                .on_drop(cx.listener(|view, drag: &SessionDrag, _, cx| {
+                    view.move_session(drag.id, DropTarget::Into(None), cx);
+                }))
+                .into_any_element(),
+        );
 
         v_flex()
             .size_full()
@@ -968,6 +1223,14 @@ impl OxidalApp {
                                     })),
                             ),
                     ),
+            )
+            .child(
+                div().px_2().pb_2().child(
+                    Input::new(&self.filter)
+                        .small()
+                        .prefix(Icon::new(IconName::Search).xsmall().text_color(muted))
+                        .cleanable(true),
+                ),
             )
             .child(
                 v_flex()
@@ -1364,4 +1627,89 @@ fn open_about_dialog(window: &mut Window, cx: &mut gpui::App) {
                 )),
             )
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(name: &str, folder_id: Option<Uuid>) -> Session {
+        let mut session = Session::new(name, SessionKind::Ssh);
+        session.folder_id = folder_id;
+        session
+    }
+
+    fn names(sessions: &[Session]) -> Vec<&str> {
+        sessions.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    #[test]
+    fn dropping_before_a_row_reorders_and_adopts_its_folder() {
+        let folder = Uuid::new_v4();
+        let mut sessions = vec![
+            session("a", None),
+            session("b", None),
+            session("c", Some(folder)),
+        ];
+        let (a, c) = (sessions[0].id, sessions[2].id);
+
+        assert!(reorder_sessions(&mut sessions, a, DropTarget::Before(c)));
+        assert_eq!(names(&sessions), vec!["b", "a", "c"]);
+        assert_eq!(sessions[1].folder_id, Some(folder));
+    }
+
+    #[test]
+    fn dropping_into_a_folder_appends_and_ungrouping_clears_the_folder() {
+        let folder = Uuid::new_v4();
+        let mut sessions = vec![
+            session("a", None),
+            session("b", Some(folder)),
+            session("c", Some(folder)),
+        ];
+        let (a, b) = (sessions[0].id, sessions[1].id);
+
+        assert!(reorder_sessions(
+            &mut sessions,
+            a,
+            DropTarget::Into(Some(folder))
+        ));
+        assert_eq!(names(&sessions), vec!["b", "c", "a"]);
+        assert_eq!(sessions[2].folder_id, Some(folder));
+
+        assert!(reorder_sessions(&mut sessions, b, DropTarget::Into(None)));
+        assert_eq!(names(&sessions), vec!["c", "a", "b"]);
+        assert_eq!(sessions[2].folder_id, None);
+    }
+
+    #[test]
+    fn unknown_targets_leave_the_list_untouched() {
+        let mut sessions = vec![session("a", None), session("b", None)];
+        let b = sessions[1].id;
+
+        assert!(!reorder_sessions(
+            &mut sessions,
+            b,
+            DropTarget::Before(Uuid::new_v4())
+        ));
+        assert_eq!(names(&sessions), vec!["a", "b"]);
+        assert!(!reorder_sessions(
+            &mut sessions,
+            Uuid::new_v4(),
+            DropTarget::Into(None)
+        ));
+        assert_eq!(names(&sessions), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn filter_matches_name_host_user_and_kind() {
+        let mut s = session("prod-web", None);
+        s.host = "10.0.1.12".into();
+        s.username = "deploy".into();
+
+        for query in ["prod", "0.1.1", "deploy", "ssh"] {
+            assert!(matches_filter(&s, query), "{query}");
+        }
+        assert!(!matches_filter(&s, "sftp"));
+        assert!(matches_filter(&s, ""));
+    }
 }
