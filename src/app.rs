@@ -109,6 +109,12 @@ struct FolderDrag {
     preview: DragPreview,
 }
 
+#[derive(Clone)]
+struct TabDrag {
+    index: usize,
+    preview: DragPreview,
+}
+
 impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
@@ -177,6 +183,27 @@ fn reorder_folders(folders: &mut Vec<SessionFolder>, id: Uuid, before: Option<Uu
     };
     folders.insert(at, folder);
     true
+}
+
+fn move_index<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from == to || from >= items.len() || to >= items.len() {
+        return false;
+    }
+    let item = items.remove(from);
+    items.insert(to, item);
+    true
+}
+
+fn shifted_index(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < index && index <= to {
+        index - 1
+    } else if to <= index && index < from {
+        index + 1
+    } else {
+        index
+    }
 }
 
 fn matches_filter(session: &Session, query: &str) -> bool {
@@ -594,6 +621,16 @@ impl OxidalApp {
                 self.sidebar_mode = SidebarMode::Sessions;
             }
         }
+        cx.notify();
+    }
+
+    fn move_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if !move_index(&mut self.tabs, from, to) {
+            return;
+        }
+        self.active_tab = self
+            .active_tab
+            .map(|active| shifted_index(active, from, to));
         cx.notify();
     }
 
@@ -1325,8 +1362,26 @@ impl OxidalApp {
             }))
             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
                 let group_name = SharedString::from(format!("tab-{index}"));
+                let preview = DragPreview {
+                    icon: tab.icon.clone(),
+                    color: tab.icon_color,
+                    label: tab.title.clone(),
+                };
                 Tab::new()
                     .group(group_name.clone())
+                    .on_drag(TabDrag { index, preview }, |drag, _, _, cx| {
+                        cx.new(|_| drag.preview.clone())
+                    })
+                    .can_drop(move |drag, _, _| {
+                        drag.downcast_ref::<TabDrag>()
+                            .is_some_and(|drag| drag.index != index)
+                    })
+                    .drag_over::<TabDrag>(|style, _, _, cx| {
+                        style.bg(cx.theme().primary.opacity(0.12))
+                    })
+                    .on_drop(cx.listener(move |view, drag: &TabDrag, _, cx| {
+                        view.move_tab(drag.index, index, cx);
+                    }))
                     .prefix(
                         Icon::empty()
                             .path(tab.icon.clone())
@@ -1786,6 +1841,26 @@ mod tests {
         assert_eq!(folder_names(&folders), ["a", "b", "c"]);
         assert!(!reorder_folders(&mut folders, a, Some(Uuid::new_v4())));
         assert_eq!(folder_names(&folders), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn moving_a_tab_keeps_the_active_tab_pointing_at_the_same_item() {
+        let mut tabs = vec!['a', 'b', 'c', 'd'];
+        assert!(move_index(&mut tabs, 0, 2));
+        assert_eq!(tabs, ['b', 'c', 'a', 'd']);
+        assert!(move_index(&mut tabs, 3, 1));
+        assert_eq!(tabs, ['b', 'd', 'c', 'a']);
+        assert!(!move_index(&mut tabs, 1, 1));
+        assert!(!move_index(&mut tabs, 1, 9));
+
+        assert_eq!(shifted_index(0, 0, 2), 2);
+        assert_eq!(shifted_index(1, 0, 2), 0);
+        assert_eq!(shifted_index(2, 0, 2), 1);
+        assert_eq!(shifted_index(3, 0, 2), 3);
+        assert_eq!(shifted_index(3, 3, 1), 1);
+        assert_eq!(shifted_index(1, 3, 1), 2);
+        assert_eq!(shifted_index(2, 3, 1), 3);
+        assert_eq!(shifted_index(0, 3, 1), 0);
     }
 
     #[test]
