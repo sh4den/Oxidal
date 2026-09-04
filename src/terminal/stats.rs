@@ -1,8 +1,16 @@
 use std::time::Instant;
 
-pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; uname -n 2>/dev/null; echo @user; whoami 2>/dev/null; echo @who; who 2>/dev/null; echo @stat; cat /proc/stat 2>/dev/null; echo @mem; cat /proc/meminfo 2>/dev/null; echo @net; cat /proc/net/dev 2>/dev/null; echo @conn; netstat -tn 2>/dev/null; echo @df; df -kP 2>/dev/null; sleep 1; done";
+pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; uname -n 2>/dev/null; echo @user; whoami 2>/dev/null; echo @who; who 2>/dev/null; echo @stat; cat /proc/stat 2>/dev/null; echo @mem; cat /proc/meminfo 2>/dev/null; echo @net; cat /proc/net/dev 2>/dev/null; echo @conn; netstat -tn 2>/dev/null; echo @df; df -kP 2>/dev/null; echo @sensors; command -v sensors 2>/dev/null; echo @temp; sensors -u 2>/dev/null; sleep 1; done";
 
 const MARKER: &[u8] = b"@@OXIDAL@@";
+const CPU_CHIPS: &[&str] = &[
+    "coretemp",
+    "k10temp",
+    "zenpower",
+    "cpu_thermal",
+    "cpu-thermal",
+];
+const DEFAULT_TEMP_LIMIT: f32 = 100.;
 
 #[derive(Clone)]
 pub struct DiskInfo {
@@ -10,6 +18,34 @@ pub struct DiskInfo {
     pub mount: String,
     pub used: u64,
     pub total: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TempInfo {
+    pub chip: String,
+    pub label: String,
+    pub value: f32,
+    pub limit: Option<f32>,
+}
+
+impl TempInfo {
+    pub fn fraction(&self) -> f32 {
+        (self.value / self.limit.unwrap_or(DEFAULT_TEMP_LIMIT)).clamp(0., 1.)
+    }
+
+    fn is_cpu(&self) -> bool {
+        CPU_CHIPS.iter().any(|chip| self.chip.starts_with(chip))
+    }
+}
+
+pub fn headline_temp(temps: &[TempInfo]) -> Option<&TempInfo> {
+    let hottest = |pred: fn(&TempInfo) -> bool| {
+        temps
+            .iter()
+            .filter(|t| pred(t))
+            .max_by(|a, b| a.value.total_cmp(&b.value))
+    };
+    hottest(TempInfo::is_cpu).or_else(|| hottest(|_| true))
 }
 
 #[derive(Clone, Default)]
@@ -23,6 +59,7 @@ pub struct RemoteStats {
     pub disks: Vec<DiskInfo>,
     pub who: Vec<String>,
     pub connections: Option<(u32, u16)>,
+    pub temps: Option<Vec<TempInfo>>,
 }
 
 #[derive(Default)]
@@ -91,6 +128,8 @@ impl StatsParser {
         let mut net_sample: Option<(u64, u64)> = None;
         let mut conn_output = false;
         let mut conn_count = 0u32;
+        let mut sensors_found = false;
+        let mut temp_lines: Vec<&str> = Vec::new();
         let port_str = self.port.to_string();
 
         for line in frame.lines() {
@@ -166,6 +205,12 @@ impl StatsParser {
                         }
                     }
                 }
+                "sensors" => {
+                    if !line.trim().is_empty() {
+                        sensors_found = true;
+                    }
+                }
+                "temp" => temp_lines.push(line),
                 "df" => {
                     let fields: Vec<&str> = line.split_whitespace().collect();
                     if fields.len() >= 6
@@ -215,6 +260,10 @@ impl StatsParser {
             stats.connections = Some((conn_count, self.port));
         }
 
+        if sensors_found {
+            stats.temps = Some(parse_sensors(&temp_lines));
+        }
+
         if let Some((rx, tx)) = net_sample {
             let now = Instant::now();
             if let Some((prev_rx, prev_tx, prev_time)) = self.prev_net {
@@ -231,6 +280,68 @@ impl StatsParser {
 
         stats
     }
+}
+
+#[derive(Default)]
+struct TempReading {
+    chip: String,
+    label: String,
+    value: Option<f32>,
+    high: Option<f32>,
+    crit: Option<f32>,
+}
+
+impl TempReading {
+    fn flush(&mut self, out: &mut Vec<TempInfo>) {
+        let (high, crit) = (self.high.take(), self.crit.take());
+        if let Some(value) = self.value.take() {
+            out.push(TempInfo {
+                chip: self.chip.clone(),
+                label: std::mem::take(&mut self.label),
+                value,
+                limit: high.or(crit),
+            });
+        }
+    }
+}
+
+fn sane_limit(value: f32) -> Option<f32> {
+    (value > 0. && value < 200.).then_some(value)
+}
+
+fn parse_sensors(lines: &[&str]) -> Vec<TempInfo> {
+    let mut temps = Vec::new();
+    let mut reading = TempReading::default();
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            reading.flush(&mut temps);
+            reading.chip.clear();
+        } else if let Some((key, value)) = trimmed.split_once(':')
+            && let Ok(value) = value.trim().parse::<f32>()
+        {
+            let kind = key
+                .strip_prefix("temp")
+                .and_then(|k| k.split_once('_'))
+                .map(|(_, kind)| kind);
+            match kind {
+                Some("input") => reading.value = Some(value),
+                Some("max") => reading.high = sane_limit(value),
+                Some("crit") => reading.crit = sane_limit(value),
+                _ => {}
+            }
+        } else if trimmed.starts_with("Adapter:") {
+        } else if let Some(label) = trimmed.strip_suffix(':') {
+            reading.flush(&mut temps);
+            reading.label = label.to_string();
+        } else {
+            reading.flush(&mut temps);
+            reading.chip = trimmed.to_string();
+        }
+    }
+    reading.flush(&mut temps);
+    temps
 }
 
 fn is_pseudo_fs(filesystem: &str) -> bool {
@@ -250,4 +361,95 @@ fn is_pseudo_fs(filesystem: &str) -> bool {
             | "proc"
             | "sysfs"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SENSORS_OUTPUT: &str = "\
+coretemp-isa-0000
+Adapter: ISA adapter
+Package id 0:
+  temp1_input: 45.000
+  temp1_max: 100.000
+  temp1_crit: 100.000
+  temp1_crit_alarm: 0.000
+Core 0:
+  temp2_input: 44.000
+  temp2_max: 100.000
+  temp2_crit: 100.000
+
+nvme-pci-0100
+Adapter: PCI adapter
+Composite:
+  temp1_input: 58.850
+  temp1_max: 81.850
+  temp1_min: -273.150
+  temp1_crit: 84.850
+Sensor 1:
+  temp2_input: 38.850
+  temp2_max: 65261.850
+  temp2_min: -273.150
+
+acpitz-acpi-0
+Adapter: ACPI interface
+temp1:
+  temp1_input: 27.800
+  temp1_crit: 105.000
+in0:
+  in0_input: 1.200
+";
+
+    fn frame(sensors: &str, temp: &str) -> String {
+        format!("@sensors\n{sensors}\n@temp\n{temp}\n")
+    }
+
+    #[test]
+    fn parses_sensors_readings_per_chip() {
+        let stats = StatsParser::new(22).parse_frame(&frame("/usr/bin/sensors", SENSORS_OUTPUT));
+        let temps = stats.temps.expect("sensors command was found");
+
+        let summary: Vec<(&str, &str, f32, Option<f32>)> = temps
+            .iter()
+            .map(|t| (t.chip.as_str(), t.label.as_str(), t.value, t.limit))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("coretemp-isa-0000", "Package id 0", 45., Some(100.)),
+                ("coretemp-isa-0000", "Core 0", 44., Some(100.)),
+                ("nvme-pci-0100", "Composite", 58.85, Some(81.85)),
+                ("nvme-pci-0100", "Sensor 1", 38.85, None),
+                ("acpitz-acpi-0", "temp1", 27.8, Some(105.)),
+            ]
+        );
+    }
+
+    #[test]
+    fn headline_prefers_the_cpu_chip_over_hotter_devices() {
+        let stats = StatsParser::new(22).parse_frame(&frame("/usr/bin/sensors", SENSORS_OUTPUT));
+        let temps = stats.temps.expect("sensors command was found");
+        let headline = headline_temp(&temps).expect("at least one reading");
+        assert_eq!(
+            (headline.chip.as_str(), headline.value),
+            ("coretemp-isa-0000", 45.)
+        );
+
+        let devices_only: Vec<TempInfo> = temps.into_iter().filter(|t| !t.is_cpu()).collect();
+        let headline = headline_temp(&devices_only).expect("at least one reading");
+        assert_eq!(
+            (headline.label.as_str(), headline.value),
+            ("Composite", 58.85)
+        );
+    }
+
+    #[test]
+    fn distinguishes_missing_command_from_empty_output() {
+        let missing = StatsParser::new(22).parse_frame(&frame("", ""));
+        assert_eq!(missing.temps, None);
+
+        let empty = StatsParser::new(22).parse_frame(&frame("/usr/bin/sensors", ""));
+        assert_eq!(empty.temps, Some(Vec::new()));
+    }
 }

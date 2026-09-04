@@ -36,6 +36,7 @@ const BUNDLED: &[(&str, &[u8])] = bundled_icons![
     "server",
     "shield",
     "signal",
+    "thermometer",
     "usb",
     "wifi",
     "wrench",
