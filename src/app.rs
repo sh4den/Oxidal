@@ -91,14 +91,25 @@ struct OpenTab {
 }
 
 #[derive(Clone)]
-struct SessionDrag {
-    id: Uuid,
-    name: SharedString,
+struct DragPreview {
     icon: SharedString,
     color: Option<Hsla>,
+    label: SharedString,
 }
 
-impl Render for SessionDrag {
+#[derive(Clone)]
+struct SessionDrag {
+    id: Uuid,
+    preview: DragPreview,
+}
+
+#[derive(Clone)]
+struct FolderDrag {
+    id: Uuid,
+    preview: DragPreview,
+}
+
+impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .items_center()
@@ -117,7 +128,7 @@ impl Render for SessionDrag {
                     .xsmall()
                     .when_some(self.color, |this, color| this.text_color(color)),
             )
-            .child(self.name.clone())
+            .child(self.label.clone())
     }
 }
 
@@ -146,6 +157,25 @@ fn reorder_sessions(sessions: &mut Vec<Session>, id: Uuid, target: DropTarget) -
             sessions.push(session);
         }
     }
+    true
+}
+
+fn reorder_folders(folders: &mut Vec<SessionFolder>, id: Uuid, before: Option<Uuid>) -> bool {
+    let Some(index) = folders.iter().position(|f| f.id == id) else {
+        return false;
+    };
+    let folder = folders.remove(index);
+    let at = match before {
+        None => folders.len(),
+        Some(target) => match folders.iter().position(|f| f.id == target) {
+            Some(at) => at,
+            None => {
+                folders.insert(index, folder);
+                return false;
+            }
+        },
+    };
+    folders.insert(at, folder);
     true
 }
 
@@ -399,6 +429,14 @@ impl OxidalApp {
             self.collapsed_folders.remove(&folder_id);
         }
         session::save_sessions(&self.sessions);
+        cx.notify();
+    }
+
+    fn move_folder(&mut self, id: Uuid, before: Option<Uuid>, cx: &mut Context<Self>) {
+        if !reorder_folders(&mut self.folders, id, before) {
+            return;
+        }
+        session::save_folders(&self.folders);
         cx.notify();
     }
 
@@ -697,11 +735,13 @@ impl OxidalApp {
             .on_drag(
                 SessionDrag {
                     id,
-                    name: name.clone(),
-                    icon: icon.clone(),
-                    color,
+                    preview: DragPreview {
+                        icon: icon.clone(),
+                        color,
+                        label: name.clone(),
+                    },
                 },
-                |drag, _, _, cx| cx.new(|_| drag.clone()),
+                |drag, _, _, cx| cx.new(|_| drag.preview.clone()),
             )
             .can_drop(move |drag, _, _| {
                 drag.downcast_ref::<SessionDrag>()
@@ -977,6 +1017,11 @@ impl OxidalApp {
         let group_name = SharedString::from(format!("folder-{folder_id}"));
         let capacity = self.label_capacity(cx);
         let hover_bg = cx.theme().sidebar_accent.opacity(0.5);
+        let preview = DragPreview {
+            icon: folder.display_icon(),
+            color: folder.color.hsla(),
+            label: SharedString::from(folder.name.clone()),
+        };
 
         h_flex()
             .id(SharedString::from(format!("folder-{folder_id}")))
@@ -984,14 +1029,32 @@ impl OxidalApp {
             .items_center()
             .gap_1()
             .px_2()
-            .py_1()
+            .pt(px(2.))
+            .pb_1()
             .mx_1()
             .rounded_md()
+            .border_t_2()
+            .border_color(gpui::transparent_black())
             .cursor_pointer()
             .hover(move |style| style.bg(hover_bg))
+            .on_drag(
+                FolderDrag {
+                    id: folder_id,
+                    preview,
+                },
+                |drag, _, _, cx| cx.new(|_| drag.preview.clone()),
+            )
+            .can_drop(move |drag, _, _| {
+                drag.downcast_ref::<FolderDrag>()
+                    .is_none_or(|drag| drag.id != folder_id)
+            })
             .drag_over::<SessionDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.12)))
             .on_drop(cx.listener(move |view, drag: &SessionDrag, _, cx| {
                 view.move_session(drag.id, DropTarget::Into(Some(folder_id)), cx);
+            }))
+            .drag_over::<FolderDrag>(|style, _, _, cx| style.border_color(cx.theme().primary))
+            .on_drop(cx.listener(move |view, drag: &FolderDrag, _, cx| {
+                view.move_folder(drag.id, Some(folder_id), cx);
             }))
             .on_click(cx.listener(move |view, _, _, cx| {
                 view.toggle_folder_collapsed(folder_id, cx);
@@ -1175,6 +1238,12 @@ impl OxidalApp {
                 })
                 .on_drop(cx.listener(|view, drag: &SessionDrag, _, cx| {
                     view.move_session(drag.id, DropTarget::Into(None), cx);
+                }))
+                .drag_over::<FolderDrag>(|style, _, _, cx| {
+                    style.bg(cx.theme().primary.opacity(0.12))
+                })
+                .on_drop(cx.listener(|view, drag: &FolderDrag, _, cx| {
+                    view.move_folder(drag.id, None, cx);
                 }))
                 .into_any_element(),
         );
@@ -1698,6 +1767,25 @@ mod tests {
             DropTarget::Into(None)
         ));
         assert_eq!(names(&sessions), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn folders_reorder_before_a_target_or_to_the_end() {
+        let mut folders = vec![
+            SessionFolder::new("a"),
+            SessionFolder::new("b"),
+            SessionFolder::new("c"),
+        ];
+        let (a, c) = (folders[0].id, folders[2].id);
+        let folder_names =
+            |folders: &[SessionFolder]| folders.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+
+        assert!(reorder_folders(&mut folders, c, Some(a)));
+        assert_eq!(folder_names(&folders), ["c", "a", "b"]);
+        assert!(reorder_folders(&mut folders, c, None));
+        assert_eq!(folder_names(&folders), ["a", "b", "c"]);
+        assert!(!reorder_folders(&mut folders, a, Some(Uuid::new_v4())));
+        assert_eq!(folder_names(&folders), ["a", "b", "c"]);
     }
 
     #[test]
