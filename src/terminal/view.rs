@@ -13,7 +13,7 @@ use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, hover_card:
 
 use super::backend::{Backend, BackendEvent};
 use super::grid::{Cell, Grid, TerminalPalette};
-use super::stats::{DiskInfo, RemoteStats};
+use super::stats::{self, DiskInfo, RemoteStats, TempInfo};
 use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
@@ -828,6 +828,19 @@ impl TerminalView {
                         .into_any_element(),
                 );
             }
+            if let Some(temps) = &stats.temps {
+                let label = stats::headline_temp(temps)
+                    .map(|t| format!("{:.0}°C", t.value))
+                    .unwrap_or_else(|| "--".to_string());
+                items.push(
+                    HoverCard::new("monitor-temps")
+                        .anchor(Anchor::BottomLeft)
+                        .open_delay(Duration::from_millis(250))
+                        .trigger(segment_icon(thermometer(), hsla(0., 0., 0.5, 1.)).child(label))
+                        .child(temp_details(temps, cx))
+                        .into_any_element(),
+                );
+            }
             if let Some((used, total)) = stats.disk {
                 let frac = used as f32 / total.max(1) as f32;
                 items.push(
@@ -876,12 +889,20 @@ fn segment(icon: IconName) -> Div {
 }
 
 fn segment_colored(icon: IconName, color: Hsla) -> Div {
+    segment_icon(Icon::new(icon), color)
+}
+
+fn segment_icon(icon: Icon, color: Hsla) -> Div {
     div()
         .flex_none()
         .flex()
         .items_center()
         .gap_1()
-        .child(div().text_color(color).child(Icon::new(icon).xsmall()))
+        .child(div().text_color(color).child(icon.xsmall()))
+}
+
+fn thermometer() -> Icon {
+    Icon::default().path("icons/oxidal/thermometer.svg")
 }
 
 fn rate_cell(bytes_per_sec: f64) -> Div {
@@ -1104,6 +1125,97 @@ fn disk_details(disks: &[DiskInfo], cx: &App) -> AnyElement {
         .flex_col()
         .gap_3()
         .w(px(280.))
+        .text_xs()
+        .children(rows)
+        .into_any_element()
+}
+
+fn temp_details(temps: &[TempInfo], cx: &App) -> AnyElement {
+    const MAX_ROWS: usize = 12;
+    let muted = cx.theme().muted_foreground;
+
+    let mut rows: Vec<AnyElement> = vec![
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .pb_2()
+            .mb_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .text_color(muted)
+            .child(thermometer().xsmall())
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Temperatures"),
+            )
+            .into_any_element(),
+    ];
+
+    let mut chip = "";
+    for temp in temps.iter().take(MAX_ROWS) {
+        if temp.chip != chip {
+            chip = &temp.chip;
+            rows.push(
+                div()
+                    .when(rows.len() > 1, |this| this.mt_1())
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_color(muted)
+                    .child(temp.chip.clone())
+                    .into_any_element(),
+            );
+        }
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(temp.label.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(meter_color(temp.fraction()))
+                        .child(format!("{:.1}°C", temp.value)),
+                )
+                .into_any_element(),
+        );
+    }
+
+    if temps.len() > MAX_ROWS {
+        rows.push(
+            div()
+                .mt_1()
+                .text_color(muted)
+                .child(format!("+{} more sensors", temps.len() - MAX_ROWS))
+                .into_any_element(),
+        );
+    }
+    if temps.is_empty() {
+        rows.push(
+            div()
+                .text_color(muted)
+                .child(
+                    "No sensors reported. This usually means the kernel drivers are not loaded yet. Running sensors-detect on the host may fix it.",
+                )
+                .into_any_element(),
+        );
+    }
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .w(px(260.))
         .text_xs()
         .children(rows)
         .into_any_element()
