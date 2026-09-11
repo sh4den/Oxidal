@@ -312,7 +312,8 @@ impl OxidalApp {
             return;
         }
         let weak_app = cx.entity().downgrade();
-        if let Some(handle) = session_dialog::open_session_window(existing, weak_app, cx) {
+        let folders = self.folders.clone();
+        if let Some(handle) = session_dialog::open_session_window(existing, folders, weak_app, cx) {
             self.session_windows.insert(key, handle);
         }
     }
