@@ -7,8 +7,9 @@ use std::time::Duration;
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, InteractiveElement as _,
     IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, TitlebarOptions, WeakEntity,
-    Window, WindowBounds, WindowHandle, WindowOptions, div, prelude::FluentBuilder as _, px, size,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions,
+    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
+    prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed as _, IndexPath, Root,
@@ -407,6 +408,7 @@ impl SelectItem for PortOption {
 
 pub fn open_session_window(
     existing: Option<Session>,
+    folders: Vec<SessionFolder>,
     weak_app: WeakEntity<OxidalApp>,
     cx: &mut App,
 ) -> Option<WindowHandle<Root>> {
@@ -425,7 +427,7 @@ pub fn open_session_window(
         },
         |window, cx| {
             crate::settings::apply_appearance(window, cx);
-            let view = cx.new(|cx| SessionWindow::new(existing, weak_app, window, cx));
+            let view = cx.new(|cx| SessionWindow::new(existing, folders, weak_app, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         },
     )
@@ -434,6 +436,8 @@ pub fn open_session_window(
 
 pub struct SessionWindow {
     weak_app: WeakEntity<OxidalApp>,
+    _app_observer: Option<Subscription>,
+    folders: Vec<SessionFolder>,
     editing_id: Option<Uuid>,
     kind: SessionKind,
     tab: SettingsTab,
@@ -481,10 +485,17 @@ fn text_field(
 impl SessionWindow {
     fn new(
         existing: Option<Session>,
+        folders: Vec<SessionFolder>,
         weak_app: WeakEntity<OxidalApp>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let app_observer = weak_app.upgrade().map(|app| {
+            cx.observe(&app, |this, app, cx| {
+                this.folders = app.read(cx).folders().to_vec();
+                cx.notify();
+            })
+        });
         let session = existing.as_ref();
         let editing_id = session.map(|s| s.id);
         let kind = session.map(|s| s.kind).unwrap_or(SessionKind::Ssh);
@@ -518,6 +529,8 @@ impl SessionWindow {
         let serial_port = cx.new(|cx| SelectState::new(port_choices, serial_index, window, cx));
 
         Self {
+            _app_observer: app_observer,
+            folders,
             editing_id,
             kind,
             tab: SettingsTab::available(kind)[0],
@@ -1112,11 +1125,7 @@ impl SessionWindow {
     }
 
     fn render_label_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let folders = self
-            .weak_app
-            .upgrade()
-            .map(|app| app.read(cx).folders().to_vec())
-            .unwrap_or_default();
+        let folders = &self.folders;
         let current_folder = self.folder_id;
         v_flex()
             .gap_3()
