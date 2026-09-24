@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, Div, FocusHandle, Font, FontWeight,
@@ -17,6 +17,8 @@ use super::stats::{self, DiskInfo, RemoteStats, TempInfo};
 use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
+const FEED_BUDGET: Duration = Duration::from_millis(8);
+const FEED_PAUSE: Duration = Duration::from_millis(8);
 const AUTOSCROLL_TICK: Duration = Duration::from_millis(16);
 const AUTOSCROLL_MIN: f32 = 8.;
 const AUTOSCROLL_MAX: f32 = 400.;
@@ -114,60 +116,29 @@ impl TerminalView {
 
         let events = backend.events.clone();
         cx.spawn(async move |this, cx| {
-            // Coalesce queued output into one grid feed + notify per wakeup;
-            // bursty producers otherwise cost an entity update per 4KB chunk.
-            const MAX_FEED_BATCH: usize = 1024 * 1024;
             loop {
-                match events.recv().await {
-                    Ok(BackendEvent::Data(mut bytes)) => {
-                        let mut closed = None;
-                        while bytes.len() < MAX_FEED_BATCH {
-                            match events.try_recv() {
-                                Ok(BackendEvent::Data(more)) => bytes.extend_from_slice(&more),
-                                Ok(BackendEvent::Closed(message)) => {
-                                    closed = Some(message);
-                                    break;
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                        if this
-                            .update(cx, |view: &mut Self, cx| {
-                                let top_before = view.grid.screen_top_line();
-                                let replies = view.grid.feed(&bytes);
-                                if !replies.is_empty() {
-                                    view.backend.write_input(&replies);
-                                }
-                                if view.scroll_offset > 0. {
-                                    let pushed = view.grid.screen_top_line() - top_before;
-                                    view.scroll_offset = (view.scroll_offset + pushed as f32)
-                                        .min(view.grid.scrollback_len() as f32);
-                                }
-                                cx.notify();
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                        if let Some(message) = closed {
-                            let _ = this.update(cx, |view: &mut Self, cx| {
-                                view.closed_message = Some(
-                                    message.unwrap_or_else(|| "Connection closed".to_string()),
-                                );
-                                cx.notify();
-                            });
-                            break;
+                let Ok(event) = events.recv().await else {
+                    break;
+                };
+                let closed = match event {
+                    BackendEvent::Data(bytes) => {
+                        match this.update(cx, |view: &mut Self, cx| view.feed(bytes, &events, cx)) {
+                            Ok(closed) => closed,
+                            Err(_) => break,
                         }
                     }
-                    Ok(BackendEvent::Closed(message)) => {
-                        let _ = this.update(cx, |view: &mut Self, cx| {
-                            view.closed_message =
-                                Some(message.unwrap_or_else(|| "Connection closed".to_string()));
-                            cx.notify();
-                        });
-                        break;
-                    }
-                    Err(_) => break,
+                    BackendEvent::Closed(message) => Some(message),
+                };
+                if let Some(message) = closed {
+                    let _ = this.update(cx, |view: &mut Self, cx| {
+                        view.closed_message =
+                            Some(message.unwrap_or_else(|| "Connection closed".to_string()));
+                        cx.notify();
+                    });
+                    break;
+                }
+                if !events.is_empty() {
+                    cx.background_executor().timer(FEED_PAUSE).await;
                 }
             }
         })
@@ -213,6 +184,41 @@ impl TerminalView {
             scroll_offset: 0.,
             drag_task: None,
         }
+    }
+
+    fn feed(
+        &mut self,
+        mut bytes: Vec<u8>,
+        events: &async_channel::Receiver<BackendEvent>,
+        cx: &mut Context<Self>,
+    ) -> Option<Option<String>> {
+        let deadline = Instant::now() + FEED_BUDGET;
+        let top_before = self.grid.screen_top_line();
+        let mut closed = None;
+        loop {
+            let replies = self.grid.feed(&bytes);
+            if !replies.is_empty() {
+                self.backend.write_input(&replies);
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            match events.try_recv() {
+                Ok(BackendEvent::Data(more)) => bytes = more,
+                Ok(BackendEvent::Closed(message)) => {
+                    closed = Some(message);
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+        if self.scroll_offset > 0. {
+            let pushed = self.grid.screen_top_line() - top_before;
+            self.scroll_offset =
+                (self.scroll_offset + pushed as f32).min(self.grid.scrollback_len() as f32);
+        }
+        cx.notify();
+        closed
     }
 
     fn handle_key(&mut self, event: &KeyDownEvent) {
