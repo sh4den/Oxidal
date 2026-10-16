@@ -1,0 +1,34 @@
+name: oxidal
+title: Oxidal
+version: '0.7.0'
+summary: SSH, SFTP, telnet, serial and local shells in one window
+description: |
+  Oxidal puts SSH, SFTP, telnet, serial and local shells side by side in a
+  single native window, with an SFTP browser docked next to every SSH shell.
+license: GPL-3.0-only
+website: https://github.com/sh4den/Oxidal
+source-code: https://github.com/sh4den/Oxidal
+issues: https://github.com/sh4den/Oxidal/issues
+icon: root/usr/share/icons/hicolor/512x512/apps/oxidal.png
+
+base: core24
+grade: stable
+confinement: classic
+
+platforms:
+  amd64:
+  arm64:
+
+parts:
+  oxidal:
+    plugin: dump
+    source: root
+    override-prime: |
+      craftctl default
+      sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/512x512/apps/oxidal.png|' \
+        usr/share/applications/oxidal.desktop
+
+apps:
+  oxidal:
+    command: usr/bin/oxidal
+    desktop: usr/share/applications/oxidal.desktop
