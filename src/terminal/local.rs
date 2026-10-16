@@ -15,6 +15,20 @@ fn default_shell() -> String {
     }
 }
 
+fn flatpak_host_shell() -> CommandBuilder {
+    let mut cmd = CommandBuilder::new("flatpak-spawn");
+    cmd.args([
+        "--host",
+        "--watch-bus",
+        "--env=TERM=xterm-256color",
+        "--env=COLORTERM=truecolor",
+        "sh",
+        "-c",
+        r#"s=$(getent passwd "$(id -un)" | cut -d: -f7); exec "${s:-/bin/sh}""#,
+    ]);
+    cmd
+}
+
 pub fn spawn(rows: u16, cols: u16) -> anyhow::Result<Backend> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {
@@ -24,7 +38,11 @@ pub fn spawn(rows: u16, cols: u16) -> anyhow::Result<Backend> {
         pixel_height: 0,
     })?;
 
-    let mut cmd = CommandBuilder::new(default_shell());
+    let mut cmd = if std::env::var_os("FLATPAK_ID").is_some() {
+        flatpak_host_shell()
+    } else {
+        CommandBuilder::new(default_shell())
+    };
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     if std::env::var_os("LANG").is_none() {

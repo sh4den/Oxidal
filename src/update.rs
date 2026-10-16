@@ -37,8 +37,23 @@ struct Asset {
     browser_download_url: String,
 }
 
+fn managed_install() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    if std::env::var_os("FLATPAK_ID").is_some() || std::env::var_os("SNAP").is_some() {
+        return true;
+    }
+    std::env::current_exe()
+        .map(|exe| exe.starts_with("/usr") || exe.starts_with("/nix/store"))
+        .unwrap_or(false)
+}
+
 pub fn check() -> async_channel::Receiver<AvailableUpdate> {
     let (tx, rx) = async_channel::bounded(1);
+    if managed_install() {
+        return rx;
+    }
     std::thread::spawn(move || {
         cleanup_previous();
         if let Some(update) = fetch_latest() {
@@ -282,6 +297,8 @@ fn pick_asset(assets: &[Asset]) -> Option<&Asset> {
         ".tar",
         ".dmg",
         ".deb",
+        ".rpm",
+        ".snap",
         ".msi",
         ".appimage",
         "setup",

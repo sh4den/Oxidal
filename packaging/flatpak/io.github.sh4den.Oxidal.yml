@@ -1,0 +1,50 @@
+id: io.github.sh4den.Oxidal
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: oxidal
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --device=all
+  - --filesystem=home
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.freedesktop.Flatpak
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/oxidal/cargo
+    CARGO_NET_OFFLINE: 'true'
+    OXIDAL_APP_ID: io.github.sh4den.Oxidal
+
+modules:
+  - name: oxidal
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release
+      - install -Dm755 target/release/Oxidal /app/bin/oxidal
+      - |
+        sed -e 's/^Icon=.*/Icon=io.github.sh4den.Oxidal/' \
+            -e 's/^StartupWMClass=.*/StartupWMClass=io.github.sh4den.Oxidal/' \
+            packaging/linux/oxidal.desktop > io.github.sh4den.Oxidal.desktop
+      - install -Dm644 io.github.sh4den.Oxidal.desktop -t /app/share/applications
+      - install -Dm644 packaging/linux/io.github.sh4den.Oxidal.metainfo.xml -t /app/share/metainfo
+      - |
+        for size in 16 32 48 64 128 256 512; do
+          install -Dm644 packaging/linux/icons/$size.png \
+            /app/share/icons/hicolor/${size}x${size}/apps/io.github.sh4den.Oxidal.png
+        done
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - .flatpak-builder
+      - cargo-sources.json

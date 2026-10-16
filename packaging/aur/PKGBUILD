@@ -1,0 +1,25 @@
+# Maintainer: sh4den <69421356+sh4den@users.noreply.github.com>
+pkgname=oxidal-bin
+pkgver=0.7.0
+pkgrel=1
+pkgdesc='Cross-platform SSH, SFTP and serial terminal client'
+arch=('x86_64' 'aarch64')
+url='https://github.com/sh4den/Oxidal'
+license=('GPL-3.0-only')
+depends=('glibc' 'libgcc' 'dbus' 'systemd-libs' 'fontconfig' 'libxcb' 'libxkbcommon'
+         'libxkbcommon-x11' 'vulkan-icd-loader' 'hicolor-icon-theme')
+optdepends=(
+  'wayland: Wayland session support'
+  'org.freedesktop.secrets: store passwords in the system keyring'
+)
+options=('!debug')
+provides=('oxidal')
+conflicts=('oxidal')
+source_x86_64=("$url/releases/download/v$pkgver/oxidal_${pkgver}_amd64.deb")
+source_aarch64=("$url/releases/download/v$pkgver/oxidal_${pkgver}_arm64.deb")
+sha256sums_x86_64=('8a56fcd3c66bcf7dd1852716c6ff347700a0facadbb1beff3e52574ce2fc7183')
+sha256sums_aarch64=('26f9b116eecf2614fb46e86a11db703c1d12faca0150e1e8a0a2b5e580f85463')
+
+package() {
+  bsdtar -xf data.tar.* -C "$pkgdir"
+}
