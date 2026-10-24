@@ -73,7 +73,7 @@ Installers for every platform are on the [releases page](https://github.com/sh4d
 | Snap | `sudo snap install oxidal --classic` |
 | Arch Linux (AUR) | `yay -S oxidal-bin` |
 | Fedora, RHEL 10 | download the `.rpm` from the releases page, then `sudo dnf install ./oxidal-*.rpm` |
-| Nix | `nix run github:sh4den/Oxidal` |
+| Nix | `nix run 'github:sh4den/Oxidal?dir=packaging/nix'` |
 
 On Linux, installs owned by a package manager are left for it to update, so the in-app updater stays quiet there.
 
