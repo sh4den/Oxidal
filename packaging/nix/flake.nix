@@ -14,12 +14,12 @@
     in
     {
       packages = forAllSystems (pkgs: {
-        oxidal = pkgs.callPackage ./packaging/nix/package.nix { };
+        oxidal = pkgs.callPackage ./package.nix { };
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.oxidal;
       });
 
       overlays.default = final: _prev: {
-        oxidal = final.callPackage ./packaging/nix/package.nix { };
+        oxidal = final.callPackage ./package.nix { };
       };
     };
 }
