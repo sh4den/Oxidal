@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+use russh::client::Handle;
 use russh_sftp::client::SftpSession;
 use russh_sftp::client::fs::File;
 use russh_sftp::protocol::FileType;
@@ -17,6 +18,12 @@ const DOWNLOAD_CHUNK: usize = 128 * 1024;
 const PARALLEL_DOWNLOAD_MIN: u64 = 2 * DOWNLOAD_CHUNK as u64;
 // Bounds how long the transport thread lingers waiting for the disconnect to flush.
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
+const IDLE_PROBE_AFTER: Duration = Duration::from_secs(20);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const RECONNECT_ATTEMPTS: u32 = 8;
+const RECONNECT_FIRST_DELAY: Duration = Duration::from_secs(1);
+const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 struct Progress {
     last: Instant,
@@ -61,15 +68,13 @@ pub fn spawn(
             }
         };
 
-        let result = runtime.block_on(run(
+        let target = Target {
             host,
             port,
             credentials,
             proxy,
-            initial_path,
-            out_tx.clone(),
-            cmd_rx,
-        ));
+        };
+        let result = runtime.block_on(run(target, initial_path, out_tx.clone(), cmd_rx));
         let _ = out_tx.send_blocking(SftpEvent::Closed(result.err().map(|e| e.to_string())));
     });
 
@@ -79,103 +84,211 @@ pub fn spawn(
     }
 }
 
-async fn run(
+struct Target {
     host: String,
     port: u16,
     credentials: SshCredentials,
     proxy: Option<ProxyConfig>,
+}
+
+impl Target {
+    async fn open(&self) -> anyhow::Result<Connection> {
+        let session = ssh_client::connect(
+            self.host.clone(),
+            self.port,
+            self.credentials.clone(),
+            self.proxy.clone(),
+        )
+        .await?;
+
+        let channel = session.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+        let sftp = SftpSession::new(channel.into_stream()).await?;
+        Ok(Connection { session, sftp })
+    }
+}
+
+struct Connection {
+    session: Handle<ssh_client::Handler>,
+    sftp: SftpSession,
+}
+
+impl Connection {
+    async fn answers(&self) -> bool {
+        !self.session.is_closed()
+            && matches!(
+                tokio::time::timeout(PROBE_TIMEOUT, self.sftp.canonicalize(".")).await,
+                Ok(Ok(_))
+            )
+    }
+
+    async fn close(self) {
+        drop(self.sftp);
+        let _ = self
+            .session
+            .disconnect(russh::Disconnect::ByApplication, "", "en")
+            .await;
+        let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, self.session).await;
+    }
+}
+
+fn reconnect_delay(attempt: u32) -> Duration {
+    (RECONNECT_FIRST_DELAY * 2u32.saturating_pow(attempt)).min(RECONNECT_MAX_DELAY)
+}
+
+async fn reconnect(
+    target: &Target,
+    current_dir: &str,
+    out_tx: &async_channel::Sender<SftpEvent>,
+    cmd_rx: &async_channel::Receiver<SftpCommand>,
+) -> anyhow::Result<Connection> {
+    let mut last_err = anyhow::anyhow!("the connection was lost");
+    for attempt in 0..RECONNECT_ATTEMPTS {
+        let _ = out_tx
+            .send(SftpEvent::Reconnecting(format!(
+                "Connection lost, reconnecting (attempt {} of {RECONNECT_ATTEMPTS})...",
+                attempt + 1
+            )))
+            .await;
+        match target.open().await {
+            Ok(connection) => {
+                list_and_send(&connection.sftp, current_dir.to_string(), out_tx).await;
+                return Ok(connection);
+            }
+            Err(err) => last_err = err,
+        }
+        if cmd_rx.is_closed() {
+            break;
+        }
+        tokio::time::sleep(reconnect_delay(attempt)).await;
+    }
+    Err(anyhow::anyhow!(
+        "Lost the connection to {}:{} and couldn't reconnect: {last_err}",
+        target.host,
+        target.port
+    ))
+}
+
+async fn run(
+    target: Target,
     initial_path: String,
     out_tx: async_channel::Sender<SftpEvent>,
     cmd_rx: async_channel::Receiver<SftpCommand>,
 ) -> anyhow::Result<()> {
-    let session = ssh_client::connect(host, port, credentials, proxy).await?;
+    let mut connection = target.open().await?;
 
-    let channel = session.channel_open_session().await?;
-    channel.request_subsystem(true, "sftp").await?;
-    let stream = channel.into_stream();
-    let sftp = SftpSession::new(stream).await?;
-
-    let mut current_dir = sftp
+    let mut current_dir = connection
+        .sftp
         .canonicalize(initial_path.clone())
         .await
         .unwrap_or(initial_path);
 
-    list_and_send(&sftp, current_dir.clone(), &out_tx).await;
+    list_and_send(&connection.sftp, current_dir.clone(), &out_tx).await;
 
-    while let Ok(cmd) = cmd_rx.recv().await {
-        match cmd {
-            SftpCommand::List { path } => {
-                current_dir = path.clone();
-                list_and_send(&sftp, path, &out_tx).await;
-            }
-            SftpCommand::CreateDir { name } => {
-                let path = join_remote(&current_dir, &name);
-                if let Err(err) = sftp.create_dir(path).await {
-                    send_error(&out_tx, format!("Couldn't create folder: {err}")).await;
+    let mut health = tokio::time::interval(HEALTH_INTERVAL);
+    health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_used = Instant::now();
+
+    loop {
+        let cmd = tokio::select! {
+            cmd = cmd_rx.recv() => match cmd {
+                Ok(cmd) => cmd,
+                Err(_) => break,
+            },
+            _ = health.tick() => {
+                if connection.session.is_closed() {
+                    connection = reconnect(&target, &current_dir, &out_tx, &cmd_rx).await?;
+                    last_used = Instant::now();
                 }
-                list_and_send(&sftp, current_dir.clone(), &out_tx).await;
+                continue;
             }
-            SftpCommand::Rename { from, to } => {
-                if let Err(err) = sftp.rename(from, to).await {
-                    send_error(&out_tx, format!("Couldn't rename: {err}")).await;
-                }
-                list_and_send(&sftp, current_dir.clone(), &out_tx).await;
-            }
-            SftpCommand::RemoveFile { path } => {
-                if let Err(err) = sftp.remove_file(path).await {
-                    send_error(&out_tx, format!("Couldn't delete file: {err}")).await;
-                }
-                list_and_send(&sftp, current_dir.clone(), &out_tx).await;
-            }
-            SftpCommand::RemoveDir { path } => {
-                if let Err(err) = sftp.remove_dir(path).await {
-                    send_error(&out_tx, format!("Couldn't delete folder: {err}")).await;
-                }
-                list_and_send(&sftp, current_dir.clone(), &out_tx).await;
-            }
-            SftpCommand::Upload { local, remote } => {
-                do_upload(&sftp, &local, &remote, &out_tx).await;
-                list_and_send(&sftp, current_dir.clone(), &out_tx).await;
-            }
-            SftpCommand::Download {
-                remote,
-                local,
-                open_when_done,
-            } => {
-                if do_download(&sftp, &remote, &local, &out_tx).await
-                    && open_when_done
-                    && let Err(err) = open::that_detached(&local)
-                {
-                    send_error(&out_tx, format!("Couldn't open {}: {err}", local.display())).await;
-                }
-            }
-            SftpCommand::Read { remote } => {
-                let result = do_read(&sftp, &remote, &out_tx).await;
-                let _ = out_tx.send(SftpEvent::FileLoaded { remote, result }).await;
-            }
-            SftpCommand::Write { remote, bytes, ack } => {
-                do_write(&sftp, &remote, &bytes, &ack, &out_tx).await;
-                list_and_send(&sftp, current_dir.clone(), &out_tx).await;
-            }
-            SftpCommand::UploadDir { local, remote } => {
-                do_upload_dir(&sftp, &local, &remote, &out_tx).await;
-                list_and_send(&sftp, current_dir.clone(), &out_tx).await;
-            }
-            SftpCommand::DownloadDir { remote, local } => {
-                do_download_dir(&sftp, &remote, &local, &out_tx).await;
-            }
+        };
+
+        if connection.session.is_closed()
+            || (last_used.elapsed() >= IDLE_PROBE_AFTER && !connection.answers().await)
+        {
+            connection = reconnect(&target, &current_dir, &out_tx, &cmd_rx).await?;
         }
+
+        execute(&connection.sftp, cmd, &mut current_dir, &out_tx).await;
+        last_used = Instant::now();
     }
 
     // Panel is gone: close the subsystem and the session rather than leaving the
     // socket to die with this thread's runtime.
-    drop(sftp);
-    let _ = session
-        .disconnect(russh::Disconnect::ByApplication, "", "en")
-        .await;
-    let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, session).await;
+    connection.close().await;
 
     Ok(())
+}
+
+async fn execute(
+    sftp: &SftpSession,
+    cmd: SftpCommand,
+    current_dir: &mut String,
+    out_tx: &async_channel::Sender<SftpEvent>,
+) {
+    match cmd {
+        SftpCommand::List { path } => {
+            *current_dir = path.clone();
+            list_and_send(sftp, path, out_tx).await;
+        }
+        SftpCommand::CreateDir { name } => {
+            let path = join_remote(current_dir, &name);
+            if let Err(err) = sftp.create_dir(path).await {
+                send_error(out_tx, format!("Couldn't create folder: {err}")).await;
+            }
+            list_and_send(sftp, current_dir.clone(), out_tx).await;
+        }
+        SftpCommand::Rename { from, to } => {
+            if let Err(err) = sftp.rename(from, to).await {
+                send_error(out_tx, format!("Couldn't rename: {err}")).await;
+            }
+            list_and_send(sftp, current_dir.clone(), out_tx).await;
+        }
+        SftpCommand::RemoveFile { path } => {
+            if let Err(err) = sftp.remove_file(path).await {
+                send_error(out_tx, format!("Couldn't delete file: {err}")).await;
+            }
+            list_and_send(sftp, current_dir.clone(), out_tx).await;
+        }
+        SftpCommand::RemoveDir { path } => {
+            if let Err(err) = sftp.remove_dir(path).await {
+                send_error(out_tx, format!("Couldn't delete folder: {err}")).await;
+            }
+            list_and_send(sftp, current_dir.clone(), out_tx).await;
+        }
+        SftpCommand::Upload { local, remote } => {
+            do_upload(sftp, &local, &remote, out_tx).await;
+            list_and_send(sftp, current_dir.clone(), out_tx).await;
+        }
+        SftpCommand::Download {
+            remote,
+            local,
+            open_when_done,
+        } => {
+            if do_download(sftp, &remote, &local, out_tx).await
+                && open_when_done
+                && let Err(err) = open::that_detached(&local)
+            {
+                send_error(out_tx, format!("Couldn't open {}: {err}", local.display())).await;
+            }
+        }
+        SftpCommand::Read { remote } => {
+            let result = do_read(sftp, &remote, out_tx).await;
+            let _ = out_tx.send(SftpEvent::FileLoaded { remote, result }).await;
+        }
+        SftpCommand::Write { remote, bytes, ack } => {
+            do_write(sftp, &remote, &bytes, &ack, out_tx).await;
+            list_and_send(sftp, current_dir.clone(), out_tx).await;
+        }
+        SftpCommand::UploadDir { local, remote } => {
+            do_upload_dir(sftp, &local, &remote, out_tx).await;
+            list_and_send(sftp, current_dir.clone(), out_tx).await;
+        }
+        SftpCommand::DownloadDir { remote, local } => {
+            do_download_dir(sftp, &remote, &local, out_tx).await;
+        }
+    }
 }
 
 async fn send_error(out_tx: &async_channel::Sender<SftpEvent>, message: String) {
@@ -793,6 +906,15 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reconnect_backoff_doubles_up_to_a_ceiling() {
+        let delays: Vec<u64> = (0..RECONNECT_ATTEMPTS)
+            .map(|attempt| reconnect_delay(attempt).as_secs())
+            .collect();
+        assert_eq!(delays, vec![1, 2, 4, 8, 16, 30, 30, 30]);
+        assert_eq!(reconnect_delay(u32::MAX), RECONNECT_MAX_DELAY);
     }
 
     #[test]
