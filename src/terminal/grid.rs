@@ -11,6 +11,7 @@ pub enum Color {
     #[default]
     Default,
     DefaultFg,
+    DefaultBg,
     Indexed(u8),
     Rgb(u8, u8, u8),
 }
@@ -19,6 +20,7 @@ impl Color {
     pub fn as_fg(self, palette: &TerminalPalette) -> Hsla {
         match self {
             Color::Default | Color::DefaultFg => palette.foreground,
+            Color::DefaultBg => palette.background,
             Color::Indexed(i) => palette_256(i as u16, palette),
             Color::Rgb(r, g, b) => rgb_to_hsla(r as f32 / 255., g as f32 / 255., b as f32 / 255.),
         }
@@ -26,7 +28,7 @@ impl Color {
 
     pub fn as_bg(self, palette: &TerminalPalette) -> Option<Hsla> {
         match self {
-            Color::Default => None,
+            Color::Default | Color::DefaultBg => None,
             other => Some(other.as_fg(palette)),
         }
     }
@@ -498,11 +500,15 @@ impl Grid {
             }
         }
         let (fg, bg) = if self.attrs.reverse {
+            let fg = match self.attrs.bg {
+                Color::Default => Color::DefaultBg,
+                c => c,
+            };
             let bg = match self.attrs.fg {
                 Color::Default => Color::DefaultFg,
                 c => c,
             };
-            (self.attrs.bg, bg)
+            (fg, bg)
         } else {
             (self.attrs.fg, self.attrs.bg)
         };
@@ -966,5 +972,23 @@ fn dec_graphics(ch: char) -> char {
         '~' => '·',
         '_' => ' ',
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reverse_video_swaps_the_default_colours() {
+        let palette = TerminalPalette::default();
+        let mut grid = Grid::new(2, 10);
+        grid.feed(b"\x1b[7mx\x1b[27my");
+
+        let row = grid.line_cells(grid.screen_top_line()).expect("row");
+        assert_eq!(row[0].fg.as_fg(&palette), palette.background);
+        assert_eq!(row[0].bg.as_bg(&palette), Some(palette.foreground));
+        assert_eq!(row[1].fg.as_fg(&palette), palette.foreground);
+        assert_eq!(row[1].bg.as_bg(&palette), None);
     }
 }
