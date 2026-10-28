@@ -81,6 +81,7 @@ enum SftpEvent {
         entries: Vec<SftpEntry>,
     },
     Error(String),
+    Reconnecting(String),
     TransferStarted {
         label: String,
         total: Option<u64>,

@@ -1298,6 +1298,7 @@ impl Render for SessionWindow {
                 cx,
             )))
             .child(footer)
+            .children(Root::render_dialog_layer(window, cx))
     }
 }
 

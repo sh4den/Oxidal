@@ -25,7 +25,10 @@ use gpui_component::{Root, Theme, ThemeMode, TitleBar};
 use crate::app::OxidalApp;
 use crate::terminal::view::{CopySelection, CutSelection, PasteClipboard, SendTab, SendTabPrev};
 
-pub const APP_ID: &str = "oxidal";
+pub const APP_ID: &str = match option_env!("OXIDAL_APP_ID") {
+    Some(id) => id,
+    None => "oxidal",
+};
 
 fn main() {
     let application = gpui_platform::application().with_assets(crate::assets::Assets);

@@ -5,8 +5,8 @@ use crate::settings_view::SettingsView;
 use crate::sftp::{SftpPanel, SftpWorkspace};
 use crate::terminal::{self, TerminalView};
 use gpui::{
-    AppContext as _, Context, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, Stateful,
+    AnyWindowHandle, AppContext as _, Context, Div, ElementId, Entity, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, Window, WindowHandle, div,
     prelude::FluentBuilder as _, px,
 };
@@ -249,10 +249,22 @@ pub struct OxidalApp {
 impl OxidalApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let window_handle = window.window_handle();
-        cx.spawn(async move |_this, cx| {
+        cx.spawn(async move |this, cx| {
             let requests = crate::host_keys::requests();
             while let Ok(request) = requests.recv().await {
-                let opened = cx.update_window(window_handle, |_, window, cx| {
+                let active = cx.update(|cx| cx.active_window());
+                let target = this
+                    .read_with(cx, |app, _| {
+                        active.filter(|active| {
+                            app.session_windows
+                                .values()
+                                .any(|handle| AnyWindowHandle::from(*handle) == *active)
+                        })
+                    })
+                    .ok()
+                    .flatten()
+                    .unwrap_or(window_handle);
+                let opened = cx.update_window(target, |_, window, cx| {
                     window.activate_window();
                     crate::host_keys::open_prompt(request, window, cx);
                 });
