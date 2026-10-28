@@ -62,6 +62,21 @@ Your sessions live in a plain JSON file you can read, diff and back up yourself.
 | **Make it yours** | Light and dark themes, a searchable picker over every font your system has, and a window opacity slider if you like your terminal glassy. |
 | **Small in memory** | Every terminal cell is packed into 12 bytes, so screen buffers stay cheap even with a stack of tabs open. |
 
+## Install
+
+Installers for every platform are on the [releases page](https://github.com/sh4den/Oxidal/releases/latest). If you would rather let a package manager keep Oxidal up to date:
+
+| Where | Command |
+| --- | --- |
+| macOS (Homebrew) | `brew install --cask sh4den/tap/oxidal` |
+| Flatpak | `flatpak install flathub io.github.sh4den.Oxidal` |
+| Snap | `sudo snap install oxidal --classic` |
+| Arch Linux (AUR) | `yay -S oxidal-bin` |
+| Fedora, RHEL 10 | download the `.rpm` from the releases page, then `sudo dnf install ./oxidal-*.rpm` |
+| Nix | `nix run 'github:sh4den/Oxidal?dir=packaging/nix'` |
+
+On Linux, installs owned by a package manager are left for it to update, so the in-app updater stays quiet there.
+
 ## Getting Started
 
 ### Requirements

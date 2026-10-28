@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.sh4den.Oxidal</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+
+  <name>Oxidal</name>
+  <summary>Every session in one window</summary>
+  <developer id="io.github.sh4den">
+    <name>sh4den</name>
+  </developer>
+
+  <description>
+    <p>
+      Oxidal puts SSH, SFTP, telnet, serial and local shells side by side in a single
+      native window, organized into folders in a sidebar.
+    </p>
+    <ul>
+      <li>SSH sessions with an SFTP file browser docked next to the terminal</li>
+      <li>A two sided SFTP file manager with drag and drop transfers</li>
+      <li>A real terminal emulator with truecolor, scroll regions and the alternate screen</li>
+      <li>Live CPU, memory, network and disk monitoring for SSH hosts</li>
+      <li>Serial consoles with port detection, and a proper telnet client</li>
+      <li>Passwords and key passphrases kept in the system keyring, never on disk</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.sh4den.Oxidal.desktop</launchable>
+  <provides>
+    <binary>oxidal</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/sh4den/Oxidal</url>
+  <url type="bugtracker">https://github.com/sh4den/Oxidal/issues</url>
+  <url type="vcs-browser">https://github.com/sh4den/Oxidal</url>
+  <url type="contribute">https://github.com/sh4den/Oxidal/blob/main/CONTRIBUTING.md</url>
+
+  <categories>
+    <category>Network</category>
+    <category>RemoteAccess</category>
+  </categories>
+  <keywords>
+    <keyword>ssh</keyword>
+    <keyword>sftp</keyword>
+    <keyword>serial</keyword>
+    <keyword>telnet</keyword>
+    <keyword>terminal</keyword>
+  </keywords>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://github.com/user-attachments/assets/c4483678-4f32-4e09-86b2-ef6a7b4a83ec</image>
+    </screenshot>
+    <screenshot>
+      <image>https://github.com/user-attachments/assets/a9227d35-c436-428f-83b2-87f82f9813cb</image>
+    </screenshot>
+    <screenshot>
+      <image>https://github.com/user-attachments/assets/8aa1760d-1d60-48b5-9f2d-d8c1a732f625</image>
+    </screenshot>
+    <screenshot>
+      <image>https://github.com/user-attachments/assets/97aa4887-5e3d-4413-bd6f-e98704f54b56</image>
+    </screenshot>
+  </screenshots>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#f5a48c</color>
+    <color type="primary" scheme_preference="dark">#7a1d0b</color>
+  </branding>
+
+  <content_rating type="oars-1.1" />
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <releases>
+    <release version="0.7.0" date="2026-09-24" />
+    <release version="0.6.0" date="2026-09-04" />
+    <release version="0.5.2" date="2026-08-31" />
+  </releases>
+</component>
