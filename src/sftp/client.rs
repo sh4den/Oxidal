@@ -1,11 +1,9 @@
-use std::io::SeekFrom;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use russh::client::Handle;
 use russh_sftp::client::SftpSession;
-use russh_sftp::client::fs::File;
 use russh_sftp::protocol::FileType;
 
 use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote, safe_local_name};
@@ -14,8 +12,6 @@ use crate::ssh_client::{self, SshCredentials};
 
 const CHUNK_SIZE: usize = 64 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
-const DOWNLOAD_CHUNK: usize = 128 * 1024;
-const PARALLEL_DOWNLOAD_MIN: u64 = 2 * DOWNLOAD_CHUNK as u64;
 // Bounds how long the transport thread lingers waiting for the disconnect to flush.
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -24,6 +20,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const RECONNECT_ATTEMPTS: u32 = 8;
 const RECONNECT_FIRST_DELAY: Duration = Duration::from_secs(1);
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
+const WRITE_PACKET_LEN: u32 = 256 * 1024;
 
 struct Progress {
     last: Instant,
@@ -84,6 +81,13 @@ pub fn spawn(
     }
 }
 
+fn sftp_config() -> russh_sftp::client::Config {
+    russh_sftp::client::Config {
+        max_write_packet_len: WRITE_PACKET_LEN,
+        ..Default::default()
+    }
+}
+
 struct Target {
     host: String,
     port: u16,
@@ -103,7 +107,7 @@ impl Target {
 
         let channel = session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
-        let sftp = SftpSession::new(channel.into_stream()).await?;
+        let sftp = SftpSession::new_with_config(channel.into_stream(), sftp_config()).await?;
         Ok(Connection { session, sftp })
     }
 }
@@ -399,111 +403,6 @@ async fn copy_down(
     sftp: &SftpSession,
     remote: &str,
     local: &std::path::Path,
-    size: u64,
-    out_tx: &async_channel::Sender<SftpEvent>,
-    done: &mut u64,
-) -> anyhow::Result<()> {
-    if size >= PARALLEL_DOWNLOAD_MIN {
-        if let Some(streams) = open_streams(sftp, remote).await {
-            return copy_down_parallel(local, size, streams, out_tx, done).await;
-        }
-    }
-    copy_down_sequential(sftp, remote, local, out_tx, done).await
-}
-
-async fn open_streams(sftp: &SftpSession, remote: &str) -> Option<[File; 4]> {
-    let first = sftp.open(remote).await.ok()?;
-    let second = sftp.open(remote).await.ok()?;
-    let third = sftp.open(remote).await.ok()?;
-    let fourth = sftp.open(remote).await.ok()?;
-    Some([first, second, third, fourth])
-}
-
-fn round_range(base: u64, index: usize, size: u64) -> (u64, usize) {
-    let start = base + (index * DOWNLOAD_CHUNK) as u64;
-    let len = size.saturating_sub(start).min(DOWNLOAD_CHUNK as u64) as usize;
-    (start, len)
-}
-
-async fn read_range(file: &mut File, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
-    if len == 0 {
-        return Ok(Vec::new());
-    }
-    file.seek(SeekFrom::Start(offset)).await?;
-    let mut buf = vec![0u8; len];
-    file.read_exact(&mut buf).await?;
-    Ok(buf)
-}
-
-async fn copy_down_parallel(
-    local: &std::path::Path,
-    size: u64,
-    streams: [File; 4],
-    out_tx: &async_channel::Sender<SftpEvent>,
-    done: &mut u64,
-) -> anyhow::Result<()> {
-    let [mut first, mut second, mut third, mut fourth] = streams;
-    let mut local_file = create_new(local).await.map_err(|err| {
-        if err.kind() == std::io::ErrorKind::AlreadyExists {
-            anyhow::anyhow!(
-                "{} already exists, so nothing was written over it",
-                local.display()
-            )
-        } else {
-            anyhow::anyhow!("couldn't create {}: {err}", local.display())
-        }
-    })?;
-
-    let mut progress = Progress::new();
-    let mut offset = 0u64;
-    while offset < size {
-        let (first_at, first_len) = round_range(offset, 0, size);
-        let (second_at, second_len) = round_range(offset, 1, size);
-        let (third_at, third_len) = round_range(offset, 2, size);
-        let (fourth_at, fourth_len) = round_range(offset, 3, size);
-
-        let chunks = tokio::try_join!(
-            read_range(&mut first, first_at, first_len),
-            read_range(&mut second, second_at, second_len),
-            read_range(&mut third, third_at, third_len),
-            read_range(&mut fourth, fourth_at, fourth_len),
-        )?;
-
-        let mut round = 0u64;
-        for chunk in [chunks.0, chunks.1, chunks.2, chunks.3] {
-            if chunk.is_empty() {
-                continue;
-            }
-            local_file.write_all(&chunk).await?;
-            round += chunk.len() as u64;
-        }
-        if round == 0 {
-            break;
-        }
-        offset += round;
-        *done += round;
-        if progress.due() {
-            let _ = out_tx
-                .send(SftpEvent::TransferProgress { transferred: *done })
-                .await;
-        }
-    }
-
-    let _ = first.shutdown().await;
-    let _ = second.shutdown().await;
-    let _ = third.shutdown().await;
-    let _ = fourth.shutdown().await;
-    local_file.flush().await?;
-    let _ = out_tx
-        .send(SftpEvent::TransferProgress { transferred: *done })
-        .await;
-    Ok(())
-}
-
-async fn copy_down_sequential(
-    sftp: &SftpSession,
-    remote: &str,
-    local: &std::path::Path,
     out_tx: &async_channel::Sender<SftpEvent>,
     done: &mut u64,
 ) -> anyhow::Result<()> {
@@ -602,7 +501,7 @@ async fn do_download(
         .await;
 
     let mut done = 0u64;
-    let result = copy_down(sftp, remote, local, total, out_tx, &mut done).await;
+    let result = copy_down(sftp, remote, local, out_tx, &mut done).await;
     finish_transfer(out_tx, result).await
 }
 
@@ -835,15 +734,7 @@ async fn do_download_dir(
         }
         let mut done = 0u64;
         for file in &files {
-            copy_down(
-                sftp,
-                &file.source,
-                &file.destination,
-                file.size,
-                out_tx,
-                &mut done,
-            )
-            .await?;
+            copy_down(sftp, &file.source, &file.destination, out_tx, &mut done).await?;
         }
         anyhow::Ok(())
     }
