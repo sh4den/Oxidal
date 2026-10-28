@@ -6,7 +6,7 @@ use gpui::{
     Anchor, AnyElement, AppContext as _, ClickEvent, Context, DragMoveEvent, Empty, EntityId,
     EventEmitter, ExternalPaths, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _,
     UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, relative, svg,
     uniform_list,
 };
@@ -1365,7 +1365,7 @@ impl SftpPanel {
     }
 
     fn render_entries(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
-        uniform_list(
+        let mut list = uniform_list(
             "sftp-rows",
             count,
             cx.processor(|panel, range: Range<usize>, _, cx| {
@@ -1383,8 +1383,9 @@ impl SftpPanel {
         )
         .track_scroll(&self.list_scroll)
         .size_full()
-        .min_w(relative(1.))
-        .into_any_element()
+        .min_w(relative(1.));
+        list.style().restrict_scroll_to_axis = Some(true);
+        list.into_any_element()
     }
 
     fn render_row(&self, entry: &SftpEntry, cx: &mut Context<Self>) -> AnyElement {
@@ -1724,8 +1725,22 @@ impl Render for SftpPanel {
                         div()
                             .id("sftp-hscroll")
                             .size_full()
-                            .overflow_x_scroll()
+                            .overflow_x_hidden()
                             .track_scroll(&self.h_scroll)
+                            .on_scroll_wheel(cx.listener(
+                                |panel, event: &ScrollWheelEvent, window, cx| {
+                                    if !event.modifiers.shift {
+                                        return;
+                                    }
+                                    let delta = event.delta.pixel_delta(window.line_height());
+                                    let step = if delta.x == px(0.) { delta.y } else { delta.x };
+                                    let mut offset = panel.h_scroll.offset();
+                                    let max = panel.h_scroll.max_offset().x;
+                                    offset.x = (offset.x + step).clamp(-max, px(0.));
+                                    panel.h_scroll.set_offset(offset);
+                                    cx.notify();
+                                },
+                            ))
                             .child(
                                 v_flex()
                                     .h_full()
