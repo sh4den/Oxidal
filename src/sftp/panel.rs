@@ -315,6 +315,19 @@ impl SftpPanel {
                             break;
                         }
                     }
+                    Ok(SftpEvent::Reconnecting(message)) => {
+                        if this
+                            .update(cx, |panel, cx| {
+                                panel.loading = true;
+                                panel.transfer = None;
+                                panel.error = Some(message);
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                     Ok(SftpEvent::TransferStarted { label, total }) => {
                         if this
                             .update(cx, |panel, cx| {
