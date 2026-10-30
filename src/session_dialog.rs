@@ -538,10 +538,8 @@ impl SessionWindow {
             monitoring: session.is_none_or(|s| s.monitoring),
             test_state: TestState::Idle,
             name: text_field(
-                session
-                    .map(|s| s.name.clone())
-                    .unwrap_or_else(|| kind.label().to_string()),
-                "",
+                session.map(|s| s.name.clone()).unwrap_or_default(),
+                "host (user)",
                 false,
                 window,
                 cx,
@@ -646,10 +644,6 @@ impl SessionWindow {
             return;
         }
         let prev = self.kind;
-        if self.name.read(cx).value() == prev.label() {
-            self.name
-                .update(cx, |state, cx| state.set_value(kind.label(), window, cx));
-        }
         if self.port.read(cx).value() == prev.default_port().to_string() {
             self.port.update(cx, |state, cx| {
                 state.set_value(kind.default_port().to_string(), window, cx)
@@ -739,10 +733,7 @@ impl SessionWindow {
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let kind = self.kind;
-        let mut label = self.name.read(cx).value().trim().to_string();
-        if label.is_empty() {
-            label = kind.label().to_string();
-        }
+        let label = self.name.read(cx).value().trim().to_string();
         let mut session = Session::new(label, kind);
         if let Some(id) = self.editing_id {
             session.id = id;
@@ -798,6 +789,9 @@ impl SessionWindow {
         session.icon = self.selected_icon.read(cx).0;
         session.color = self.selected_color.read(cx).0;
         session.monitoring = self.monitoring;
+        if session.name.is_empty() {
+            session.name = session.default_name();
+        }
 
         let editing = self.editing_id.is_some();
         let _ = self.weak_app.update(cx, |app, cx| {
@@ -1138,7 +1132,7 @@ impl SessionWindow {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("Shown in the sessions list"),
+                            .child("Shown in the sessions list. Leave empty to use host (user)"),
                     ),
             )
             .child(icon_picker(&self.selected_icon, cx))
