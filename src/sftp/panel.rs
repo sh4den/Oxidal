@@ -578,9 +578,7 @@ impl SftpPanel {
                     view.update(cx, |panel, cx| match mode {
                         RemoteOpenMode::Editor => panel.open_in_editor(&entry, cx),
                         RemoteOpenMode::DefaultApp => panel.open_file(&entry, cx),
-                        RemoteOpenMode::Ask => {
-                            panel.choose_open_dialog(entry.clone(), window, cx)
-                        }
+                        RemoteOpenMode::Ask => panel.choose_open_dialog(entry.clone(), window, cx),
                     });
                 }
             };
@@ -669,12 +667,14 @@ impl SftpPanel {
                 )
                 .footer(
                     DialogFooter::new()
-                        .child(Button::new("choose-open-default").label("Default app").on_click(
-                            move |_, window, cx| {
-                                window.close_dialog(cx);
-                                view.update(cx, |panel, cx| panel.open_file(&entry, cx));
-                            },
-                        ))
+                        .child(
+                            Button::new("choose-open-default")
+                                .label("Default app")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    view.update(cx, |panel, cx| panel.open_file(&entry, cx));
+                                }),
+                        )
                         .child(
                             Button::new("choose-open-editor")
                                 .primary()
@@ -754,7 +754,8 @@ impl SftpPanel {
             cx.notify();
             return;
         }
-        self.pending_edits.retain(|pending| pending.path != entry.path);
+        self.pending_edits
+            .retain(|pending| pending.path != entry.path);
         self.pending_edits.push(entry.clone());
         client.read_file(entry.path.clone());
         cx.notify();
@@ -906,19 +907,23 @@ impl SftpPanel {
                 })
                 .footer(
                     DialogFooter::new()
-                        .child(Button::new("edit-upload-ask").label("Ask each time").on_click({
-                            let view = view.clone();
-                            let remote = remote.clone();
-                            move |_, window, cx| {
-                                cx.global_mut::<AppSettings>().edit_upload =
-                                    Some(EditUploadMode::Ask);
-                                crate::settings::save_settings(cx.global::<AppSettings>());
-                                view.update(cx, |panel, cx| {
-                                    panel.resolve_edit_upload(&remote, true, cx)
-                                });
-                                window.close_dialog(cx);
-                            }
-                        }))
+                        .child(
+                            Button::new("edit-upload-ask")
+                                .label("Ask each time")
+                                .on_click({
+                                    let view = view.clone();
+                                    let remote = remote.clone();
+                                    move |_, window, cx| {
+                                        cx.global_mut::<AppSettings>().edit_upload =
+                                            Some(EditUploadMode::Ask);
+                                        crate::settings::save_settings(cx.global::<AppSettings>());
+                                        view.update(cx, |panel, cx| {
+                                            panel.resolve_edit_upload(&remote, true, cx)
+                                        });
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        )
                         .child(
                             Button::new("edit-upload-auto")
                                 .primary()
@@ -966,9 +971,7 @@ impl SftpPanel {
                     let view = view.clone();
                     let remote = remote.clone();
                     move |_, _, cx| {
-                        view.update(cx, |panel, cx| {
-                            panel.resolve_edit_upload(&remote, true, cx)
-                        });
+                        view.update(cx, |panel, cx| panel.resolve_edit_upload(&remote, true, cx));
                         true
                     }
                 })
@@ -993,18 +996,21 @@ impl SftpPanel {
                                 window.close_dialog(cx);
                             }
                         }))
-                        .child(Button::new("edit-upload-send").primary().label("Upload").on_click(
-                            {
-                                let view = view.clone();
-                                let remote = remote.clone();
-                                move |_, window, cx| {
-                                    view.update(cx, |panel, cx| {
-                                        panel.resolve_edit_upload(&remote, true, cx)
-                                    });
-                                    window.close_dialog(cx);
-                                }
-                            },
-                        )),
+                        .child(
+                            Button::new("edit-upload-send")
+                                .primary()
+                                .label("Upload")
+                                .on_click({
+                                    let view = view.clone();
+                                    let remote = remote.clone();
+                                    move |_, window, cx| {
+                                        view.update(cx, |panel, cx| {
+                                            panel.resolve_edit_upload(&remote, true, cx)
+                                        });
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        ),
                 )
         });
     }
@@ -1536,7 +1542,11 @@ fn entry_menu(
     }
     if !entry.is_dir {
         let open_entry = entry.clone();
-        let label = if is_remote { "Open in default app" } else { "Open" };
+        let label = if is_remote {
+            "Open in default app"
+        } else {
+            "Open"
+        };
         menu = menu.item(PopupMenuItem::new(label).on_click(
             window.listener_for(view, move |panel, _, _, cx| {
                 panel.open_file(&open_entry, cx)
