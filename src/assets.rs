@@ -21,12 +21,15 @@ const BUNDLED: &[(&str, &[u8])] = bundled_icons![
     "code",
     "container",
     "database",
+    "file-plus",
     "firewall",
     "flask",
+    "folder-plus",
     "gauge",
     "git-branch",
     "key",
     "layers",
+    "list",
     "lock",
     "monitor",
     "package",
@@ -43,8 +46,14 @@ const BUNDLED: &[(&str, &[u8])] = bundled_icons![
     "zap",
 ];
 
+pub const LOGO: &str = "images/oxidal/logo.png";
+const LOGO_PNG: &[u8] = include_bytes!("../packaging/linux/icons/256.png");
+
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == LOGO {
+            return Ok(Some(Cow::Borrowed(LOGO_PNG)));
+        }
         if let Some((_, data)) = BUNDLED.iter().find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(data)));
         }

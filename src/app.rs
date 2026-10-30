@@ -6,9 +6,9 @@ use crate::sftp::{SftpPanel, SftpWorkspace};
 use crate::terminal::{self, TerminalView};
 use gpui::{
     AnyWindowHandle, AppContext as _, Context, Div, ElementId, Entity, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Window, WindowHandle, div,
-    prelude::FluentBuilder as _, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, WindowHandle,
+    canvas, div, prelude::FluentBuilder as _, px,
 };
 
 use gpui_component::button::Button;
@@ -34,6 +34,7 @@ const TERM_ROWS: usize = 32;
 const TERM_COLS: usize = 110;
 
 const FOLDER_GUIDE_INDENT: gpui::Pixels = px(18.);
+const WELCOME_SESSIONS: usize = 6;
 
 const CLIPBOARD_MODIFIER: &str = if cfg!(target_os = "macos") {
     "⌘"
@@ -95,6 +96,39 @@ struct DragPreview {
     icon: SharedString,
     color: Option<Hsla>,
     label: SharedString,
+    kind: PreviewKind,
+    grab: gpui::Point<gpui::Pixels>,
+}
+
+#[derive(Clone)]
+enum PreviewKind {
+    Row { detail: SharedString },
+    Tab,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DragSource {
+    Session(Uuid),
+    Folder(Uuid),
+    Tab(usize),
+}
+
+fn start_drag(
+    app: &WeakEntity<OxidalApp>,
+    source: DragSource,
+    preview: &DragPreview,
+    grab: gpui::Point<gpui::Pixels>,
+    cx: &mut gpui::App,
+) -> Entity<DragPreview> {
+    let _ = app.update(cx, |app, cx| {
+        app.dragging = Some(source);
+        cx.notify();
+    });
+    let preview = DragPreview {
+        grab,
+        ..preview.clone()
+    };
+    cx.new(|_| preview)
 }
 
 #[derive(Clone)]
@@ -117,24 +151,99 @@ struct TabDrag {
 
 impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
+        let theme = cx.theme();
+        let accent = self.color.unwrap_or(theme.primary);
+
+        let detail = match &self.kind {
+            PreviewKind::Row { detail } => detail.clone(),
+            PreviewKind::Tab => {
+                return h_flex()
+                    .h(px(32.))
+                    .items_center()
+                    .gap_2()
+                    .pl_3()
+                    .pr_2()
+                    .bg(theme.tab_active)
+                    .text_color(theme.tab_active_foreground)
+                    .font_family(theme.font_family.clone())
+                    .text_sm()
+                    .border_1()
+                    .border_color(theme.border)
+                    .shadow_lg()
+                    .child(
+                        Icon::empty()
+                            .path(self.icon.clone())
+                            .xsmall()
+                            .when_some(self.color, |this, color| this.text_color(color)),
+                    )
+                    .child(self.label.clone())
+                    .child(
+                        div()
+                            .size(px(18.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(Icon::new(IconName::Close).with_size(px(11.))),
+                    )
+                    .into_any_element();
+            }
+        };
+
+        let card = h_flex()
             .items_center()
             .gap_2()
-            .px_2()
-            .py_1()
-            .rounded_md()
+            .min_w(px(160.))
+            .max_w(px(280.))
+            .pl_1p5()
+            .pr_3()
+            .py_1p5()
+            .rounded_lg()
             .border_1()
-            .border_color(cx.theme().primary)
-            .bg(cx.theme().popover)
-            .shadow_md()
-            .text_xs()
+            .border_color(accent.opacity(0.5))
+            .bg(theme.popover)
+            .text_color(theme.popover_foreground)
+            .font_family(theme.font_family.clone())
+            .shadow_lg()
             .child(
-                Icon::empty()
-                    .path(self.icon.clone())
-                    .xsmall()
-                    .when_some(self.color, |this, color| this.text_color(color)),
+                div()
+                    .flex_none()
+                    .size(px(24.))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(accent.opacity(0.18))
+                    .child(
+                        Icon::empty()
+                            .path(self.icon.clone())
+                            .small()
+                            .text_color(self.color.unwrap_or(theme.popover_foreground)),
+                    ),
             )
-            .child(self.label.clone())
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(self.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(detail),
+                    ),
+            );
+
+        div()
+            .pl((self.grab.x - px(20.)).max(px(0.)))
+            .pt((self.grab.y - px(20.)).max(px(0.)))
+            .child(card)
+            .into_any_element()
     }
 }
 
@@ -244,6 +353,8 @@ pub struct OxidalApp {
     filter: Entity<InputState>,
     update_state: UpdateState,
     session_windows: HashMap<Option<Uuid>, WindowHandle<Root>>,
+    dragging: Option<DragSource>,
+    tab_scroll: ScrollHandle,
 }
 
 impl OxidalApp {
@@ -307,7 +418,13 @@ impl OxidalApp {
             filter,
             update_state: UpdateState::Idle,
             session_windows: HashMap::new(),
+            dragging: None,
+            tab_scroll: ScrollHandle::new(),
         }
+    }
+
+    fn is_dragging(&self, source: DragSource, cx: &gpui::App) -> bool {
+        cx.has_active_drag() && self.dragging == Some(source)
     }
 
     pub fn folders(&self) -> &[SessionFolder] {
@@ -727,6 +844,7 @@ impl OxidalApp {
 
     fn render_session_row(&self, item: &Session, cx: &mut Context<Self>) -> impl IntoElement {
         let id = item.id;
+        let weak_app = cx.weak_entity();
         let selected = self.selected_session == Some(id);
         let open = self.is_open(id);
         let group_name = SharedString::from(format!("session-{id}"));
@@ -782,6 +900,9 @@ impl OxidalApp {
                     }
                 }),
             )
+            .when(self.is_dragging(DragSource::Session(id), cx), |this| {
+                this.opacity(0.4)
+            })
             .on_drag(
                 SessionDrag {
                     id,
@@ -789,17 +910,33 @@ impl OxidalApp {
                         icon: icon.clone(),
                         color,
                         label: name.clone(),
+                        kind: PreviewKind::Row {
+                            detail: detail.clone(),
+                        },
+                        grab: Default::default(),
                     },
                 },
-                |drag, _, _, cx| cx.new(|_| drag.preview.clone()),
+                move |drag, grab, _, cx| {
+                    start_drag(
+                        &weak_app,
+                        DragSource::Session(drag.id),
+                        &drag.preview,
+                        grab,
+                        cx,
+                    )
+                },
             )
-            .can_drop(move |drag, _, _| {
-                drag.downcast_ref::<SessionDrag>()
-                    .is_some_and(|drag| drag.id != id)
+            .drag_over::<SessionDrag>(move |style, drag, _, cx| {
+                if drag.id == id {
+                    style
+                } else {
+                    style.border_color(cx.theme().primary)
+                }
             })
-            .drag_over::<SessionDrag>(|style, _, _, cx| style.border_color(cx.theme().primary))
             .on_drop(cx.listener(move |view, drag: &SessionDrag, _, cx| {
-                view.move_session(drag.id, DropTarget::Before(id), cx);
+                if drag.id != id {
+                    view.move_session(drag.id, DropTarget::Before(id), cx);
+                }
             }))
             .child(
                 div()
@@ -953,6 +1090,67 @@ impl OxidalApp {
         }
     }
 
+    fn render_rail_item(
+        &self,
+        id: &'static str,
+        icon: impl Into<Icon>,
+        tooltip: &'static str,
+        active: bool,
+        mode: SidebarMode,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let (fg, bg) = if active {
+            (theme.primary, theme.primary.opacity(0.14))
+        } else {
+            (theme.muted_foreground, gpui::transparent_black())
+        };
+        let hover_bg = if active {
+            theme.primary.opacity(0.2)
+        } else {
+            theme.sidebar_accent
+        };
+        let hover_fg = if active {
+            theme.primary
+        } else {
+            theme.sidebar_accent_foreground
+        };
+
+        div()
+            .relative()
+            .w_full()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(10.))
+                    .bottom(px(10.))
+                    .w(px(3.))
+                    .rounded_r_sm()
+                    .when(active, |this| this.bg(theme.primary)),
+            )
+            .child(
+                div()
+                    .id(id)
+                    .size(px(44.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .bg(bg)
+                    .text_color(fg)
+                    .hover(move |style| style.bg(hover_bg).text_color(hover_fg))
+                    .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+                    .child(icon.into().with_size(px(22.)))
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.set_sidebar_mode(mode, cx);
+                    })),
+            )
+    }
+
     fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.effective_sidebar_mode();
         let sessions_active = !self.sidebar_collapsed && mode == SidebarMode::Sessions;
@@ -969,35 +1167,23 @@ impl OxidalApp {
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
-            .child(
-                Button::new("sidebar-sessions")
-                    .ghost()
-                    .large()
-                    .icon(
-                        Icon::new(IconName::SquareTerminal)
-                            .when(sessions_active, |this| this.text_color(cx.theme().primary)),
-                    )
-                    .tooltip("Sessions")
-                    .when(sessions_active, |b| b.bg(cx.theme().primary.opacity(0.12)))
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.set_sidebar_mode(SidebarMode::Sessions, cx);
-                    })),
-            )
+            .child(self.render_rail_item(
+                "sidebar-sessions",
+                Icon::default().path("icons/oxidal/list.svg"),
+                "Sessions",
+                sessions_active,
+                SidebarMode::Sessions,
+                cx,
+            ))
             .when(has_explorer, |this| {
-                this.child(
-                    Button::new("sidebar-explorer")
-                        .ghost()
-                        .large()
-                        .icon(
-                            Icon::new(IconName::Folder)
-                                .when(explorer_active, |this| this.text_color(cx.theme().primary)),
-                        )
-                        .tooltip("File Explorer")
-                        .when(explorer_active, |b| b.bg(cx.theme().primary.opacity(0.12)))
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.set_sidebar_mode(SidebarMode::Explorer, cx);
-                        })),
-                )
+                this.child(self.render_rail_item(
+                    "sidebar-explorer",
+                    IconName::FolderOpen,
+                    "File Explorer",
+                    explorer_active,
+                    SidebarMode::Explorer,
+                    cx,
+                ))
             })
             .child(div().flex_1())
             .child(
@@ -1067,10 +1253,18 @@ impl OxidalApp {
         let group_name = SharedString::from(format!("folder-{folder_id}"));
         let capacity = self.label_capacity(cx);
         let hover_bg = cx.theme().sidebar_accent.opacity(0.5);
+        let weak_app = cx.weak_entity();
         let preview = DragPreview {
             icon: folder.display_icon(),
             color: folder.color.hsla(),
             label: SharedString::from(folder.name.clone()),
+            kind: PreviewKind::Row {
+                detail: SharedString::from(match count {
+                    1 => "1 session".to_string(),
+                    n => format!("{n} sessions"),
+                }),
+            },
+            grab: Default::default(),
         };
 
         h_flex()
@@ -1087,24 +1281,40 @@ impl OxidalApp {
             .border_color(gpui::transparent_black())
             .cursor_pointer()
             .hover(move |style| style.bg(hover_bg))
+            .when(
+                self.is_dragging(DragSource::Folder(folder_id), cx),
+                |this| this.opacity(0.4),
+            )
             .on_drag(
                 FolderDrag {
                     id: folder_id,
                     preview,
                 },
-                |drag, _, _, cx| cx.new(|_| drag.preview.clone()),
+                move |drag, grab, _, cx| {
+                    start_drag(
+                        &weak_app,
+                        DragSource::Folder(drag.id),
+                        &drag.preview,
+                        grab,
+                        cx,
+                    )
+                },
             )
-            .can_drop(move |drag, _, _| {
-                drag.downcast_ref::<FolderDrag>()
-                    .is_none_or(|drag| drag.id != folder_id)
-            })
             .drag_over::<SessionDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.12)))
             .on_drop(cx.listener(move |view, drag: &SessionDrag, _, cx| {
                 view.move_session(drag.id, DropTarget::Into(Some(folder_id)), cx);
             }))
-            .drag_over::<FolderDrag>(|style, _, _, cx| style.border_color(cx.theme().primary))
+            .drag_over::<FolderDrag>(move |style, drag, _, cx| {
+                if drag.id == folder_id {
+                    style
+                } else {
+                    style.border_color(cx.theme().primary)
+                }
+            })
             .on_drop(cx.listener(move |view, drag: &FolderDrag, _, cx| {
-                view.move_folder(drag.id, Some(folder_id), cx);
+                if drag.id != folder_id {
+                    view.move_folder(drag.id, Some(folder_id), cx);
+                }
             }))
             .on_click(cx.listener(move |view, _, _, cx| {
                 view.toggle_folder_collapsed(folder_id, cx);
@@ -1322,7 +1532,7 @@ impl OxidalApp {
                                 Button::new("new-folder")
                                     .ghost()
                                     .xsmall()
-                                    .icon(IconName::Folder)
+                                    .icon(Icon::default().path("icons/oxidal/folder-plus.svg"))
                                     .tooltip("New Folder")
                                     .on_click(cx.listener(|_view, _, window, cx| {
                                         let weak_app = cx.weak_entity();
@@ -1367,7 +1577,20 @@ impl OxidalApp {
         }
 
         let active_index = self.active_tab.unwrap_or(0);
+        let weak_app = cx.weak_entity();
+        let tabs_overflow = self.tab_scroll.max_offset().x > px(0.);
+        let new_tab_button = Button::new("new-tab-from-selection")
+            .ghost()
+            .xsmall()
+            .icon(IconName::Plus)
+            .tooltip("Connect selected session")
+            .on_click(cx.listener(|view, _, window, cx| {
+                if let Some(id) = view.selected_session {
+                    view.connect_session(id, window, cx);
+                }
+            }));
         let tab_bar = TabBar::new("open-tabs")
+            .track_scroll(&self.tab_scroll)
             .selected_index(active_index)
             .on_click(cx.listener(|view, index: &usize, _, cx| {
                 view.active_tab = Some(*index);
@@ -1379,21 +1602,35 @@ impl OxidalApp {
                     icon: tab.icon.clone(),
                     color: tab.icon_color,
                     label: tab.title.clone(),
+                    kind: PreviewKind::Tab,
+                    grab: Default::default(),
                 };
+                let weak_app = weak_app.clone();
                 Tab::new()
                     .group(group_name.clone())
-                    .on_drag(TabDrag { index, preview }, |drag, _, _, cx| {
-                        cx.new(|_| drag.preview.clone())
+                    .when(self.is_dragging(DragSource::Tab(index), cx), |this| {
+                        this.opacity(0.4)
                     })
-                    .can_drop(move |drag, _, _| {
-                        drag.downcast_ref::<TabDrag>()
-                            .is_some_and(|drag| drag.index != index)
+                    .on_drag(TabDrag { index, preview }, move |drag, grab, _, cx| {
+                        start_drag(
+                            &weak_app,
+                            DragSource::Tab(drag.index),
+                            &drag.preview,
+                            grab,
+                            cx,
+                        )
                     })
-                    .drag_over::<TabDrag>(|style, _, _, cx| {
-                        style.bg(cx.theme().primary.opacity(0.12))
+                    .drag_over::<TabDrag>(move |style, drag, _, cx| {
+                        if drag.index == index {
+                            style
+                        } else {
+                            style.bg(cx.theme().primary.opacity(0.12))
+                        }
                     })
                     .on_drop(cx.listener(move |view, drag: &TabDrag, _, cx| {
-                        view.move_tab(drag.index, index, cx);
+                        if drag.index != index {
+                            view.move_tab(drag.index, index, cx);
+                        }
                     }))
                     .prefix(
                         Icon::empty()
@@ -1417,18 +1654,26 @@ impl OxidalApp {
                             })),
                     )
             }))
-            .suffix(
-                Button::new("new-tab-from-selection")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .tooltip("Connect selected session")
-                    .on_click(cx.listener(|view, _, window, cx| {
-                        if let Some(id) = view.selected_session {
-                            view.connect_session(id, window, cx);
-                        }
-                    })),
-            );
+            .map(|this| {
+                if tabs_overflow {
+                    this.suffix(new_tab_button)
+                } else {
+                    this.last_empty_space(h_flex().px_1().child(new_tab_button))
+                        .suffix(div())
+                }
+            });
+        let entity_id = cx.entity_id();
+        let tab_scroll = self.tab_scroll.clone();
+        let overflow_watch = canvas(
+            move |_, _, cx| {
+                if (tab_scroll.max_offset().x > px(0.)) != tabs_overflow {
+                    cx.notify(entity_id);
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_0();
 
         let content = self.tabs.get(active_index).map(|tab| match &tab.content {
             TabContent::Terminal(view) => view.clone().into_any_element(),
@@ -1456,6 +1701,7 @@ impl OxidalApp {
             .min_w_0()
             .h_full()
             .child(tab_bar)
+            .child(overflow_watch)
             .child(
                 div()
                     .flex_1()
@@ -1471,6 +1717,70 @@ impl OxidalApp {
         let selected = self
             .selected_session
             .and_then(|id| self.sessions.iter().find(|s| s.id == id));
+        let muted = cx.theme().muted_foreground;
+        let in_sidebar_order = self
+            .folders
+            .iter()
+            .map(|folder| Some(folder.id))
+            .chain([None])
+            .flat_map(|folder_id| {
+                self.sessions
+                    .iter()
+                    .filter(move |s| s.folder_id == folder_id)
+            });
+        let cards: Vec<gpui::AnyElement> = in_sidebar_order
+            .take(WELCOME_SESSIONS)
+            .map(|session| self.render_welcome_card(session, cx).into_any_element())
+            .collect();
+        let hidden = self.sessions.len().saturating_sub(WELCOME_SESSIONS);
+
+        let actions = h_flex()
+            .gap_2()
+            .justify_center()
+            .when_some(selected, |this, session| {
+                let id = session.id;
+                this.child(
+                    Button::new("connect")
+                        .primary()
+                        .icon(IconName::SquareTerminal)
+                        .label(SharedString::from(format!("Connect to {}", session.name)))
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.connect_session(id, window, cx);
+                        })),
+                )
+            })
+            .child(
+                Button::new("welcome-new-session")
+                    .when(selected.is_none(), |b| b.primary())
+                    .when(selected.is_some(), |b| b.outline())
+                    .icon(IconName::Plus)
+                    .label("New Session")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.open_session_window(None, cx);
+                    })),
+            );
+
+        let sessions = (!cards.is_empty()).then(|| {
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(welcome_section("SESSIONS", cx))
+                        .child(div().flex_1().h(px(1.)).bg(cx.theme().border)),
+                )
+                .child(div().grid().grid_cols(2).gap_2().children(cards))
+                .when(hidden > 0, |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(SharedString::from(format!("{hidden} more in the sidebar"))),
+                    )
+                })
+        });
 
         v_flex()
             .id("welcome")
@@ -1478,66 +1788,190 @@ impl OxidalApp {
             .min_w_0()
             .h_full()
             .px_6()
-            .py_4()
+            .py_8()
             .child(
                 v_flex()
                     .my_auto()
+                    .mx_auto()
                     .w_full()
+                    .max_w(px(640.))
                     .items_center()
-                    .gap_3()
-                    .child(Icon::new(IconName::SquareTerminal).with_size(px(48.)))
+                    .gap_8()
                     .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Oxidal Terminal"),
+                        v_flex()
+                            .items_center()
+                            .gap_4()
+                            .child(welcome_logo(cx))
+                            .child(
+                                v_flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_2xl()
+                                            .font_weight(FontWeight::BOLD)
+                                            .child("Oxidal"),
+                                    )
+                                    .child(div().text_sm().text_color(muted).text_center().child(
+                                        "SSH, SFTP, Telnet, serial and local shells in one window",
+                                    )),
+                            )
+                            .child(actions),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(match selected {
-                                Some(s) => {
-                                    SharedString::from(format!("Ready to connect: {}", s.detail()))
-                                }
-                                None => SharedString::from(
-                                    "Select a session on the left, or add a new one",
-                                ),
-                            }),
-                    )
-                    .when_some(selected.map(|s| s.id), |this, id| {
-                        this.child(
-                            Button::new("connect")
-                                .primary()
-                                .icon(IconName::SquareTerminal)
-                                .label("Connect")
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.connect_session(id, window, cx);
-                                })),
-                        )
-                    })
+                    .children(sessions)
                     .child(render_shortcuts(cx)),
             )
             .overflow_y_scrollbar()
     }
+
+    fn render_welcome_card(&self, session: &Session, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = session.id;
+        let theme = cx.theme();
+        let color = session.color.hsla();
+        let selected = self.selected_session == Some(id);
+        let hover_border = color.unwrap_or(theme.primary).opacity(0.6);
+
+        h_flex()
+            .id(SharedString::from(format!("welcome-session-{id}")))
+            .min_w_0()
+            .items_center()
+            .gap_3()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(if selected {
+                theme.primary
+            } else {
+                theme.border
+            })
+            .bg(theme.muted.opacity(0.35))
+            .cursor_pointer()
+            .hover(move |style| style.border_color(hover_border))
+            .on_click(cx.listener(move |view, _, window, cx| {
+                view.connect_session(id, window, cx);
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(32.))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(match color {
+                        Some(color) => color.opacity(0.18),
+                        None => theme.foreground.opacity(0.08),
+                    })
+                    .child(
+                        Icon::empty()
+                            .path(session.display_icon())
+                            .small()
+                            .when_some(color, |this, color| this.text_color(color)),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(SharedString::from(session.name.clone())),
+                            )
+                            .when(self.is_open(id), |this| {
+                                this.child(
+                                    div()
+                                        .flex_none()
+                                        .size(px(6.))
+                                        .rounded_full()
+                                        .bg(theme.success),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(SharedString::from(match session.kind {
+                                SessionKind::Local => session.detail(),
+                                kind => format!("{} · {}", kind.label(), session.detail()),
+                            })),
+                    ),
+            )
+    }
+}
+
+fn welcome_logo(cx: &gpui::App) -> impl IntoElement {
+    let theme = cx.theme();
+    let bg = theme.background;
+    let dark = bg.l < 0.5;
+    let glow = |alpha: f32| {
+        if dark {
+            Hsla {
+                l: (bg.l + 0.55).min(1.),
+                a: alpha,
+                ..bg
+            }
+        } else {
+            Hsla {
+                l: (bg.l - 0.7).max(0.),
+                a: alpha * 0.6,
+                ..bg
+            }
+        }
+    };
+    let layer = |alpha: f32, y: f32, blur: f32, spread: f32| gpui::BoxShadow {
+        color: glow(alpha),
+        offset: gpui::point(px(0.), px(y)),
+        blur_radius: px(blur),
+        spread_radius: px(spread),
+        inset: false,
+    };
+    let radius = px(22.);
+
+    div()
+        .relative()
+        .size(px(96.))
+        .rounded(radius)
+        .shadow(if dark {
+            vec![layer(0.22, 0., 16., 1.), layer(0.28, 0., 80., 16.)]
+        } else {
+            vec![layer(0.35, 2., 6., 0.), layer(0.5, 12., 32., 0.)]
+        })
+        .child(gpui::img(crate::assets::LOGO).size_full().rounded(radius))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(radius)
+                .border_1()
+                .border_color(theme.foreground.opacity(if dark { 0.14 } else { 0.08 })),
+        )
+}
+
+fn welcome_section(title: &'static str, cx: &gpui::App) -> impl IntoElement {
+    div()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(cx.theme().muted_foreground)
+        .child(title)
 }
 
 fn render_shortcuts(cx: &gpui::App) -> impl IntoElement {
-    let muted = cx.theme().muted_foreground;
-
-    let section = |title: &'static str| {
-        div()
-            .text_xs()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(muted)
-            .child(title)
-    };
+    let section = |title: &'static str| welcome_section(title, cx);
 
     v_flex()
-        .mt_4()
+        .w_full()
         .p_4()
         .gap_3()
-        .max_w_full()
         .rounded_lg()
         .border_1()
         .border_color(cx.theme().border)
