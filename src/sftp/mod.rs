@@ -30,6 +30,9 @@ enum SftpCommand {
     CreateDir {
         name: String,
     },
+    CreateFile {
+        name: String,
+    },
     Rename {
         from: String,
         to: String,
@@ -70,6 +73,7 @@ enum SftpCommand {
 enum LocalCommand {
     List { path: String },
     CreateDir { name: String },
+    CreateFile { name: String },
     Rename { from: String, to: String },
     RemoveFile { path: String },
     RemoveDir { path: String },
@@ -116,6 +120,12 @@ impl SftpClient {
         let _ = self
             .commands
             .send_blocking(SftpCommand::CreateDir { name: name.into() });
+    }
+
+    pub fn create_file(&self, name: impl Into<String>) {
+        let _ = self
+            .commands
+            .send_blocking(SftpCommand::CreateFile { name: name.into() });
     }
 
     pub fn rename(&self, from: impl Into<String>, to: impl Into<String>) {
@@ -257,6 +267,17 @@ impl FileClient {
                     .send_blocking(LocalCommand::CreateDir { name: name.into() });
             }
             FileClient::Remote(client) => client.create_dir(name),
+        }
+    }
+
+    pub fn create_file(&self, name: impl Into<String>) {
+        match self {
+            FileClient::Local(client) => {
+                let _ = client
+                    .commands
+                    .send_blocking(LocalCommand::CreateFile { name: name.into() });
+            }
+            FileClient::Remote(client) => client.create_file(name),
         }
     }
 
