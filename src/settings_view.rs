@@ -126,8 +126,7 @@ impl SettingsView {
         let mut swatches = Vec::with_capacity(all_slots().count());
         for (index, slot) in all_slots().enumerate() {
             let color = current.theme.color(slot, editing);
-            let state =
-                cx.new(|cx| ColorPickerState::new(window, cx).default_value(color));
+            let state = cx.new(|cx| ColorPickerState::new(window, cx).default_value(color));
             cx.subscribe_in(
                 &state,
                 window,
@@ -146,7 +145,8 @@ impl SettingsView {
             .detach();
         // Keeps the font preview in step with the picker and the size box.
         cx.observe(&font_select, |_, _, cx| cx.notify()).detach();
-        cx.observe(&font_size_input, |_, _, cx| cx.notify()).detach();
+        cx.observe(&font_size_input, |_, _, cx| cx.notify())
+            .detach();
 
         Self {
             section: Section::Theme,
@@ -332,10 +332,9 @@ impl SettingsView {
             };
             let written = std::fs::write(&path, json);
             let _ = view.update_in(cx, |_, window, cx| match written {
-                Ok(()) => window.push_notification(
-                    format!("Theme saved to {}", short_path(&path)),
-                    cx,
-                ),
+                Ok(()) => {
+                    window.push_notification(format!("Theme saved to {}", short_path(&path)), cx)
+                }
                 Err(err) => window.push_notification(format!("Could not save: {err}"), cx),
             });
         })
@@ -366,10 +365,7 @@ impl SettingsView {
                     settings::save_settings(cx.global::<AppSettings>());
                     settings::apply_appearance(window, cx);
                     view.sync_swatches(window, cx);
-                    window.push_notification(
-                        format!("Imported {}", short_path(&path)),
-                        cx,
-                    );
+                    window.push_notification(format!("Imported {}", short_path(&path)), cx);
                 }
                 Err(err) => window.push_notification(format!("Could not import: {err}"), cx),
             });
@@ -468,7 +464,11 @@ impl SettingsView {
                     .text_sm()
                     .cursor_pointer()
                     .border_b_2()
-                    .border_color(if selected { primary } else { gpui::transparent_black() })
+                    .border_color(if selected {
+                        primary
+                    } else {
+                        gpui::transparent_black()
+                    })
                     .text_color(if selected { foreground } else { muted })
                     .when(selected, |this| this.font_weight(FontWeight::MEDIUM))
                     .when(!selected, |this| {
@@ -552,19 +552,16 @@ impl SettingsView {
                     })
                     .collect::<Vec<_>>();
 
-                v_flex()
-                    .gap_2()
-                    .child(group_title(*group, muted))
-                    .child(
-                        h_flex()
-                            .flex_wrap()
-                            .gap_x_2()
-                            .gap_y_1()
-                            .p_2()
-                            .rounded_lg()
-                            .bg(panel)
-                            .children(swatches),
-                    )
+                v_flex().gap_2().child(group_title(*group, muted)).child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_x_2()
+                        .gap_y_1()
+                        .p_2()
+                        .rounded_lg()
+                        .bg(panel)
+                        .children(swatches),
+                )
             })
             .collect::<Vec<_>>();
 
@@ -779,16 +776,18 @@ impl SettingsView {
                     .label(label)
                     .when(selected, |b| b.primary())
                     .when(!selected, |b| b.outline())
-                    .on_click(
-                        cx.listener(move |view, _, _, cx| view.set_remote_open(mode, cx)),
-                    )
+                    .on_click(cx.listener(move |view, _, _, cx| view.set_remote_open(mode, cx)))
             }),
         );
 
         let edit_upload = cx.global::<AppSettings>().edit_upload;
         let edit_upload_toggle = toggle_pair(
             ("edit-upload-ask", "Ask each time", IconName::Bell),
-            ("edit-upload-auto", "Upload automatically", IconName::ArrowUp),
+            (
+                "edit-upload-auto",
+                "Upload automatically",
+                IconName::ArrowUp,
+            ),
             edit_upload != Some(EditUploadMode::Auto),
             |view, _, cx| view.set_edit_upload(EditUploadMode::Ask, cx),
             |view, _, cx| view.set_edit_upload(EditUploadMode::Auto, cx),
@@ -868,18 +867,15 @@ impl Render for SettingsView {
             Section::Files => self.render_files(cx).into_any_element(),
         };
 
-        v_flex()
-            .size_full()
-            .child(self.render_tabs(cx))
-            .child(
-                div()
-                    .id("settings-body")
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(div().w_full().px_8().py_6().child(body)),
-            )
+        v_flex().size_full().child(self.render_tabs(cx)).child(
+            div()
+                .id("settings-body")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .child(div().w_full().px_8().py_6().child(body)),
+        )
     }
 }

@@ -171,11 +171,9 @@ impl SftpClient {
     }
 
     pub fn read_file(&self, remote: impl Into<String>) {
-        let _ = self
-            .commands
-            .send_blocking(SftpCommand::Read {
-                remote: remote.into(),
-            });
+        let _ = self.commands.send_blocking(SftpCommand::Read {
+            remote: remote.into(),
+        });
     }
 
     pub fn write_file(
