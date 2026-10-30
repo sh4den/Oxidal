@@ -1040,16 +1040,21 @@ impl SftpPanel {
         });
     }
 
-    fn new_folder_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn new_entry_dialog(&self, is_dir: bool, window: &mut Window, cx: &mut Context<Self>) {
         let client = self.client.clone();
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("New folder name"));
+        let (title, placeholder) = if is_dir {
+            ("New Folder", "New folder name")
+        } else {
+            ("New File", "New file name")
+        };
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let client = client.clone();
             let name = name.clone();
 
             dialog
-                .title("New Folder")
+                .title(title)
                 .child(v_flex().gap_2().w(px(320.)).child(Input::new(&name)))
                 .footer(
                     DialogFooter::new()
@@ -1063,8 +1068,10 @@ impl SftpPanel {
                         .child(Button::new("create").primary().label("Create").on_click(
                             move |_, window, cx| {
                                 let value = name.read(cx).value().trim().to_string();
-                                if !value.is_empty() {
-                                    client.create_dir(value);
+                                match (value.is_empty(), is_dir) {
+                                    (true, _) => {}
+                                    (false, true) => client.create_dir(value),
+                                    (false, false) => client.create_file(value),
                                 }
                                 window.close_dialog(cx);
                             },
@@ -1250,13 +1257,23 @@ impl SftpPanel {
                     .on_click(cx.listener(|panel, _, _, cx| panel.refresh(cx))),
             )
             .child(
+                Button::new("sftp-new-file")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::default().path("icons/oxidal/file-plus.svg"))
+                    .tooltip("New file")
+                    .on_click(cx.listener(|panel, _, window, cx| {
+                        panel.new_entry_dialog(false, window, cx);
+                    })),
+            )
+            .child(
                 Button::new("sftp-new-folder")
                     .ghost()
                     .xsmall()
-                    .icon(IconName::Folder)
+                    .icon(Icon::default().path("icons/oxidal/folder-plus.svg"))
                     .tooltip("New folder")
                     .on_click(cx.listener(|panel, _, window, cx| {
-                        panel.new_folder_dialog(window, cx);
+                        panel.new_entry_dialog(true, window, cx);
                     })),
             )
             .when(is_remote, |this| {
@@ -1556,11 +1573,17 @@ fn folder_menu(
     is_remote: bool,
     window: &mut Window,
 ) -> PopupMenu {
-    let mut menu = menu.item(PopupMenuItem::new("New Folder").on_click(
-        window.listener_for(view, |panel, _, window, cx| {
-            panel.new_folder_dialog(window, cx)
-        }),
-    ));
+    let mut menu = menu
+        .item(PopupMenuItem::new("New File").on_click(
+            window.listener_for(view, |panel, _, window, cx| {
+                panel.new_entry_dialog(false, window, cx)
+            }),
+        ))
+        .item(PopupMenuItem::new("New Folder").on_click(
+            window.listener_for(view, |panel, _, window, cx| {
+                panel.new_entry_dialog(true, window, cx)
+            }),
+        ));
     if is_remote {
         menu = menu.item(
             PopupMenuItem::new("Upload...")
@@ -1659,18 +1682,15 @@ impl Render for SftpPanel {
                     .flex_1()
                     .min_h_0()
                     .when(self.resizing.is_some(), |this| this.cursor_col_resize())
-                    .can_drop({
+                    .drag_over::<FileDrag>({
                         let side = self.side;
-                        move |drag, _, _| match drag.downcast_ref::<FileDrag>() {
-                            Some(drag) => drag.side != side,
-                            None => {
-                                side == PanelSide::Remote
-                                    && drag.downcast_ref::<ExternalPaths>().is_some()
+                        move |style, drag, _, cx| {
+                            if drag.side == side {
+                                style
+                            } else {
+                                style.bg(cx.theme().primary.opacity(0.08))
                             }
                         }
-                    })
-                    .drag_over::<FileDrag>(|style, _, _, cx| {
-                        style.bg(cx.theme().primary.opacity(0.08))
                     })
                     .on_drop(cx.listener(|panel, drag: &FileDrag, _, cx| {
                         if drag.side == panel.side {
