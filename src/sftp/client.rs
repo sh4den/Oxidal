@@ -4,7 +4,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use russh::client::Handle;
 use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::FileType;
+use russh_sftp::protocol::{FileType, OpenFlags};
 
 use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote, safe_local_name};
 use crate::proxy::ProxyConfig;
@@ -240,6 +240,17 @@ async fn execute(
             let path = join_remote(current_dir, &name);
             if let Err(err) = sftp.create_dir(path).await {
                 send_error(out_tx, format!("Couldn't create folder: {err}")).await;
+            }
+            list_and_send(sftp, current_dir.clone(), out_tx).await;
+        }
+        SftpCommand::CreateFile { name } => {
+            let path = join_remote(current_dir, &name);
+            let flags = OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE;
+            match sftp.open_with_flags(path, flags).await {
+                Ok(mut file) => {
+                    let _ = file.shutdown().await;
+                }
+                Err(err) => send_error(out_tx, format!("Couldn't create file: {err}")).await,
             }
             list_and_send(sftp, current_dir.clone(), out_tx).await;
         }

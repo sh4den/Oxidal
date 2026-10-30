@@ -25,6 +25,12 @@ pub fn spawn(initial: PathBuf) -> LocalClient {
                     }
                     list_and_send(&current, &out_tx);
                 }
+                LocalCommand::CreateFile { name } => {
+                    if let Err(err) = create_file(&current, &name) {
+                        send_error(&out_tx, format!("Couldn't create file: {err}"));
+                    }
+                    list_and_send(&current, &out_tx);
+                }
                 LocalCommand::Rename { from, to } => {
                     if let Err(err) = fs::rename(&from, &to) {
                         send_error(&out_tx, format!("Couldn't rename: {err}"));
@@ -51,6 +57,14 @@ pub fn spawn(initial: PathBuf) -> LocalClient {
         events: out_rx,
         commands: cmd_tx,
     }
+}
+
+fn create_file(dir: &str, name: &str) -> std::io::Result<()> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(Path::new(dir).join(name))
+        .map(drop)
 }
 
 pub fn home_dir() -> PathBuf {
@@ -206,6 +220,24 @@ mod tests {
     fn the_filesystem_root_has_no_parent() {
         let root = path_string(Path::new("/"));
         assert!(!has_parent(&root));
+    }
+
+    #[test]
+    fn creating_a_file_never_overwrites_an_existing_one() {
+        let base = std::env::temp_dir().join(format!("oxidal-create-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).expect("dir");
+        let dir = path_string(&base);
+
+        create_file(&dir, "notes.txt").expect("create");
+        assert_eq!(fs::read(base.join("notes.txt")).expect("read"), b"");
+
+        fs::write(base.join("notes.txt"), b"keep me").expect("write");
+        let err = create_file(&dir, "notes.txt").expect_err("exists");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(base.join("notes.txt")).expect("read"), b"keep me");
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -174,12 +174,15 @@ impl EditorWindow {
                                 window.close_dialog(cx);
                             },
                         ))
-                        .child(Button::new("close-discard").danger().label("Discard").on_click(
-                            |_, window, cx| {
-                                window.close_dialog(cx);
-                                window.remove_window();
-                            },
-                        ))
+                        .child(
+                            Button::new("close-discard")
+                                .danger()
+                                .label("Discard")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                    window.remove_window();
+                                }),
+                        )
                         .child(
                             Button::new("close-save")
                                 .primary()
@@ -212,7 +215,9 @@ impl EditorWindow {
         self.status = None;
         let len = text.len();
         let handle = self.handle;
-        let ack = self.client.write_file(self.remote.clone(), text.into_bytes());
+        let ack = self
+            .client
+            .write_file(self.remote.clone(), text.into_bytes());
         cx.spawn(async move |this, cx| {
             let result = ack.recv().await;
             let mut close_window = false;
@@ -319,12 +324,7 @@ impl Render for EditorWindow {
                                 .child(self.name.clone()),
                         )
                         .when(modified, |this| {
-                            this.child(
-                                div()
-                                    .size_1p5()
-                                    .rounded_full()
-                                    .bg(cx.theme().warning),
-                            )
+                            this.child(div().size_1p5().rounded_full().bg(cx.theme().warning))
                         }),
                 ),
             )
@@ -365,29 +365,27 @@ impl Render for EditorWindow {
                         )
                     }),
             )
-            .child(
-                div().flex_1().min_h_0().w_full().map(|this| {
-                    if let Some(doc) = &self.preview_doc {
-                        this.child(
-                            div()
-                                .id("editor-md-preview")
-                                .size_full()
-                                .overflow_y_scroll()
-                                .px_6()
-                                .py_4()
-                                .child(TextView::new(doc).selectable(true)),
-                        )
-                    } else {
-                        this.child(
-                            div()
-                                .size_full()
-                                .font_family(font_family)
-                                .text_size(px(font_size))
-                                .child(Input::new(&self.editor).appearance(false).h_full()),
-                        )
-                    }
-                }),
-            )
+            .child(div().flex_1().min_h_0().w_full().map(|this| {
+                if let Some(doc) = &self.preview_doc {
+                    this.child(
+                        div()
+                            .id("editor-md-preview")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .px_6()
+                            .py_4()
+                            .child(TextView::new(doc).selectable(true)),
+                    )
+                } else {
+                    this.child(
+                        div()
+                            .size_full()
+                            .font_family(font_family)
+                            .text_size(px(font_size))
+                            .child(Input::new(&self.editor).appearance(false).h_full()),
+                    )
+                }
+            }))
             .child(
                 h_flex()
                     .items_center()
@@ -435,11 +433,8 @@ impl Render for EditorWindow {
                                     editor.preview_doc = match editor.preview_doc.take() {
                                         Some(_) => None,
                                         None => {
-                                            let text =
-                                                editor.editor.read(cx).text().to_string();
-                                            Some(cx.new(|cx| {
-                                                TextViewState::markdown(&text, cx)
-                                            }))
+                                            let text = editor.editor.read(cx).text().to_string();
+                                            Some(cx.new(|cx| TextViewState::markdown(&text, cx)))
                                         }
                                     };
                                     cx.notify();
