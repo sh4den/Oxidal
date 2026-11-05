@@ -618,7 +618,9 @@ impl Render for TerminalView {
                         return;
                     }
                     view.focus_handle.focus(window, cx);
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    if !view.copy_selection(cx)
+                        && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+                    {
                         view.paste(&text);
                     }
                     cx.notify();
