@@ -30,6 +30,16 @@ pub const APP_ID: &str = match option_env!("OXIDAL_APP_ID") {
     None => "oxidal",
 };
 
+macro_rules! secondary {
+    ($keys:literal) => {
+        if cfg!(target_os = "macos") {
+            concat!("cmd-", $keys)
+        } else {
+            concat!("ctrl-", $keys)
+        }
+    };
+}
+
 fn main() {
     let application = gpui_kit::platform::application().with_assets(crate::assets::Assets);
 
@@ -39,13 +49,13 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("tab", SendTab, Some("Terminal")),
             KeyBinding::new("shift-tab", SendTabPrev, Some("Terminal")),
-            KeyBinding::new("secondary-c", CopySelection, Some("Terminal")),
-            KeyBinding::new("secondary-shift-c", CopySelection, Some("Terminal")),
-            KeyBinding::new("secondary-x", CutSelection, Some("Terminal")),
-            KeyBinding::new("secondary-v", PasteClipboard, Some("Terminal")),
-            KeyBinding::new("secondary-shift-v", PasteClipboard, Some("Terminal")),
+            KeyBinding::new(secondary!("c"), CopySelection, Some("Terminal")),
+            KeyBinding::new(secondary!("shift-c"), CopySelection, Some("Terminal")),
+            KeyBinding::new(secondary!("x"), CutSelection, Some("Terminal")),
+            KeyBinding::new(secondary!("v"), PasteClipboard, Some("Terminal")),
+            KeyBinding::new(secondary!("shift-v"), PasteClipboard, Some("Terminal")),
             KeyBinding::new(
-                "secondary-s",
+                secondary!("s"),
                 crate::sftp::editor::SaveFile,
                 Some("EditorWindow"),
             ),
