@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use gpui::{Global, Hsla};
-use gpui_component::{Colorize as _, ThemeColor, ThemeConfig, ThemeConfigColors, ThemeMode};
+use gpui_kit::component::{Colorize as _, ThemeColor, ThemeConfig, ThemeConfigColors, ThemeMode};
+use gpui_kit::{Global, Hsla};
 use serde::{Deserialize, Serialize};
 
 use crate::terminal::grid::TerminalPalette;
@@ -442,7 +442,7 @@ mod tests {
             .iter()
             .find(|slot| slot.key == "primary")
             .expect("primary is a slot");
-        theme.set_color(slot, ThemeMode::Dark, gpui::rgb(0xFF0000).into());
+        theme.set_color(slot, ThemeMode::Dark, gpui_kit::rgb(0xFF0000).into());
 
         let config = theme.config_over(base.clone(), ThemeMode::Dark);
         assert_eq!(config.colors.primary.as_deref(), Some("#FF0000"));
@@ -469,11 +469,11 @@ mod tests {
             .iter()
             .find(|slot| slot.key == "terminal.background")
             .expect("terminal background is a slot");
-        theme.set_color(slot, ThemeMode::Light, gpui::rgb(0xFFFFFF).into());
+        theme.set_color(slot, ThemeMode::Light, gpui_kit::rgb(0xFFFFFF).into());
 
         assert_eq!(
             theme.terminal_palette(ThemeMode::Light).background,
-            gpui::rgb(0xFFFFFF).into()
+            gpui_kit::rgb(0xFFFFFF).into()
         );
         assert_eq!(
             theme.terminal_palette(ThemeMode::Dark).background,
@@ -488,7 +488,7 @@ mod tests {
             .iter()
             .find(|slot| slot.key == "sidebar")
             .expect("sidebar is a slot");
-        theme.set_color(slot, ThemeMode::Dark, gpui::rgb(0x101820).into());
+        theme.set_color(slot, ThemeMode::Dark, gpui_kit::rgb(0x101820).into());
 
         let restored = ThemeSettings::from_json(&theme.to_json()).expect("exported themes import");
 

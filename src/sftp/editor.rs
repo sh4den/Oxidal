@@ -1,18 +1,18 @@
-use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, actions,
-    div, prelude::FluentBuilder as _, px, size,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Rope, Sizable as _, TitleBar,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
     h_flex,
-    input::{Input, InputEvent, InputState, RopeExt as _},
+    input::{Editor, EditorState, InputEvent, RopeExt as _},
     text::{TextView, TextViewState},
     v_flex,
+};
+use gpui_kit::{
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, actions,
+    div, prelude::FluentBuilder as _, px, size,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -32,7 +32,7 @@ pub struct EditorWindow {
     remote: String,
     name: SharedString,
     language_label: Option<SharedString>,
-    editor: Entity<InputState>,
+    editor: Entity<EditorState>,
     original_len: usize,
     original_digest: [u8; 32],
     modified: bool,
@@ -93,8 +93,8 @@ impl EditorWindow {
         let original_len = text.len();
         let original_digest = Sha256::digest(&text).into();
         let editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor(language)
+            EditorState::new(window, cx)
+                .language(language)
                 .default_value(text)
         });
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
@@ -269,7 +269,7 @@ impl Render for EditorWindow {
             format_size(bytes as u64),
         ));
 
-        let status: Option<(Icon, SharedString, gpui::Hsla)> = if self.saving {
+        let status: Option<(Icon, SharedString, gpui_kit::Hsla)> = if self.saving {
             Some((
                 Icon::new(IconName::Loader),
                 "Saving...".into(),
@@ -382,7 +382,7 @@ impl Render for EditorWindow {
                             .size_full()
                             .font_family(font_family)
                             .text_size(px(font_size))
-                            .child(Input::new(&self.editor).appearance(false).h_full()),
+                            .child(Editor::new(&self.editor).appearance(false).h_full()),
                     )
                 }
             }))

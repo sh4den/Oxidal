@@ -16,11 +16,11 @@ mod terminal;
 mod theme;
 mod update;
 
-use gpui::{
+use gpui_kit::component::{Root, Theme, ThemeMode, TitleBar};
+use gpui_kit::{
     App, AppContext as _, Bounds, KeyBinding, WindowBackgroundAppearance, WindowBounds,
     WindowOptions, px, size,
 };
-use gpui_component::{Root, Theme, ThemeMode, TitleBar};
 
 use crate::app::OxidalApp;
 use crate::terminal::view::{CopySelection, CutSelection, PasteClipboard, SendTab, SendTabPrev};
@@ -31,10 +31,10 @@ pub const APP_ID: &str = match option_env!("OXIDAL_APP_ID") {
 };
 
 fn main() {
-    let application = gpui_platform::application().with_assets(crate::assets::Assets);
+    let application = gpui_kit::platform::application().with_assets(crate::assets::Assets);
 
     application.run(move |cx: &mut App| {
-        gpui_component::init(cx);
+        gpui_kit::component::init(cx);
 
         cx.bind_keys([
             KeyBinding::new("tab", SendTab, Some("Terminal")),
