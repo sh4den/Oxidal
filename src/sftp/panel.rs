@@ -1782,54 +1782,32 @@ impl Render for SftpPanel {
                                             .flex_1()
                                             .min_h_0()
                                             .when_some(entry_list, |this, list| this.child(list))
-                                            .when(no_rows, |this| {
-                                                this.child(v_flex().min_w(relative(1.)).map(
-                                                    |this| {
-                                                        if self.loading {
-                                                            const BAR_WIDTHS: [f32; 8] = [
-                                                                0.45, 0.7, 0.55, 0.8, 0.35, 0.65,
-                                                                0.5, 0.75,
-                                                            ];
-                                                            this.children((0..8).map(|ix| {
-                                                                h_flex()
-                                                                    .items_center()
-                                                                    .gap_2()
-                                                                    .px_2()
-                                                                    .py_1()
-                                                                    .child(
-                                                                        Skeleton::new()
-                                                                            .size_4()
-                                                                            .rounded_full()
-                                                                            .flex_none(),
-                                                                    )
-                                                                    .child(
-                                                                        Skeleton::new()
-                                                                            .secondary()
-                                                                            .h_3()
-                                                                            .w(px(name_width
-                                                                                * BAR_WIDTHS[ix]))
-                                                                            .rounded_md(),
-                                                                    )
-                                                            }))
-                                                        } else {
-                                                            this.child(
-                                                                div()
-                                                                    .p_4()
-                                                                    .text_sm()
-                                                                    .text_center()
-                                                                    .text_color(
-                                                                        cx.theme().muted_foreground,
-                                                                    )
-                                                                    .child(
-                                                                        if self.entries.is_empty() {
-                                                                            "Empty directory"
-                                                                        } else {
-                                                                            "Only hidden files here"
-                                                                        },
-                                                                    ),
+                                            .when(no_rows && self.loading, |this| {
+                                                const BAR_WIDTHS: [f32; 8] =
+                                                    [0.45, 0.7, 0.55, 0.8, 0.35, 0.65, 0.5, 0.75];
+                                                this.child(v_flex().min_w(relative(1.)).children(
+                                                    (0..8).map(|ix| {
+                                                        h_flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .px_2()
+                                                            .py_1()
+                                                            .child(
+                                                                Skeleton::new()
+                                                                    .size_4()
+                                                                    .rounded_full()
+                                                                    .flex_none(),
                                                             )
-                                                        }
-                                                    },
+                                                            .child(
+                                                                Skeleton::new()
+                                                                    .secondary()
+                                                                    .h_3()
+                                                                    .w(px(
+                                                                        name_width * BAR_WIDTHS[ix]
+                                                                    ))
+                                                                    .rounded_md(),
+                                                            )
+                                                    }),
                                                 ))
                                             })
                                             .on_mouse_down(
@@ -1858,6 +1836,28 @@ impl Render for SftpPanel {
                                     ),
                             ),
                     )
+                    .when(no_rows && !self.loading, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(px(HEADER_HEIGHT))
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .p_4()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_sm()
+                                .text_center()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(if self.entries.is_empty() {
+                                    "Empty directory"
+                                } else {
+                                    "Only hidden files here"
+                                }),
+                        )
+                    })
                     .child(
                         div()
                             .absolute()
