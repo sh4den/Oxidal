@@ -1,15 +1,15 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use gpui::{
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, hover_card::HoverCard};
+use gpui_kit::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, Div, FocusHandle, Font, FontWeight,
     Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement as _, Pixels, Point, Render,
-    ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, Task, TextAlign,
+    ScrollEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, Task, TextAlign,
     TextRun, UnderlineStyle, Window, actions, canvas, div, fill, hsla, point,
     prelude::FluentBuilder as _, px, relative, size,
 };
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, hover_card::HoverCard};
 
 use super::backend::{Backend, BackendEvent};
 use super::grid::{Cell, Grid, TerminalPalette};
@@ -464,10 +464,10 @@ impl Render for TerminalView {
         let measure = {
             let weak = cx.entity().downgrade();
             let font_family = font_family.clone();
-            move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut gpui::App| {
+            move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut gpui_kit::App| {
                 let run = TextRun {
                     len: 1,
-                    font: gpui::font(font_family.clone()),
+                    font: gpui_kit::font(font_family.clone()),
                     color: hsla(0., 0., 0., 1.),
                     background_color: None,
                     underline: None,
@@ -499,11 +499,11 @@ impl Render for TerminalView {
             move |bounds: Bounds<Pixels>,
                   char_width: Pixels,
                   window: &mut Window,
-                  cx: &mut gpui::App| {
+                  cx: &mut gpui_kit::App| {
                 if char_width <= px(0.) {
                     return;
                 }
-                let base_font = gpui::font(font_family.clone());
+                let base_font = gpui_kit::font(font_family.clone());
                 let (quads, lines) = {
                     let palette = cx.global::<TerminalPalette>().clone();
                     let view = entity.read(cx);
@@ -689,7 +689,7 @@ impl Render for TerminalView {
                     }
                 }
             }))
-            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _window, cx| {
+            .on_scroll(cx.listener(|view, event: &ScrollEvent, _window, cx| {
                 let Some((_, _, line_height)) = view.layout else {
                     return;
                 };

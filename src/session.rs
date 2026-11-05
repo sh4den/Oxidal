@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use gpui::{Hsla, SharedString, rgb};
-use gpui_component::{IconName, IconNamed};
+use gpui_kit::component::{IconName, IconNamed};
+use gpui_kit::{Hsla, SharedString, rgb};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

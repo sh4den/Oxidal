@@ -2,8 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui::{App, Global, Window, WindowBackgroundAppearance};
-use gpui_component::{Theme, ThemeMode, ThemeRegistry};
+use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
+use gpui_kit::{App, Global, Window, WindowBackgroundAppearance};
 use serde::{Deserialize, Serialize};
 
 use crate::theme::ThemeSettings;
