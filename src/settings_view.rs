@@ -1,11 +1,6 @@
 use std::path::PathBuf;
 
-use gpui::{
-    AppContext as _, Context, Div, Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Disableable as _, IconName, IndexPath, Sizable as _,
     ThemeMode, WindowExt as _,
     button::{Button, ButtonVariants as _},
@@ -15,6 +10,11 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectState},
     slider::{Slider, SliderEvent, SliderState},
     v_flex,
+};
+use gpui_kit::{
+    AppContext as _, Context, Div, Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathPromptOptions, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::settings::{self, AppSettings, EditUploadMode, RemoteOpenMode};
@@ -467,7 +467,7 @@ impl SettingsView {
                     .border_color(if selected {
                         primary
                     } else {
-                        gpui::transparent_black()
+                        gpui_kit::transparent_black()
                     })
                     .text_color(if selected { foreground } else { muted })
                     .when(selected, |this| this.font_weight(FontWeight::MEDIUM))
@@ -477,7 +477,7 @@ impl SettingsView {
                     .child(section.label())
                     .on_click(cx.listener(move |view, _, _, cx| {
                         view.section = section;
-                        view.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                        view.scroll.set_offset(gpui_kit::point(px(0.), px(0.)));
                         cx.notify();
                     }))
             }))

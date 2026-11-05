@@ -133,10 +133,18 @@ This is early software. Expect rough edges.
 
 Issues and pull requests are welcome. Bug reports with the escape sequences or the session kind that triggered them are especially useful, since terminal emulation has a long tail of edge cases and the fastest way to fix one is to reproduce it.
 
+## Use of AI
+
+AI tools were used for a few supporting tasks on this project:
+
+* **Commit messages**, drafted from the diff and then reviewed before committing
+* **Security audits**, as an extra pass over the code looking for vulnerabilities
+* **Dependency version bumps**, including moving to new versions and adapting the code to API changes
+
 ## Acknowledgements
 
 * [GPUI](https://github.com/zed-industries/zed) for the GPU accelerated UI framework
-* [gpui-component](https://github.com/longbridge/gpui-component) for the widget set
+* [gpui-kit](https://github.com/longbridge/gpui-kit) for the widget set
 * [russh](https://github.com/Eugeny/russh) and [russh-sftp](https://github.com/AspectUnk/russh-sftp) for SSH and SFTP
 * [vte](https://github.com/alacritty/vte) for the escape sequence parser
 * [portable-pty](https://github.com/wez/wezterm) for local shells across platforms

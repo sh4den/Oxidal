@@ -2,15 +2,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use gpui::{
-    Anchor, AnyElement, AppContext as _, ClickEvent, Context, DragMoveEvent, Empty, EntityId,
-    EventEmitter, ExternalPaths, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Render,
-    ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, relative, svg,
-    uniform_list,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
@@ -22,6 +14,14 @@ use gpui_component::{
     skeleton::Skeleton,
     tooltip::Tooltip,
     v_flex,
+};
+use gpui_kit::{
+    Anchor, AnyElement, AppContext as _, ClickEvent, Context, DragMoveEvent, Empty, EntityId,
+    EventEmitter, ExternalPaths, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Render,
+    ScrollEvent, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, relative, svg,
+    uniform_list,
 };
 
 use crate::settings::{AppSettings, EditUploadMode, RemoteOpenMode};
@@ -201,8 +201,8 @@ pub struct SftpPanel {
     closed: Option<String>,
     transfer: Option<TransferState>,
     show_hidden: bool,
-    on_show_hidden_changed: Box<dyn Fn(bool, &mut gpui::App)>,
-    path_input: gpui::Entity<InputState>,
+    on_show_hidden_changed: Box<dyn Fn(bool, &mut gpui_kit::App)>,
+    path_input: gpui_kit::Entity<InputState>,
     synced_path: String,
     list_scroll: UniformListScrollHandle,
     h_scroll: ScrollHandle,
@@ -229,7 +229,7 @@ impl SftpPanel {
         credentials: crate::ssh_client::SshCredentials,
         proxy: Option<crate::proxy::ProxyConfig>,
         show_hidden: bool,
-        on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + 'static,
+        on_show_hidden_changed: impl Fn(bool, &mut gpui_kit::App) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -246,7 +246,7 @@ impl SftpPanel {
     pub fn local(
         start_dir: std::path::PathBuf,
         show_hidden: bool,
-        on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + 'static,
+        on_show_hidden_changed: impl Fn(bool, &mut gpui_kit::App) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -262,7 +262,7 @@ impl SftpPanel {
     pub fn from_client(
         client: FileClient,
         show_hidden: bool,
-        on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + 'static,
+        on_show_hidden_changed: impl Fn(bool, &mut gpui_kit::App) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -571,7 +571,7 @@ impl SftpPanel {
             let choose = move |mode: RemoteOpenMode| {
                 let view = view.clone();
                 let entry = entry.clone();
-                move |_: &ClickEvent, window: &mut Window, cx: &mut gpui::App| {
+                move |_: &ClickEvent, window: &mut Window, cx: &mut gpui_kit::App| {
                     cx.global_mut::<AppSettings>().remote_open = Some(mode);
                     crate::settings::save_settings(cx.global::<AppSettings>());
                     window.close_dialog(cx);
@@ -1526,7 +1526,7 @@ impl SftpPanel {
 
 fn entry_menu(
     menu: PopupMenu,
-    view: &gpui::Entity<SftpPanel>,
+    view: &gpui_kit::Entity<SftpPanel>,
     entry: SftpEntry,
     is_remote: bool,
     window: &mut Window,
@@ -1579,7 +1579,7 @@ fn entry_menu(
 
 fn folder_menu(
     menu: PopupMenu,
-    view: &gpui::Entity<SftpPanel>,
+    view: &gpui_kit::Entity<SftpPanel>,
     is_remote: bool,
     window: &mut Window,
 ) -> PopupMenu {
@@ -1757,20 +1757,18 @@ impl Render for SftpPanel {
                             .size_full()
                             .overflow_x_hidden()
                             .track_scroll(&self.h_scroll)
-                            .on_scroll_wheel(cx.listener(
-                                |panel, event: &ScrollWheelEvent, window, cx| {
-                                    if !event.modifiers.shift {
-                                        return;
-                                    }
-                                    let delta = event.delta.pixel_delta(window.line_height());
-                                    let step = if delta.x == px(0.) { delta.y } else { delta.x };
-                                    let mut offset = panel.h_scroll.offset();
-                                    let max = panel.h_scroll.max_offset().x;
-                                    offset.x = (offset.x + step).clamp(-max, px(0.));
-                                    panel.h_scroll.set_offset(offset);
-                                    cx.notify();
-                                },
-                            ))
+                            .on_scroll(cx.listener(|panel, event: &ScrollEvent, window, cx| {
+                                if !event.modifiers.shift {
+                                    return;
+                                }
+                                let delta = event.delta.pixel_delta(window.line_height());
+                                let step = if delta.x == px(0.) { delta.y } else { delta.x };
+                                let mut offset = panel.h_scroll.offset();
+                                let max = panel.h_scroll.max_offset().x;
+                                offset.x = (offset.x + step).clamp(-max, px(0.));
+                                panel.h_scroll.set_offset(offset);
+                                cx.notify();
+                            }))
                             .child(
                                 v_flex()
                                     .h_full()
@@ -1784,54 +1782,32 @@ impl Render for SftpPanel {
                                             .flex_1()
                                             .min_h_0()
                                             .when_some(entry_list, |this, list| this.child(list))
-                                            .when(no_rows, |this| {
-                                                this.child(v_flex().min_w(relative(1.)).map(
-                                                    |this| {
-                                                        if self.loading {
-                                                            const BAR_WIDTHS: [f32; 8] = [
-                                                                0.45, 0.7, 0.55, 0.8, 0.35, 0.65,
-                                                                0.5, 0.75,
-                                                            ];
-                                                            this.children((0..8).map(|ix| {
-                                                                h_flex()
-                                                                    .items_center()
-                                                                    .gap_2()
-                                                                    .px_2()
-                                                                    .py_1()
-                                                                    .child(
-                                                                        Skeleton::new()
-                                                                            .size_4()
-                                                                            .rounded_full()
-                                                                            .flex_none(),
-                                                                    )
-                                                                    .child(
-                                                                        Skeleton::new()
-                                                                            .secondary()
-                                                                            .h_3()
-                                                                            .w(px(name_width
-                                                                                * BAR_WIDTHS[ix]))
-                                                                            .rounded_md(),
-                                                                    )
-                                                            }))
-                                                        } else {
-                                                            this.child(
-                                                                div()
-                                                                    .p_4()
-                                                                    .text_sm()
-                                                                    .text_center()
-                                                                    .text_color(
-                                                                        cx.theme().muted_foreground,
-                                                                    )
-                                                                    .child(
-                                                                        if self.entries.is_empty() {
-                                                                            "Empty directory"
-                                                                        } else {
-                                                                            "Only hidden files here"
-                                                                        },
-                                                                    ),
+                                            .when(no_rows && self.loading, |this| {
+                                                const BAR_WIDTHS: [f32; 8] =
+                                                    [0.45, 0.7, 0.55, 0.8, 0.35, 0.65, 0.5, 0.75];
+                                                this.child(v_flex().min_w(relative(1.)).children(
+                                                    (0..8).map(|ix| {
+                                                        h_flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .px_2()
+                                                            .py_1()
+                                                            .child(
+                                                                Skeleton::new()
+                                                                    .size_4()
+                                                                    .rounded_full()
+                                                                    .flex_none(),
                                                             )
-                                                        }
-                                                    },
+                                                            .child(
+                                                                Skeleton::new()
+                                                                    .secondary()
+                                                                    .h_3()
+                                                                    .w(px(
+                                                                        name_width * BAR_WIDTHS[ix]
+                                                                    ))
+                                                                    .rounded_md(),
+                                                            )
+                                                    }),
                                                 ))
                                             })
                                             .on_mouse_down(
@@ -1860,6 +1836,28 @@ impl Render for SftpPanel {
                                     ),
                             ),
                     )
+                    .when(no_rows && !self.loading, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(px(HEADER_HEIGHT))
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .p_4()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_sm()
+                                .text_center()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(if self.entries.is_empty() {
+                                    "Empty directory"
+                                } else {
+                                    "Only hidden files here"
+                                }),
+                        )
+                    })
                     .child(
                         div()
                             .absolute()

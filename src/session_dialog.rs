@@ -4,14 +4,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui::{
-    App, AppContext as _, Bounds, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
-    prelude::FluentBuilder as _, px, size,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed as _, IndexPath, Root,
     Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
@@ -21,6 +14,13 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectItem, SelectState},
     tab::{Tab, TabBar},
     v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Bounds, Context, Entity, FocusHandle, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions,
+    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
+    prelude::FluentBuilder as _, px, size,
 };
 use secrecy::{ExposeSecret as _, SecretString};
 use serialport::SerialPortType;
@@ -34,22 +34,22 @@ use crate::session::{
 use crate::ssh_client::SshCredentials;
 
 struct DialogMetrics {
-    width: gpui::Pixels,
-    margin_top: gpui::Pixels,
-    max_height: gpui::Pixels,
-    body_max_height: gpui::Pixels,
+    width: gpui_kit::Pixels,
+    margin_top: gpui_kit::Pixels,
+    max_height: gpui_kit::Pixels,
+    body_max_height: gpui_kit::Pixels,
 }
 
-fn dialog_metrics(window: &Window, width: gpui::Pixels) -> DialogMetrics {
+fn dialog_metrics(window: &Window, width: gpui_kit::Pixels) -> DialogMetrics {
     let viewport = window.viewport_size();
-    let margin_top = (viewport.height / 10.).clamp(gpui::px(12.), gpui::px(56.));
-    let max_height = (viewport.height - margin_top * 2.).max(gpui::px(160.));
+    let margin_top = (viewport.height / 10.).clamp(gpui_kit::px(12.), gpui_kit::px(56.));
+    let max_height = (viewport.height - margin_top * 2.).max(gpui_kit::px(160.));
 
     DialogMetrics {
-        width: width.min((viewport.width - gpui::px(24.)).max(gpui::px(240.))),
+        width: width.min((viewport.width - gpui_kit::px(24.)).max(gpui_kit::px(240.))),
         margin_top,
         max_height,
-        body_max_height: (max_height - gpui::px(112.)).max(gpui::px(120.)),
+        body_max_height: (max_height - gpui_kit::px(112.)).max(gpui_kit::px(120.)),
     }
 }
 
@@ -64,7 +64,7 @@ fn scrollable_body(
     id: &'static str,
     body: impl IntoElement,
     scroll: &ScrollHandle,
-    max_height: gpui::Pixels,
+    max_height: gpui_kit::Pixels,
     cx: &App,
 ) -> impl IntoElement {
     let remaining = scroll.max_offset().y + scroll.offset().y;
@@ -85,26 +85,26 @@ fn scrollable_body(
                 .track_scroll(scroll)
                 .child(body),
         )
-        .when(remaining > gpui::px(4.), |this| {
+        .when(remaining > gpui_kit::px(4.), |this| {
             this.child(
                 div()
                     .absolute()
                     .bottom_0()
                     .left_0()
                     .right_0()
-                    .h(gpui::px(48.))
+                    .h(gpui_kit::px(48.))
                     .pb_1()
                     .flex()
                     .items_end()
                     .justify_center()
-                    .bg(gpui::linear_gradient(
+                    .bg(gpui_kit::linear_gradient(
                         180.,
-                        gpui::linear_color_stop(background.opacity(0.), 0.),
-                        gpui::linear_color_stop(background, 0.7),
+                        gpui_kit::linear_color_stop(background.opacity(0.), 0.),
+                        gpui_kit::linear_color_stop(background, 0.7),
                     ))
                     .child(
                         h_flex()
-                            .h(gpui::px(22.))
+                            .h(gpui_kit::px(22.))
                             .px_2()
                             .gap_1()
                             .items_center()
@@ -191,7 +191,7 @@ fn icon_picker(state: &Entity<SelectedIcon>, cx: &App) -> impl IntoElement {
 
     let swatch = move |selected: bool| {
         div()
-            .h(gpui::px(28.))
+            .h(gpui_kit::px(28.))
             .flex()
             .items_center()
             .justify_center()
@@ -234,7 +234,7 @@ fn icon_picker(state: &Entity<SelectedIcon>, cx: &App) -> impl IntoElement {
                 let state = state.clone();
                 swatch(current == Some(item))
                     .id(SharedString::from(format!("icon-{item:?}")))
-                    .w(gpui::px(28.))
+                    .w(gpui_kit::px(28.))
                     .child(Icon::empty().path(item.path()).small())
                     .on_click(move |_, _, cx| {
                         state.update(cx, |s, cx| {
@@ -265,7 +265,7 @@ fn color_picker(state: &Entity<SelectedColor>, cx: &App) -> impl IntoElement {
                     let state = state.clone();
                     div()
                         .id(SharedString::from(format!("color-{color:?}")))
-                        .size(gpui::px(28.))
+                        .size(gpui_kit::px(28.))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -281,7 +281,7 @@ fn color_picker(state: &Entity<SelectedColor>, cx: &App) -> impl IntoElement {
                         })
                         .child(
                             div()
-                                .size(gpui::px(14.))
+                                .size(gpui_kit::px(14.))
                                 .rounded_full()
                                 .bg(color.hsla().unwrap_or(foreground)),
                         )
@@ -1292,7 +1292,6 @@ impl Render for SessionWindow {
                 cx,
             )))
             .child(footer)
-            .children(Root::render_dialog_layer(window, cx))
     }
 }
 
@@ -1475,7 +1474,7 @@ fn ssh_check(
 }
 
 pub fn open_new_folder_dialog(
-    weak_app: gpui::WeakEntity<OxidalApp>,
+    weak_app: gpui_kit::WeakEntity<OxidalApp>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -1526,7 +1525,7 @@ pub fn open_new_folder_dialog(
                 }
             }));
 
-        let metrics = dialog_metrics(window, gpui::px(360.));
+        let metrics = dialog_metrics(window, gpui_kit::px(360.));
 
         fit_to_window(dialog, &metrics)
             .title("New Folder")
@@ -1550,7 +1549,7 @@ pub fn open_new_folder_dialog(
 
 pub fn open_edit_folder_dialog(
     folder: SessionFolder,
-    weak_app: gpui::WeakEntity<OxidalApp>,
+    weak_app: gpui_kit::WeakEntity<OxidalApp>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -1603,7 +1602,7 @@ pub fn open_edit_folder_dialog(
                 }
             }));
 
-        let metrics = dialog_metrics(window, gpui::px(360.));
+        let metrics = dialog_metrics(window, gpui_kit::px(360.));
 
         fit_to_window(dialog, &metrics)
             .title("Edit Folder")
