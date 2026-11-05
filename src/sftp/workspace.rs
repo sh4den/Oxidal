@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 
-use gpui::{
-    AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Window, div, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
     button::Button,
     h_flex,
     resizable::{h_resizable, resizable_panel},
     v_flex,
+};
+use gpui_kit::{
+    AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Window, div, px,
 };
 
 use super::panel::PanelEvent;
@@ -29,7 +29,7 @@ impl SftpWorkspace {
         credentials: crate::ssh_client::SshCredentials,
         proxy: Option<crate::proxy::ProxyConfig>,
         show_hidden: bool,
-        on_show_hidden_changed: impl Fn(bool, &mut gpui::App) + Clone + 'static,
+        on_show_hidden_changed: impl Fn(bool, &mut gpui_kit::App) + Clone + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {

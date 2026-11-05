@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::LazyLock;
 
-use gpui::{Hsla, hsla};
+use gpui_kit::{Hsla, hsla};
 use vte::{Params, Perform};
 
 const SCROLLBACK_MAX: usize = 5000;

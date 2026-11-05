@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use gpui::{AssetSource, Result, SharedString};
+use gpui_kit::{AssetSource, Result, SharedString};
 
 pub struct Assets;
 
@@ -57,11 +57,11 @@ impl AssetSource for Assets {
         if let Some((_, data)) = BUNDLED.iter().find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(data)));
         }
-        gpui_component_assets::Assets.load(path)
+        gpui_kit::assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut items = gpui_component_assets::Assets.list(path)?;
+        let mut items = gpui_kit::assets::Assets.list(path)?;
         items.extend(
             BUNDLED
                 .iter()

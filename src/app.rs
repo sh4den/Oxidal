@@ -4,16 +4,16 @@ use crate::settings::{self, AppSettings};
 use crate::settings_view::SettingsView;
 use crate::sftp::{SftpPanel, SftpWorkspace};
 use crate::terminal::{self, TerminalView};
-use gpui::{
+use gpui_kit::{
     AnyWindowHandle, AppContext as _, Context, Div, ElementId, Entity, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
     Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, WindowHandle,
     canvas, div, prelude::FluentBuilder as _, px,
 };
 
-use gpui_component::button::Button;
-use gpui_component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_component::{
+use gpui_kit::component::button::Button;
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, IconNamed as _, Root, Sizable as _, TitleBar, WindowExt as _,
     button::ButtonVariants as _,
     dialog::DialogFooter,
@@ -33,7 +33,7 @@ use uuid::Uuid;
 const TERM_ROWS: usize = 32;
 const TERM_COLS: usize = 110;
 
-const FOLDER_GUIDE_INDENT: gpui::Pixels = px(18.);
+const FOLDER_GUIDE_INDENT: gpui_kit::Pixels = px(18.);
 const WELCOME_SESSIONS: usize = 6;
 
 const CLIPBOARD_MODIFIER: &str = if cfg!(target_os = "macos") {
@@ -52,7 +52,7 @@ const WORD_MOVE_MODIFIER: &str = if cfg!(target_os = "macos") {
 const ROW_CHROME_WIDTH: f32 = 132.;
 const APPROX_CHAR_WIDTH: f32 = 7.;
 
-fn label_capacity(sidebar_width: gpui::Pixels) -> usize {
+fn label_capacity(sidebar_width: gpui_kit::Pixels) -> usize {
     let text_width = f32::from(sidebar_width) - ROW_CHROME_WIDTH;
     ((text_width / APPROX_CHAR_WIDTH).floor() as usize).max(6)
 }
@@ -97,7 +97,7 @@ struct DragPreview {
     color: Option<Hsla>,
     label: SharedString,
     kind: PreviewKind,
-    grab: gpui::Point<gpui::Pixels>,
+    grab: gpui_kit::Point<gpui_kit::Pixels>,
 }
 
 #[derive(Clone)]
@@ -117,8 +117,8 @@ fn start_drag(
     app: &WeakEntity<OxidalApp>,
     source: DragSource,
     preview: &DragPreview,
-    grab: gpui::Point<gpui::Pixels>,
-    cx: &mut gpui::App,
+    grab: gpui_kit::Point<gpui_kit::Pixels>,
+    cx: &mut gpui_kit::App,
 ) -> Entity<DragPreview> {
     let _ = app.update(cx, |app, cx| {
         app.dragging = Some(source);
@@ -423,7 +423,7 @@ impl OxidalApp {
         }
     }
 
-    fn is_dragging(&self, source: DragSource, cx: &gpui::App) -> bool {
+    fn is_dragging(&self, source: DragSource, cx: &gpui_kit::App) -> bool {
         cx.has_active_drag() && self.dragging == Some(source)
     }
 
@@ -597,7 +597,7 @@ impl OxidalApp {
         cx.notify();
     }
 
-    fn filter_query(&self, cx: &gpui::App) -> String {
+    fn filter_query(&self, cx: &gpui_kit::App) -> String {
         self.filter.read(cx).value().trim().to_lowercase()
     }
 
@@ -782,7 +782,8 @@ impl OxidalApp {
                 Button::new("update")
                     .ghost()
                     .small()
-                    .icon(IconName::Loader)
+                    .loading(true)
+                    .loading_icon(IconName::Loader)
                     .label("Downloading update"),
             ),
             UpdateState::Ready(_) => Some(
@@ -837,7 +838,9 @@ impl OxidalApp {
                     .justify_end()
                     .gap_1()
                     .pr_2()
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation()
+                    })
                     .when_some(update_button, |this, button| this.child(button)),
             )
     }
@@ -871,7 +874,7 @@ impl OxidalApp {
             .mx_1()
             .rounded_md()
             .border_t_2()
-            .border_color(gpui::transparent_black())
+            .border_color(gpui_kit::transparent_black())
             .cursor_pointer()
             .when(selected, |this| {
                 this.bg(cx.theme().sidebar_accent)
@@ -891,7 +894,7 @@ impl OxidalApp {
                 this.hover(move |style| style.bg(hover_bg))
             })
             .on_click(
-                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                cx.listener(move |view, event: &gpui_kit::ClickEvent, window, cx| {
                     if event.click_count() >= 2 {
                         view.connect_session(id, window, cx);
                     } else {
@@ -1060,7 +1063,7 @@ impl OxidalApp {
             )
     }
 
-    fn sidebar_width(&self, cx: &gpui::App) -> gpui::Pixels {
+    fn sidebar_width(&self, cx: &gpui_kit::App) -> gpui_kit::Pixels {
         self.sidebar_state
             .read(cx)
             .sizes()
@@ -1070,7 +1073,7 @@ impl OxidalApp {
             .unwrap_or_else(|| px(cx.global::<AppSettings>().sidebar_width))
     }
 
-    fn label_capacity(&self, cx: &gpui::App) -> usize {
+    fn label_capacity(&self, cx: &gpui_kit::App) -> usize {
         label_capacity(self.sidebar_width(cx))
     }
 
@@ -1103,7 +1106,7 @@ impl OxidalApp {
         let (fg, bg) = if active {
             (theme.primary, theme.primary.opacity(0.14))
         } else {
-            (theme.muted_foreground, gpui::transparent_black())
+            (theme.muted_foreground, gpui_kit::transparent_black())
         };
         let hover_bg = if active {
             theme.primary.opacity(0.2)
@@ -1248,7 +1251,7 @@ impl OxidalApp {
         count: usize,
         collapsed: bool,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         let folder_id = folder.id;
         let group_name = SharedString::from(format!("folder-{folder_id}"));
         let capacity = self.label_capacity(cx);
@@ -1278,7 +1281,7 @@ impl OxidalApp {
             .mx_1()
             .rounded_md()
             .border_t_2()
-            .border_color(gpui::transparent_black())
+            .border_color(gpui_kit::transparent_black())
             .cursor_pointer()
             .hover(move |style| style.bg(hover_bg))
             .when(
@@ -1396,7 +1399,7 @@ impl OxidalApp {
         let query = self.filter_query(cx);
         let filtering = !query.is_empty();
         let muted = cx.theme().muted_foreground;
-        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
 
         for folder in &self.folders {
             let folder_id = folder.id;
@@ -1412,7 +1415,7 @@ impl OxidalApp {
             rows.push(self.render_folder_row(folder, children.len(), collapsed, cx));
 
             if !collapsed && !children.is_empty() {
-                let nested: Vec<gpui::AnyElement> = children
+                let nested: Vec<gpui_kit::AnyElement> = children
                     .into_iter()
                     .map(|item| self.render_session_row(item, cx).into_any_element())
                     .collect();
@@ -1728,7 +1731,7 @@ impl OxidalApp {
                     .iter()
                     .filter(move |s| s.folder_id == folder_id)
             });
-        let cards: Vec<gpui::AnyElement> = in_sidebar_order
+        let cards: Vec<gpui_kit::AnyElement> = in_sidebar_order
             .take(WELCOME_SESSIONS)
             .map(|session| self.render_welcome_card(session, cx).into_any_element())
             .collect();
@@ -1909,7 +1912,7 @@ impl OxidalApp {
     }
 }
 
-fn welcome_logo(cx: &gpui::App) -> impl IntoElement {
+fn welcome_logo(cx: &gpui_kit::App) -> impl IntoElement {
     let theme = cx.theme();
     let bg = theme.background;
     let dark = bg.l < 0.5;
@@ -1928,9 +1931,9 @@ fn welcome_logo(cx: &gpui::App) -> impl IntoElement {
             }
         }
     };
-    let layer = |alpha: f32, y: f32, blur: f32, spread: f32| gpui::BoxShadow {
+    let layer = |alpha: f32, y: f32, blur: f32, spread: f32| gpui_kit::BoxShadow {
         color: glow(alpha),
-        offset: gpui::point(px(0.), px(y)),
+        offset: gpui_kit::point(px(0.), px(y)),
         blur_radius: px(blur),
         spread_radius: px(spread),
         inset: false,
@@ -1946,7 +1949,11 @@ fn welcome_logo(cx: &gpui::App) -> impl IntoElement {
         } else {
             vec![layer(0.35, 2., 6., 0.), layer(0.5, 12., 32., 0.)]
         })
-        .child(gpui::img(crate::assets::LOGO).size_full().rounded(radius))
+        .child(
+            gpui_kit::img(crate::assets::LOGO)
+                .size_full()
+                .rounded(radius),
+        )
         .child(
             div()
                 .absolute()
@@ -1957,7 +1964,7 @@ fn welcome_logo(cx: &gpui::App) -> impl IntoElement {
         )
 }
 
-fn welcome_section(title: &'static str, cx: &gpui::App) -> impl IntoElement {
+fn welcome_section(title: &'static str, cx: &gpui_kit::App) -> impl IntoElement {
     div()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
@@ -1965,7 +1972,7 @@ fn welcome_section(title: &'static str, cx: &gpui::App) -> impl IntoElement {
         .child(title)
 }
 
-fn render_shortcuts(cx: &gpui::App) -> impl IntoElement {
+fn render_shortcuts(cx: &gpui_kit::App) -> impl IntoElement {
     let section = |title: &'static str| welcome_section(title, cx);
 
     v_flex()
@@ -2013,7 +2020,7 @@ fn render_shortcuts(cx: &gpui::App) -> impl IntoElement {
         )
 }
 
-fn shortcut(keys: &[&str], label: &'static str, cx: &gpui::App) -> impl IntoElement {
+fn shortcut(keys: &[&str], label: &'static str, cx: &gpui_kit::App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
 
     let mut chips = h_flex().w(px(150.)).flex_none().items_center().gap_1();
@@ -2045,7 +2052,7 @@ fn shortcut(keys: &[&str], label: &'static str, cx: &gpui::App) -> impl IntoElem
 }
 
 impl Render for OxidalApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .text_color(cx.theme().foreground)
@@ -2101,13 +2108,10 @@ impl Render for OxidalApp {
                     None => content.child(self.render_workspace(cx).into_any_element()),
                 }
             })
-            .children(Root::render_dialog_layer(window, cx))
-            .children(Root::render_sheet_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx))
     }
 }
 
-fn open_about_dialog(window: &mut Window, cx: &mut gpui::App) {
+fn open_about_dialog(window: &mut Window, cx: &mut gpui_kit::App) {
     window.open_dialog(cx, |dialog, _window, cx| {
         let muted = cx.theme().muted_foreground;
         dialog

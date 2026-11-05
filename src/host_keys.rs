@@ -4,13 +4,13 @@ use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use gpui::{App, Hsla, IntoElement, ParentElement as _, Styled as _, Window, div, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
     h_flex, v_flex,
 };
+use gpui_kit::{App, Hsla, IntoElement, ParentElement as _, Styled as _, Window, div, px};
 use russh::keys::ssh_key::{HashAlg, PublicKey};
 
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
