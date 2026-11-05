@@ -782,7 +782,8 @@ impl OxidalApp {
                 Button::new("update")
                     .ghost()
                     .small()
-                    .icon(IconName::Loader)
+                    .loading(true)
+                    .loading_icon(IconName::Loader)
                     .label("Downloading update"),
             ),
             UpdateState::Ready(_) => Some(
