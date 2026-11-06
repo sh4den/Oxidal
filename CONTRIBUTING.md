@@ -14,7 +14,7 @@ cargo clippy --all-targets
 cargo build --release
 ```
 
-CI additionally runs `cargo audit --deny warnings` on every push to `main`, so a pull request that introduces an advisory-flagged dependency will fail there.
+CI additionally runs `cargo audit` on every push to `main`, so a pull request that introduces a dependency with a known vulnerability will fail there. Unmaintained, unsound or yanked crates only produce warnings.
 
 ## Branching
 

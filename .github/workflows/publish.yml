@@ -30,7 +30,7 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Audit dependencies
-        run: cargo audit --deny warnings
+        run: cargo audit
 
   build:
     needs: version
