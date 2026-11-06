@@ -1515,7 +1515,6 @@ impl SftpPanel {
             cx.listener(move |panel, _: &MouseDownEvent, _, cx| {
                 panel.context_entry = panel.entry_at(&menu_path);
                 panel.selected = Some(menu_path.clone());
-                cx.stop_propagation();
                 cx.emit(PanelEvent::SelectionChanged);
                 cx.notify();
             }),
@@ -1810,12 +1809,13 @@ impl Render for SftpPanel {
                                                     }),
                                                 ))
                                             })
-                                            .on_mouse_down(
-                                                MouseButton::Right,
-                                                cx.listener(|panel, _: &MouseDownEvent, _, _| {
-                                                    panel.context_entry = None;
-                                                }),
-                                            )
+                                            .capture_any_mouse_down(cx.listener(
+                                                |panel, event: &MouseDownEvent, _, _| {
+                                                    if event.button == MouseButton::Right {
+                                                        panel.context_entry = None;
+                                                    }
+                                                },
+                                            ))
                                             .context_menu(move |menu, window, cx| {
                                                 match view.read(cx).context_entry.clone() {
                                                     Some(entry) => entry_menu(
