@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; uname -n 2>/dev/null; echo @user; whoami 2>/dev/null; echo @who; who 2>/dev/null; echo @stat; cat /proc/stat 2>/dev/null; echo @mem; cat /proc/meminfo 2>/dev/null; echo @net; cat /proc/net/dev 2>/dev/null; echo @conn; netstat -tn 2>/dev/null; echo @df; df -kP 2>/dev/null; echo @sensors; command -v sensors 2>/dev/null; echo @temp; sensors -u 2>/dev/null; sleep 1; done";
+pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; uname -n 2>/dev/null; echo @kernel; uname -s 2>/dev/null; echo @os; cat /etc/os-release 2>/dev/null; echo @uptime; cat /proc/uptime 2>/dev/null || { sysctl -n kern.boottime; date +%s; } 2>/dev/null; echo @user; whoami 2>/dev/null; echo @who; who 2>/dev/null; echo @stat; cat /proc/stat 2>/dev/null; echo @mem; cat /proc/meminfo 2>/dev/null; echo @net; cat /proc/net/dev 2>/dev/null; echo @conn; netstat -tn 2>/dev/null; echo @df; df -kP 2>/dev/null; echo @sensors; command -v sensors 2>/dev/null; echo @temp; sensors -u 2>/dev/null; sleep 1; done";
 
 const MARKER: &[u8] = b"@@OXIDAL@@";
 const CPU_CHIPS: &[&str] = &[
@@ -48,9 +48,95 @@ pub fn headline_temp(temps: &[TempInfo]) -> Option<&TempInfo> {
     hottest(TempInfo::is_cpu).or_else(|| hottest(|_| true))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OsLogo {
+    pub icon: &'static str,
+    pub color: u32,
+}
+
+const OS_LOGOS: &[(&[&str], OsLogo)] = &[
+    (&["ubuntu"], logo("ubuntu", 0xE95420)),
+    (&["debian"], logo("debian", 0xA81D33)),
+    (&["raspbian"], logo("raspberrypi", 0xA22846)),
+    (&["alpine"], logo("alpinelinux", 0x0D597F)),
+    (&["arch", "archarm"], logo("archlinux", 0x1793D1)),
+    (&["manjaro", "manjaro-arm"], logo("manjaro", 0x35BF5C)),
+    (&["endeavouros"], logo("endeavouros", 0x7F7FFF)),
+    (&["fedora"], logo("fedora", 0x51A2DA)),
+    (&["centos"], logo("centos", 0x262577)),
+    (&["rhel"], logo("redhat", 0xEE0000)),
+    (&["rocky"], logo("rockylinux", 0x10B981)),
+    (&["almalinux"], logo("almalinux", 0x000000)),
+    (
+        &[
+            "opensuse",
+            "opensuse-leap",
+            "opensuse-tumbleweed",
+            "opensuse-microos",
+            "suse",
+            "sles",
+        ],
+        logo("opensuse", 0x73BA25),
+    ),
+    (&["gentoo"], logo("gentoo", 0x54487A)),
+    (&["linuxmint"], logo("linuxmint", 0x86BE43)),
+    (&["nixos"], logo("nixos", 0x5277C3)),
+    (&["kali"], logo("kalilinux", 0x557C94)),
+    (&["pop"], logo("popos", 0x48B9C7)),
+    (&["void"], logo("voidlinux", 0x478061)),
+    (&["elementary"], logo("elementary", 0x64BAFF)),
+    (&["freebsd"], logo("freebsd", 0xAB2B28)),
+    (&["openbsd"], logo("openbsd", 0xF2CA30)),
+    (&["netbsd"], logo("netbsd", 0xFF6600)),
+    (&["darwin", "macos"], logo("apple", 0x000000)),
+];
+const GENERIC_LINUX: OsLogo = logo("linux", 0xFCC624);
+
+const fn logo(icon: &'static str, color: u32) -> OsLogo {
+    OsLogo { icon, color }
+}
+
+fn find_logo(id: &str) -> Option<OsLogo> {
+    let id = id.to_ascii_lowercase();
+    OS_LOGOS
+        .iter()
+        .find(|(ids, _)| ids.contains(&id.as_str()))
+        .map(|(_, logo)| *logo)
+}
+
+fn resolve_os(id: Option<&str>, id_like: Option<&str>, kernel: Option<&str>) -> Option<OsLogo> {
+    id.into_iter()
+        .chain(id_like.into_iter().flat_map(str::split_whitespace))
+        .chain(kernel)
+        .find_map(find_logo)
+        .or_else(|| (id.is_some() || kernel == Some("Linux")).then_some(GENERIC_LINUX))
+}
+
+fn os_release_value(line: &str, key: &str) -> Option<String> {
+    let value = line.strip_prefix(key)?.strip_prefix('=')?.trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+        .unwrap_or(value);
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn parse_boottime(line: &str) -> Option<u64> {
+    let rest = &line[line.find("sec =")? + "sec =".len()..];
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
 #[derive(Clone, Default)]
 pub struct RemoteStats {
     pub sysname: Option<String>,
+    pub os: Option<OsLogo>,
+    pub uptime: Option<u64>,
     pub user: Option<String>,
     pub cpu: Option<f32>,
     pub mem: Option<(u64, u64)>,
@@ -130,6 +216,10 @@ impl StatsParser {
         let mut conn_count = 0u32;
         let mut sensors_found = false;
         let mut temp_lines: Vec<&str> = Vec::new();
+        let mut kernel = None;
+        let mut os_id = None;
+        let mut os_like = None;
+        let mut boot_time = None;
         let port_str = self.port.to_string();
 
         for line in frame.lines() {
@@ -142,6 +232,33 @@ impl StatsParser {
                 "sys" => {
                     if stats.sysname.is_none() && !line.trim().is_empty() {
                         stats.sysname = Some(line.trim().to_string());
+                    }
+                }
+                "kernel" => {
+                    if kernel.is_none() && !line.trim().is_empty() {
+                        kernel = Some(line.trim().to_string());
+                    }
+                }
+                "os" => {
+                    if let Some(id) = os_release_value(line, "ID") {
+                        os_id = Some(id);
+                    } else if let Some(like) = os_release_value(line, "ID_LIKE") {
+                        os_like = Some(like);
+                    }
+                }
+                "uptime" => {
+                    if let Some(boot) = parse_boottime(line) {
+                        boot_time = Some(boot);
+                    } else if stats.uptime.is_none()
+                        && let Some(value) = line
+                            .split_whitespace()
+                            .next()
+                            .and_then(|v| v.parse::<f64>().ok())
+                    {
+                        stats.uptime = Some(match boot_time {
+                            Some(boot) => (value as u64).saturating_sub(boot),
+                            None => value as u64,
+                        });
                     }
                 }
                 "user" => {
@@ -230,6 +347,8 @@ impl StatsParser {
                 _ => {}
             }
         }
+
+        stats.os = resolve_os(os_id.as_deref(), os_like.as_deref(), kernel.as_deref());
 
         stats.disks.sort_by(|a, b| a.mount.cmp(&b.mount));
         if let Some(disk) = stats
@@ -442,6 +561,40 @@ in0:
             (headline.label.as_str(), headline.value),
             ("Composite", 58.85)
         );
+    }
+
+    #[test]
+    fn resolves_os_logo_from_os_release() {
+        let ubuntu = "@kernel\nLinux\n@os\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nID=ubuntu\nID_LIKE=debian\n";
+        let logo = StatsParser::new(22).parse_frame(ubuntu).os.map(|l| l.icon);
+        assert_eq!(logo, Some("ubuntu"));
+
+        let derivative = "@os\nID=\"zorin\"\nID_LIKE=\"ubuntu debian\"\n";
+        let logo = StatsParser::new(22)
+            .parse_frame(derivative)
+            .os
+            .map(|l| l.icon);
+        assert_eq!(logo, Some("ubuntu"));
+
+        let unknown = "@kernel\nLinux\n@os\nID=somethingelse\n";
+        let logo = StatsParser::new(22).parse_frame(unknown).os.map(|l| l.icon);
+        assert_eq!(logo, Some("linux"));
+
+        let mac = "@kernel\nDarwin\n@os\n";
+        let logo = StatsParser::new(22).parse_frame(mac).os.map(|l| l.icon);
+        assert_eq!(logo, Some("apple"));
+
+        assert_eq!(StatsParser::new(22).parse_frame("@os\n").os, None);
+    }
+
+    #[test]
+    fn parses_uptime_from_proc_and_boottime() {
+        let linux = StatsParser::new(22).parse_frame("@uptime\n93784.52 180000.10\n");
+        assert_eq!(linux.uptime, Some(93784));
+
+        let bsd =
+            "@uptime\n{ sec = 1700000000, usec = 52000 } Tue Nov 14 22:13:20 2023\n1700000600\n";
+        assert_eq!(StatsParser::new(22).parse_frame(bsd).uptime, Some(600));
     }
 
     #[test]
