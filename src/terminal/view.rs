@@ -8,7 +8,7 @@ use gpui_kit::{
     MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement as _, Pixels, Point, Render,
     ScrollEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, Task, TextAlign,
     TextRun, UnderlineStyle, Window, actions, canvas, div, fill, hsla, point,
-    prelude::FluentBuilder as _, px, relative, size,
+    prelude::FluentBuilder as _, px, relative, rgb, size,
 };
 
 use super::backend::{Backend, BackendEvent};
@@ -784,11 +784,14 @@ impl TerminalView {
         let mut items: Vec<AnyElement> = Vec::new();
         if let Some(stats) = &self.stats {
             if let Some(sysname) = &stats.sysname {
-                items.push(
-                    segment(IconName::Globe)
-                        .child(sysname.clone())
-                        .into_any_element(),
-                );
+                let os = match stats.os {
+                    Some(logo) => segment_icon(
+                        Icon::default().path(format!("icons/oxidal/os/{}.svg", logo.icon)),
+                        logo_color(logo.color),
+                    ),
+                    None => segment(IconName::Globe),
+                };
+                items.push(os.child(sysname.clone()).into_any_element());
             }
             items.push(
                 segment(IconName::Cpu)
@@ -834,6 +837,16 @@ impl TerminalView {
                         .trigger(segment(IconName::User).child(user.clone()))
                         .child(who_details(&stats.who, cx))
                         .into_any_element(),
+                );
+            }
+            if let Some(uptime) = stats.uptime {
+                items.push(
+                    segment_icon(
+                        Icon::default().path("icons/oxidal/clock.svg"),
+                        hsla(0., 0., 0.5, 1.),
+                    )
+                    .child(fmt_uptime(uptime))
+                    .into_any_element(),
                 );
             }
             if let Some(temps) = &stats.temps {
@@ -907,6 +920,23 @@ fn segment_icon(icon: Icon, color: Hsla) -> Div {
         .items_center()
         .gap_1()
         .child(div().text_color(color).child(icon.xsmall()))
+}
+
+fn logo_color(hex: u32) -> Hsla {
+    let mut color: Hsla = rgb(hex).into();
+    color.l = color.l.clamp(0.5, 0.75);
+    color
+}
+
+fn fmt_uptime(secs: u64) -> String {
+    let (days, hours, mins) = (secs / 86_400, secs / 3_600 % 24, secs / 60 % 60);
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
+    }
 }
 
 fn thermometer() -> Icon {
