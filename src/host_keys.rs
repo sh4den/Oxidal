@@ -320,7 +320,7 @@ fn open_mismatch_prompt(request: HostKeyRequest, window: &mut Window, cx: &mut A
     });
 }
 
-fn detail(label: &'static str, value: &str, muted: Hsla) -> impl IntoElement {
+pub(crate) fn detail(label: &'static str, value: &str, muted: Hsla) -> impl IntoElement {
     h_flex()
         .w_full()
         .gap_2()

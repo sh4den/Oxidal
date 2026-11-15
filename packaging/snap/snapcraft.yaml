@@ -1,9 +1,9 @@
 name: oxidal
 title: Oxidal
 version: '0.7.0'
-summary: SSH, SFTP, telnet, serial and local shells in one window
+summary: SSH, SFTP, FTP, telnet, serial and local shells in one window
 description: |
-  Oxidal puts SSH, SFTP, telnet, serial and local shells side by side in a
+  Oxidal puts SSH, SFTP, FTP, telnet, serial and local shells side by side in a
   single native window, with an SFTP browser docked next to every SSH shell.
 license: GPL-3.0-only
 website: https://github.com/sh4den/Oxidal

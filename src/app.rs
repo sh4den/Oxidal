@@ -358,10 +358,13 @@ pub struct OxidalApp {
 }
 
 impl OxidalApp {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let window_handle = window.window_handle();
+    fn forward_prompts<R: 'static>(
+        requests: async_channel::Receiver<R>,
+        open: fn(R, &mut Window, &mut gpui_kit::App),
+        window_handle: AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
-            let requests = crate::host_keys::requests();
             while let Ok(request) = requests.recv().await {
                 let active = cx.update(|cx| cx.active_window());
                 let target = this
@@ -377,7 +380,7 @@ impl OxidalApp {
                     .unwrap_or(window_handle);
                 let opened = cx.update_window(target, |_, window, cx| {
                     window.activate_window();
-                    crate::host_keys::open_prompt(request, window, cx);
+                    open(request, window, cx);
                 });
                 if opened.is_err() {
                     break;
@@ -385,6 +388,22 @@ impl OxidalApp {
             }
         })
         .detach();
+    }
+
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let window_handle = window.window_handle();
+        Self::forward_prompts(
+            crate::host_keys::requests(),
+            crate::host_keys::open_prompt,
+            window_handle,
+            cx,
+        );
+        Self::forward_prompts(
+            crate::cert_trust::requests(),
+            crate::cert_trust::open_prompt,
+            window_handle,
+            cx,
+        );
 
         let updates = crate::update::check();
         cx.spawn(async move |this, cx| {
@@ -704,6 +723,21 @@ impl OxidalApp {
                         target.port,
                         target.credentials(),
                         target.proxy(),
+                        target.show_hidden_files,
+                        move |value, cx| {
+                            let _ = weak_app
+                                .update(cx, |app, _| app.set_session_show_hidden(id, value));
+                        },
+                        window,
+                        cx,
+                    )
+                }))
+            }
+            SessionKind::Ftp => {
+                let weak_app = cx.entity().downgrade();
+                TabContent::Sftp(cx.new(|cx| {
+                    SftpWorkspace::ftp(
+                        target.ftp_target(),
                         target.show_hidden_files,
                         move |value, cx| {
                             let _ = weak_app
