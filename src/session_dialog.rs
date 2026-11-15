@@ -13,6 +13,7 @@ use gpui_kit::component::{
     input::{Input, InputState},
     select::{SearchableVec, Select, SelectItem, SelectState},
     tab::{Tab, TabBar},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::{
@@ -882,6 +883,7 @@ impl SessionWindow {
             .children(SessionKind::ALL.iter().map(|tile_kind| {
                 let tile_kind = *tile_kind;
                 let is_selected = tile_kind == kind;
+                let available = tile_kind.is_available();
                 div()
                     .id(SharedString::from(format!("kind-{}", tile_kind.label())))
                     .flex_1()
@@ -893,21 +895,35 @@ impl SessionWindow {
                     .gap_1()
                     .rounded_md()
                     .border_1()
-                    .cursor_pointer()
                     .map(|this| {
                         if is_selected {
                             this.border_color(cx.theme().primary)
                                 .bg(cx.theme().primary.opacity(0.12))
                                 .text_color(cx.theme().primary)
-                        } else {
+                        } else if available {
                             this.border_color(cx.theme().border)
                                 .text_color(cx.theme().muted_foreground)
                                 .hover(|this| this.bg(cx.theme().accent))
+                        } else {
+                            this.border_color(cx.theme().border)
+                                .text_color(cx.theme().muted_foreground)
                         }
                     })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_kind(tile_kind, window, cx);
-                    }))
+                    .map(|this| {
+                        if available {
+                            this.cursor_pointer().on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.set_kind(tile_kind, window, cx);
+                                },
+                            ))
+                        } else {
+                            this.opacity(0.4)
+                                .cursor_not_allowed()
+                                .tooltip(|window, cx| {
+                                    Tooltip::new("Not available yet").build(window, cx)
+                                })
+                        }
+                    })
                     .child(Icon::new(tile_kind.icon()).large())
                     .child(div().text_xs().child(tile_kind.label()))
             }))
