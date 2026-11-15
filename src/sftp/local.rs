@@ -37,6 +37,12 @@ pub fn spawn(initial: PathBuf) -> LocalClient {
                     }
                     list_and_send(&current, &out_tx);
                 }
+                LocalCommand::Move { from, to } => match move_entry(&from, &to) {
+                    Ok(()) => {
+                        list_and_send(&current, &out_tx);
+                    }
+                    Err(message) => send_error(&out_tx, message),
+                },
                 LocalCommand::RemoveFile { path } => {
                     if let Err(err) = fs::remove_file(&path) {
                         send_error(&out_tx, format!("Couldn't delete file: {err}"));
@@ -65,6 +71,21 @@ fn create_file(dir: &str, name: &str) -> std::io::Result<()> {
         .create_new(true)
         .open(Path::new(dir).join(name))
         .map(drop)
+}
+
+fn move_entry(from: &str, to: &str) -> Result<(), String> {
+    let destination = Path::new(to);
+    if destination.symlink_metadata().is_ok() {
+        let name = destination
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| to.to_string());
+        return Err(format!(
+            "Couldn't move: \"{}\" already exists there",
+            super::display_name(&name)
+        ));
+    }
+    fs::rename(from, destination).map_err(|err| format!("Couldn't move: {err}"))
 }
 
 pub fn home_dir() -> PathBuf {
@@ -236,6 +257,42 @@ mod tests {
         let err = create_file(&dir, "notes.txt").expect_err("exists");
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(base.join("notes.txt")).expect("read"), b"keep me");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn moving_into_a_folder_never_replaces_what_is_there() {
+        let base = std::env::temp_dir().join(format!("oxidal-move-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("archive")).expect("dir");
+        fs::write(base.join("report.txt"), b"new").expect("file");
+        fs::write(base.join("archive").join("report.txt"), b"old").expect("file");
+        fs::write(base.join("notes.txt"), b"notes").expect("file");
+
+        let err = move_entry(
+            &path_string(&base.join("report.txt")),
+            &path_string(&base.join("archive").join("report.txt")),
+        )
+        .expect_err("a clash must be refused");
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(
+            fs::read(base.join("archive").join("report.txt")).expect("read"),
+            b"old",
+            "the file already in the folder is untouched"
+        );
+        assert!(base.join("report.txt").exists(), "and the source stays put");
+
+        move_entry(
+            &path_string(&base.join("notes.txt")),
+            &path_string(&base.join("archive").join("notes.txt")),
+        )
+        .expect("a free name moves");
+        assert!(!base.join("notes.txt").exists());
+        assert_eq!(
+            fs::read(base.join("archive").join("notes.txt")).expect("read"),
+            b"notes"
+        );
 
         let _ = fs::remove_dir_all(&base);
     }
