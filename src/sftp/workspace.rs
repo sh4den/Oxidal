@@ -86,6 +86,13 @@ impl SftpWorkspace {
     }
 
     fn transfer(&mut self, drag: &FileDrag, dest_dir: &str, cx: &mut Context<Self>) {
+        let source = match drag.side {
+            PanelSide::Local => &self.local,
+            PanelSide::Remote => &self.remote,
+        };
+        if drag.source != source.entity_id() {
+            return;
+        }
         match drag.side {
             PanelSide::Local => {
                 self.send_to_remote(&drag.entry_path, &drag.name, drag.is_dir, dest_dir)
@@ -293,8 +300,8 @@ impl Render for SftpWorkspace {
                     .text_color(cx.theme().muted_foreground)
                     .child(Icon::new(IconName::Info).xsmall())
                     .child(
-                        "Drag a file or folder onto the other side to transfer it, \
-                         or drop one from your computer onto the remote side",
+                        "Drag a file or folder onto the other side or onto a folder to \
+                         send it there, or drop one from your computer onto the remote side",
                     ),
             )
     }

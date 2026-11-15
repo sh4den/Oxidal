@@ -260,6 +260,24 @@ async fn execute(
             }
             list_and_send(sftp, current_dir.clone(), out_tx).await;
         }
+        SftpCommand::Move { from, to } => {
+            if sftp.symlink_metadata(to.clone()).await.is_ok() {
+                let name = to.rsplit('/').next().unwrap_or(&to);
+                send_error(
+                    out_tx,
+                    format!(
+                        "Couldn't move: \"{}\" already exists there",
+                        super::display_name(name)
+                    ),
+                )
+                .await;
+                return;
+            }
+            match sftp.rename(from, to).await {
+                Ok(()) => list_and_send(sftp, current_dir.clone(), out_tx).await,
+                Err(err) => send_error(out_tx, format!("Couldn't move: {err}")).await,
+            }
+        }
         SftpCommand::RemoveFile { path } => {
             if let Err(err) = sftp.remove_file(path).await {
                 send_error(out_tx, format!("Couldn't delete file: {err}")).await;
