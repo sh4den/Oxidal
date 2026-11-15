@@ -7,7 +7,7 @@ cask "oxidal" do
 
   url "https://github.com/sh4den/Oxidal/releases/download/v#{version}/Oxidal-#{version}-macos-#{arch}.dmg"
   name "Oxidal"
-  desc "SSH, SFTP, telnet, serial and local shells in one window"
+  desc "SSH, SFTP, FTP, telnet, serial and local shells in one window"
   homepage "https://github.com/sh4den/Oxidal"
 
   livecheck do

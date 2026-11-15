@@ -40,7 +40,43 @@ impl SftpWorkspace {
         };
 
         let client = super::spawn(host, port, credentials, proxy, ".".to_string());
+        Self::with_client(
+            label,
+            client,
+            show_hidden,
+            on_show_hidden_changed,
+            window,
+            cx,
+        )
+    }
 
+    pub fn ftp(
+        target: super::FtpTarget,
+        show_hidden: bool,
+        on_show_hidden_changed: impl Fn(bool, &mut gpui_kit::App) + Clone + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let label = SharedString::from(target.label());
+        let client = super::spawn_ftp(target);
+        Self::with_client(
+            label,
+            client,
+            show_hidden,
+            on_show_hidden_changed,
+            window,
+            cx,
+        )
+    }
+
+    fn with_client(
+        label: SharedString,
+        client: super::SftpClient,
+        show_hidden: bool,
+        on_show_hidden_changed: impl Fn(bool, &mut gpui_kit::App) + Clone + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let remote = cx.new({
             let client = client.clone();
             let on_show_hidden_changed = on_show_hidden_changed.clone();

@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=Oxidal
-Comment=Cross-platform SSH, SFTP and serial terminal client
+Comment=Cross-platform SSH, SFTP, FTP and serial terminal client
 Exec=oxidal
 Icon=oxidal
 Terminal=false
 Categories=Network;RemoteAccess;
-Keywords=ssh;sftp;serial;terminal;console;remote;
+Keywords=ssh;sftp;ftp;ftps;serial;terminal;console;remote;
 StartupWMClass=oxidal
 StartupNotify=true

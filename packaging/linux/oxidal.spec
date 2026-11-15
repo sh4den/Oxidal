@@ -1,7 +1,7 @@
 Name:           oxidal
 Version:        %{version}
 Release:        1
-Summary:        Cross-platform SSH, SFTP and serial terminal client
+Summary:        Cross-platform SSH, SFTP, FTP and serial terminal client
 License:        GPL-3.0-only
 URL:            https://github.com/sh4den/Oxidal
 
@@ -15,7 +15,7 @@ Recommends:     libwayland-client
 Recommends:     gnome-keyring
 
 %description
-Oxidal puts SSH, SFTP, telnet, serial and local shells side by side in a
+Oxidal puts SSH, SFTP, FTP, telnet, serial and local shells side by side in a
 single native window.
 
 %install

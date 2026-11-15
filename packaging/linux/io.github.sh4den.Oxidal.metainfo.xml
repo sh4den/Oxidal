@@ -12,12 +12,12 @@
 
   <description>
     <p>
-      Oxidal puts SSH, SFTP, telnet, serial and local shells side by side in a single
+      Oxidal puts SSH, SFTP, FTP, telnet, serial and local shells side by side in a single
       native window, organized into folders in a sidebar.
     </p>
     <ul>
       <li>SSH sessions with an SFTP file browser docked next to the terminal</li>
-      <li>A two sided SFTP file manager with drag and drop transfers</li>
+      <li>A two sided SFTP and FTP/FTPS file manager with drag and drop transfers</li>
       <li>A real terminal emulator with truecolor, scroll regions and the alternate screen</li>
       <li>Live CPU, memory, network and disk monitoring for SSH hosts</li>
       <li>Serial consoles with port detection, and a proper telnet client</li>
@@ -42,6 +42,7 @@
   <keywords>
     <keyword>ssh</keyword>
     <keyword>sftp</keyword>
+    <keyword>ftp</keyword>
     <keyword>serial</keyword>
     <keyword>telnet</keyword>
     <keyword>terminal</keyword>

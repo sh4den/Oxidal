@@ -2,7 +2,7 @@
 pkgname=oxidal-bin
 pkgver=0.7.0
 pkgrel=1
-pkgdesc='Cross-platform SSH, SFTP and serial terminal client'
+pkgdesc='Cross-platform SSH, SFTP, FTP and serial terminal client'
 arch=('x86_64' 'aarch64')
 url='https://github.com/sh4den/Oxidal'
 license=('GPL-3.0-only')
