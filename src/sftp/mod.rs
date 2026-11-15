@@ -1,5 +1,6 @@
 mod client;
 pub mod editor;
+mod ftp;
 mod local;
 mod panel;
 mod workspace;
@@ -340,6 +341,7 @@ impl FileClient {
 }
 
 pub use client::spawn;
+pub use ftp::{FtpTarget, check as check_ftp, spawn as spawn_ftp};
 pub use local::{home_dir, spawn as spawn_local};
 
 fn is_deceptive(c: char) -> bool {

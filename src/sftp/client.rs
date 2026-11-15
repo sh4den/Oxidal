@@ -10,30 +10,30 @@ use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote, safe_loc
 use crate::proxy::ProxyConfig;
 use crate::ssh_client::{self, SshCredentials};
 
-const CHUNK_SIZE: usize = 64 * 1024;
+pub(super) const CHUNK_SIZE: usize = 64 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 // Bounds how long the transport thread lingers waiting for the disconnect to flush.
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
 const IDLE_PROBE_AFTER: Duration = Duration::from_secs(20);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-const RECONNECT_ATTEMPTS: u32 = 8;
+pub(super) const RECONNECT_ATTEMPTS: u32 = 8;
 const RECONNECT_FIRST_DELAY: Duration = Duration::from_secs(1);
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 const WRITE_PACKET_LEN: u32 = 256 * 1024;
 
-struct Progress {
+pub(super) struct Progress {
     last: Instant,
 }
 
 impl Progress {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             last: Instant::now(),
         }
     }
 
-    fn due(&mut self) -> bool {
+    pub(super) fn due(&mut self) -> bool {
         let now = Instant::now();
         if now.duration_since(self.last) >= PROGRESS_INTERVAL {
             self.last = now;
@@ -136,7 +136,7 @@ impl Connection {
     }
 }
 
-fn reconnect_delay(attempt: u32) -> Duration {
+pub(super) fn reconnect_delay(attempt: u32) -> Duration {
     (RECONNECT_FIRST_DELAY * 2u32.saturating_pow(attempt)).min(RECONNECT_MAX_DELAY)
 }
 
@@ -324,7 +324,7 @@ async fn execute(
     }
 }
 
-async fn send_error(out_tx: &async_channel::Sender<SftpEvent>, message: String) {
+pub(super) async fn send_error(out_tx: &async_channel::Sender<SftpEvent>, message: String) {
     let _ = out_tx.send(SftpEvent::Error(message)).await;
 }
 
@@ -381,7 +381,7 @@ async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntr
     Ok(entries)
 }
 
-fn transfer_label(path: &std::path::Path, fallback: &str) -> String {
+pub(super) fn transfer_label(path: &std::path::Path, fallback: &str) -> String {
     let raw = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -420,7 +420,7 @@ async fn copy_up(
     Ok(())
 }
 
-async fn create_new(local: &std::path::Path) -> std::io::Result<tokio::fs::File> {
+pub(super) async fn create_new(local: &std::path::Path) -> std::io::Result<tokio::fs::File> {
     tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -469,7 +469,7 @@ async fn copy_down(
     Ok(())
 }
 
-async fn finish_transfer(
+pub(super) async fn finish_transfer(
     out_tx: &async_channel::Sender<SftpEvent>,
     result: anyhow::Result<()>,
 ) -> bool {
@@ -534,7 +534,7 @@ async fn do_download(
     finish_transfer(out_tx, result).await
 }
 
-const MAX_READ: u64 = 10 * 1024 * 1024;
+pub(super) const MAX_READ: u64 = 10 * 1024 * 1024;
 
 async fn do_read(
     sftp: &SftpSession,
@@ -633,13 +633,13 @@ async fn do_write(
     let _ = ack.send(error).await;
 }
 
-struct PlannedFile<L, R> {
-    source: L,
-    destination: R,
-    size: u64,
+pub(super) struct PlannedFile<L, R> {
+    pub(super) source: L,
+    pub(super) destination: R,
+    pub(super) size: u64,
 }
 
-async fn plan_upload(
+pub(super) async fn plan_upload(
     local_root: &std::path::Path,
     remote_root: &str,
 ) -> anyhow::Result<(Vec<String>, Vec<PlannedFile<std::path::PathBuf, String>>)> {
