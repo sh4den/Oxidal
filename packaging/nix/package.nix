@@ -79,7 +79,7 @@ rustPlatform.buildRustPackage {
   '';
 
   meta = {
-    description = "Cross-platform SSH, SFTP and serial terminal client";
+    description = "Cross-platform SSH, SFTP, FTP and serial terminal client";
     homepage = "https://github.com/sh4den/Oxidal";
     license = lib.licenses.gpl3Only;
     mainProgram = "oxidal";

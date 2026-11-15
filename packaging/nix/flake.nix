@@ -1,5 +1,5 @@
 {
-  description = "Oxidal: SSH, SFTP, telnet, serial and local shells in one window";
+  description = "Oxidal: SSH, SFTP, FTP, telnet, serial and local shells in one window";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 

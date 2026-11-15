@@ -29,7 +29,7 @@ Maintainer: sh4den <69421356+sh4den@users.noreply.github.com>
 Homepage: https://github.com/sh4den/Oxidal
 Depends: libc6, libgcc-s1, libcap2, libdbus-1-3, libsystemd0, libudev1, libfontconfig1, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libvulkan1
 Recommends: libwayland-client0, gnome-keyring
-Description: Cross-platform SSH, SFTP and serial terminal client
+Description: Cross-platform SSH, SFTP, FTP and serial terminal client
 EOF
 
 dpkg-deb --build --root-owner-group "$root" "$out_dir"
