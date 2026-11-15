@@ -13,6 +13,7 @@ use crate::settings::config_dir;
 pub enum SessionKind {
     Ssh,
     Sftp,
+    Ftp,
     Telnet,
     Rdp,
     Serial,
@@ -20,9 +21,10 @@ pub enum SessionKind {
 }
 
 impl SessionKind {
-    pub const ALL: [SessionKind; 6] = [
+    pub const ALL: [SessionKind; 7] = [
         SessionKind::Ssh,
         SessionKind::Sftp,
+        SessionKind::Ftp,
         SessionKind::Telnet,
         SessionKind::Rdp,
         SessionKind::Serial,
@@ -33,6 +35,7 @@ impl SessionKind {
         match self {
             SessionKind::Ssh | SessionKind::Local => IconName::SquareTerminal,
             SessionKind::Sftp => IconName::Folder,
+            SessionKind::Ftp => IconName::FolderOpen,
             SessionKind::Telnet => IconName::Network,
             SessionKind::Rdp => IconName::LayoutDashboard,
             SessionKind::Serial => IconName::Cpu,
@@ -43,12 +46,25 @@ impl SessionKind {
         match self {
             SessionKind::Ssh => "SSH",
             SessionKind::Sftp => "SFTP",
+            SessionKind::Ftp => "FTP",
             SessionKind::Telnet => "Telnet",
             SessionKind::Rdp => "RDP",
             SessionKind::Serial => "Serial",
             SessionKind::Local => "Local",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FtpSecurity {
+    #[default]
+    Explicit,
+    Implicit,
+    None,
+}
+
+impl FtpSecurity {
+    pub const IMPLICIT_PORT: u16 = 990;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +305,10 @@ pub struct Session {
     #[serde(default = "default_monitoring")]
     pub monitoring: bool,
     #[serde(default)]
+    pub ftp_security: FtpSecurity,
+    #[serde(default)]
+    pub ftp_active_mode: bool,
+    #[serde(default)]
     pub icon: Option<ItemIcon>,
     #[serde(default)]
     pub color: ItemColor,
@@ -354,6 +374,8 @@ impl Session {
             folder_id: None,
             show_hidden_files: false,
             monitoring: default_monitoring(),
+            ftp_security: FtpSecurity::default(),
+            ftp_active_mode: false,
             icon: None,
             color: ItemColor::default(),
         }
@@ -373,6 +395,18 @@ impl Session {
             self.private_key_path.clone(),
             self.key_passphrase.clone(),
         )
+    }
+
+    pub fn ftp_target(&self) -> crate::sftp::FtpTarget {
+        crate::sftp::FtpTarget {
+            host: self.host.trim().to_string(),
+            port: self.port,
+            username: self.username.trim().to_string(),
+            password: self.password.clone(),
+            security: self.ftp_security,
+            active_mode: self.ftp_active_mode,
+            proxy: self.proxy(),
+        }
     }
 
     pub fn proxy(&self) -> Option<crate::proxy::ProxyConfig> {
@@ -395,7 +429,11 @@ impl Session {
                     self.host.clone()
                 }
             }
-            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Telnet | SessionKind::Rdp => {
+            SessionKind::Ssh
+            | SessionKind::Sftp
+            | SessionKind::Ftp
+            | SessionKind::Telnet
+            | SessionKind::Rdp => {
                 if self.host.is_empty() {
                     "No host configured".to_string()
                 } else if self.username.is_empty() {
@@ -413,7 +451,11 @@ impl Session {
             SessionKind::Local => "Local shell".to_string(),
             _ if host.is_empty() => self.kind.label().to_string(),
             SessionKind::Serial => host.to_string(),
-            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Telnet | SessionKind::Rdp => {
+            SessionKind::Ssh
+            | SessionKind::Sftp
+            | SessionKind::Ftp
+            | SessionKind::Telnet
+            | SessionKind::Rdp => {
                 let user = self.username.trim();
                 if user.is_empty() {
                     host.to_string()
@@ -429,6 +471,7 @@ impl SessionKind {
     pub fn default_port(self) -> u16 {
         match self {
             SessionKind::Ssh | SessionKind::Sftp => 22,
+            SessionKind::Ftp => 21,
             SessionKind::Telnet => 23,
             SessionKind::Rdp => 3389,
             SessionKind::Serial | SessionKind::Local => 0,

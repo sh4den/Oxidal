@@ -29,7 +29,7 @@ use uuid::Uuid;
 use crate::app::OxidalApp;
 use crate::proxy::ProxyConfig;
 use crate::session::{
-    ItemColor, ItemIcon, Session, SessionFolder, SessionKind, default_proxy_port,
+    FtpSecurity, ItemColor, ItemIcon, Session, SessionFolder, SessionKind, default_proxy_port,
 };
 use crate::ssh_client::SshCredentials;
 
@@ -152,7 +152,9 @@ impl SettingsTab {
                 SettingsTab::Monitoring,
                 SettingsTab::Label,
             ],
-            SessionKind::Sftp => &[SettingsTab::Auth, SettingsTab::Proxy, SettingsTab::Label],
+            SessionKind::Sftp | SessionKind::Ftp => {
+                &[SettingsTab::Auth, SettingsTab::Proxy, SettingsTab::Label]
+            }
             SessionKind::Telnet => &[SettingsTab::Proxy, SettingsTab::Label],
             SessionKind::Rdp => &[SettingsTab::Auth, SettingsTab::Label],
             SessionKind::Serial | SessionKind::Local => &[SettingsTab::Label],
@@ -443,6 +445,8 @@ pub struct SessionWindow {
     tab: SettingsTab,
     folder_id: Option<Uuid>,
     monitoring: bool,
+    ftp_security: FtpSecurity,
+    ftp_active_mode: bool,
     test_state: TestState,
     name: Entity<InputState>,
     host: Entity<InputState>,
@@ -536,6 +540,8 @@ impl SessionWindow {
             tab: SettingsTab::available(kind)[0],
             folder_id: session.and_then(|s| s.folder_id),
             monitoring: session.is_none_or(|s| s.monitoring),
+            ftp_security: session.map(|s| s.ftp_security).unwrap_or_default(),
+            ftp_active_mode: session.is_some_and(|s| s.ftp_active_mode),
             test_state: TestState::Idle,
             name: text_field(
                 session.map(|s| s.name.clone()).unwrap_or_default(),
@@ -643,10 +649,12 @@ impl SessionWindow {
         if self.kind == kind {
             return;
         }
-        let prev = self.kind;
-        if self.port.read(cx).value() == prev.default_port().to_string() {
+        let prev_port = self.default_port_for(self.kind);
+        self.kind = kind;
+        if self.port.read(cx).value() == prev_port.to_string() {
+            let port = self.default_port_for(kind);
             self.port.update(cx, |state, cx| {
-                state.set_value(kind.default_port().to_string(), window, cx)
+                state.set_value(port.to_string(), window, cx)
             });
         }
         self.test_state = TestState::Idle;
@@ -654,8 +662,56 @@ impl SessionWindow {
         if !tabs.contains(&self.tab) {
             self.tab = tabs[0];
         }
-        self.kind = kind;
         cx.notify();
+    }
+
+    fn default_port_for(&self, kind: SessionKind) -> u16 {
+        match (kind, self.ftp_security) {
+            (SessionKind::Ftp, FtpSecurity::Implicit) => FtpSecurity::IMPLICIT_PORT,
+            _ => kind.default_port(),
+        }
+    }
+
+    fn set_ftp_security(
+        &mut self,
+        security: FtpSecurity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prev_port = self.default_port_for(self.kind);
+        self.ftp_security = security;
+        if self.port.read(cx).value() == prev_port.to_string() {
+            let port = self.default_port_for(self.kind);
+            self.port.update(cx, |state, cx| {
+                state.set_value(port.to_string(), window, cx)
+            });
+        }
+        self.test_state = TestState::Idle;
+        cx.notify();
+    }
+
+    fn ftp_target(&self, cx: &App) -> crate::sftp::FtpTarget {
+        crate::sftp::FtpTarget {
+            host: self.host.read(cx).value().trim().to_string(),
+            port: self
+                .port
+                .read(cx)
+                .value()
+                .to_string()
+                .parse()
+                .unwrap_or_else(|_| self.default_port_for(SessionKind::Ftp)),
+            username: self.username.read(cx).value().trim().to_string(),
+            password: SecretString::from(self.password.read(cx).value().to_string()),
+            security: self.ftp_security,
+            active_mode: self.ftp_active_mode,
+            proxy: proxy_config(
+                SessionKind::Ftp,
+                self.proxy_host.read(cx).value().trim(),
+                self.proxy_port.read(cx).value().trim(),
+                self.proxy_username.read(cx).value().trim(),
+                &self.proxy_password.read(cx).value(),
+            ),
+        }
     }
 
     fn run_test(&mut self, cx: &mut Context<Self>) {
@@ -714,9 +770,19 @@ impl SessionWindow {
             .parse()
             .unwrap_or(115_200);
 
+        let ftp = matches!(kind, SessionKind::Ftp).then(|| self.ftp_target(cx));
+
         self.test_state = TestState::Testing;
         cx.notify();
-        let rx = run_connection_test(kind, host_value, port_value, credentials, proxy, baud_value);
+        let rx = run_connection_test(
+            kind,
+            host_value,
+            port_value,
+            credentials,
+            proxy,
+            baud_value,
+            ftp,
+        );
         cx.spawn(async move |this, cx| {
             let outcome = match rx.recv().await {
                 Ok(Ok(msg)) => TestState::Success(msg),
@@ -789,6 +855,8 @@ impl SessionWindow {
         session.icon = self.selected_icon.read(cx).0;
         session.color = self.selected_color.read(cx).0;
         session.monitoring = self.monitoring;
+        session.ftp_security = self.ftp_security;
+        session.ftp_active_mode = self.ftp_active_mode;
         if session.name.is_empty() {
             session.name = session.default_name();
         }
@@ -933,9 +1001,17 @@ impl SessionWindow {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("Saved encrypted in your system credential store"),
+                            .child(if matches!(self.kind, SessionKind::Ftp) {
+                                "Saved encrypted in your system credential store. Leave the \
+                                 username empty to log in anonymously"
+                            } else {
+                                "Saved encrypted in your system credential store"
+                            }),
                     ),
             )
+            .when(matches!(self.kind, SessionKind::Ftp), |this| {
+                this.child(self.render_ftp_options(cx))
+            })
             .when(
                 matches!(self.kind, SessionKind::Ssh | SessionKind::Sftp),
                 |this| {
@@ -1075,6 +1151,88 @@ impl SessionWindow {
             )
     }
 
+    fn render_ftp_options(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let security = self.ftp_security;
+        let active = self.ftp_active_mode;
+        let security_button = |id: &'static str, label: &'static str, value: FtpSecurity| {
+            Button::new(id)
+                .xsmall()
+                .label(label)
+                .when(security == value, |b| b.primary())
+                .when(security != value, |b| b.outline())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.set_ftp_security(value, window, cx);
+                }))
+        };
+        let mode_button = |id: &'static str, label: &'static str, value: bool| {
+            Button::new(id)
+                .xsmall()
+                .label(label)
+                .when(active == value, |b| b.primary())
+                .when(active != value, |b| b.outline())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.ftp_active_mode = value;
+                    this.test_state = TestState::Idle;
+                    cx.notify();
+                }))
+        };
+        let note = |text: &'static str| {
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text)
+        };
+
+        v_flex()
+            .gap_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child("Encryption")
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(security_button(
+                                "ftp-explicit",
+                                "Explicit TLS",
+                                FtpSecurity::Explicit,
+                            ))
+                            .child(security_button(
+                                "ftp-implicit",
+                                "Implicit TLS",
+                                FtpSecurity::Implicit,
+                            ))
+                            .child(security_button("ftp-plain", "None", FtpSecurity::None)),
+                    )
+                    .child(note(match security {
+                        FtpSecurity::Explicit => {
+                            "Connects in plain text and upgrades with AUTH TLS before logging \
+                             in. The connection is refused if the server can't do TLS"
+                        }
+                        FtpSecurity::Implicit => "TLS from the first byte, usually on port 990",
+                        FtpSecurity::None => "No encryption at all",
+                    })),
+            )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child("Transfer Mode")
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(mode_button("ftp-passive", "Passive", false))
+                            .child(mode_button("ftp-active", "Active", true)),
+                    )
+                    .child(note(if active {
+                        "The server connects back to this computer for each transfer. Rarely \
+                         works behind a router or firewall, and never through a proxy"
+                    } else {
+                        "This computer opens the data connections. Works behind most routers \
+                         and firewalls"
+                    })),
+            )
+    }
+
     fn render_monitoring(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = self.monitoring;
         v_flex()
@@ -1191,7 +1349,11 @@ impl Render for SessionWindow {
         body = match kind {
             SessionKind::Local => body,
             SessionKind::Serial => body.child(self.render_serial(cx)),
-            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Telnet | SessionKind::Rdp => body
+            SessionKind::Ssh
+            | SessionKind::Sftp
+            | SessionKind::Ftp
+            | SessionKind::Telnet
+            | SessionKind::Rdp => body
                 .child(self.render_host_row())
                 .when(matches!(kind, SessionKind::Telnet), |this| {
                     this.child(cleartext_warning(
@@ -1199,7 +1361,18 @@ impl Render for SessionWindow {
                          Anyone between you and the host can read it.",
                         cx,
                     ))
-                }),
+                })
+                .when(
+                    matches!(kind, SessionKind::Ftp)
+                        && matches!(self.ftp_security, FtpSecurity::None),
+                    |this| {
+                        this.child(cleartext_warning(
+                            "Plain FTP sends the password and every file in the clear. Anyone \
+                             between you and the server can read them.",
+                            cx,
+                        ))
+                    },
+                ),
         };
 
         let tab_bar = TabBar::new("session-settings-tabs")
@@ -1376,7 +1549,7 @@ fn proxy_config(
     if host.is_empty()
         || !matches!(
             kind,
-            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Telnet
+            SessionKind::Ssh | SessionKind::Sftp | SessionKind::Ftp | SessionKind::Telnet
         )
     {
         return None;
@@ -1396,6 +1569,7 @@ fn run_connection_test(
     credentials: SshCredentials,
     proxy: Option<ProxyConfig>,
     baud_rate: u32,
+    ftp: Option<crate::sftp::FtpTarget>,
 ) -> async_channel::Receiver<Result<String, String>> {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
@@ -1409,6 +1583,10 @@ fn run_connection_test(
             SessionKind::Telnet => stream_check(host, port, proxy),
             SessionKind::Rdp => tcp_check(&host, port),
             SessionKind::Ssh | SessionKind::Sftp => ssh_check(host, port, credentials, proxy),
+            SessionKind::Ftp => match ftp {
+                Some(target) => crate::sftp::check_ftp(target),
+                None => Err("Missing FTP settings".to_string()),
+            },
         };
         let _ = tx.send_blocking(result);
     });

@@ -2,6 +2,7 @@
 
 mod app;
 mod assets;
+mod cert_trust;
 mod credentials;
 mod host_keys;
 mod proxy;
