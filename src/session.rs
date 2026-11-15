@@ -53,6 +53,10 @@ impl SessionKind {
             SessionKind::Local => "Local",
         }
     }
+
+    pub fn is_available(self) -> bool {
+        !matches!(self, SessionKind::Rdp)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
