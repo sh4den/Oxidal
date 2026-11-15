@@ -37,6 +37,10 @@ enum SftpCommand {
         from: String,
         to: String,
     },
+    Move {
+        from: String,
+        to: String,
+    },
     RemoveFile {
         path: String,
     },
@@ -75,6 +79,7 @@ enum LocalCommand {
     CreateDir { name: String },
     CreateFile { name: String },
     Rename { from: String, to: String },
+    Move { from: String, to: String },
     RemoveFile { path: String },
     RemoveDir { path: String },
 }
@@ -130,6 +135,13 @@ impl SftpClient {
 
     pub fn rename(&self, from: impl Into<String>, to: impl Into<String>) {
         let _ = self.commands.send_blocking(SftpCommand::Rename {
+            from: from.into(),
+            to: to.into(),
+        });
+    }
+
+    pub fn move_entry(&self, from: impl Into<String>, to: impl Into<String>) {
+        let _ = self.commands.send_blocking(SftpCommand::Move {
             from: from.into(),
             to: to.into(),
         });
@@ -219,6 +231,7 @@ pub enum PanelSide {
 
 #[derive(Clone)]
 pub struct FileDrag {
+    pub source: gpui_kit::EntityId,
     pub side: PanelSide,
     pub entry_path: String,
     pub name: String,
@@ -288,6 +301,18 @@ impl FileClient {
                 });
             }
             FileClient::Remote(client) => client.rename(from, to),
+        }
+    }
+
+    pub fn move_entry(&self, from: impl Into<String>, to: impl Into<String>) {
+        match self {
+            FileClient::Local(client) => {
+                let _ = client.commands.send_blocking(LocalCommand::Move {
+                    from: from.into(),
+                    to: to.into(),
+                });
+            }
+            FileClient::Remote(client) => client.move_entry(from, to),
         }
     }
 
@@ -429,6 +454,32 @@ fn has_parent(side: PanelSide, path: &str) -> bool {
     }
 }
 
+fn is_within(side: PanelSide, path: &str, ancestor: &str) -> bool {
+    match side {
+        PanelSide::Local => std::path::Path::new(path).starts_with(ancestor),
+        PanelSide::Remote => {
+            let ancestor = ancestor.trim_end_matches('/');
+            ancestor.is_empty()
+                || path == ancestor
+                || path
+                    .strip_prefix(ancestor)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        }
+    }
+}
+
+fn move_destination(side: PanelSide, from: &str, name: &str, target_dir: &str) -> Option<String> {
+    if is_within(side, target_dir, from) {
+        return None;
+    }
+    let destination = join_path(side, target_dir, name);
+    let unchanged = match side {
+        PanelSide::Local => std::path::Path::new(&destination) == std::path::Path::new(from),
+        PanelSide::Remote => destination.trim_end_matches('/') == from.trim_end_matches('/'),
+    };
+    (!unchanged).then_some(destination)
+}
+
 fn parent_remote(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
     match trimmed.rsplit_once('/') {
@@ -538,6 +589,73 @@ mod tests {
             safe_local_name("console.log"),
             "console.log",
             "a name that merely starts like a device name is fine"
+        );
+    }
+
+    #[test]
+    fn a_remote_entry_moves_into_a_sibling_folder() {
+        assert_eq!(
+            move_destination(PanelSide::Remote, "/srv/app.log", "app.log", "/srv/logs"),
+            Some("/srv/logs/app.log".to_string())
+        );
+        assert_eq!(
+            move_destination(PanelSide::Remote, "/srv/www", "www", "/srv/old"),
+            Some("/srv/old/www".to_string()),
+            "a folder moves the same way as a file"
+        );
+        assert_eq!(
+            move_destination(PanelSide::Remote, "/srv/logs/app.log", "app.log", "/srv"),
+            Some("/srv/app.log".to_string()),
+            "dropping on the parent moves it up a level"
+        );
+        assert_eq!(
+            move_destination(PanelSide::Remote, "/app.log", "app.log", "/"),
+            None,
+            "dropping into the folder it already lives in does nothing"
+        );
+    }
+
+    #[test]
+    fn a_remote_folder_never_moves_into_itself() {
+        assert_eq!(
+            move_destination(PanelSide::Remote, "/srv/www", "www", "/srv/www"),
+            None
+        );
+        assert_eq!(
+            move_destination(PanelSide::Remote, "/srv/www", "www", "/srv/www/static"),
+            None,
+            "nor into one of its own subfolders"
+        );
+        assert_eq!(
+            move_destination(PanelSide::Remote, "/srv/www", "www", "/srv/www-old"),
+            Some("/srv/www-old/www".to_string()),
+            "a sibling that merely shares a prefix is a valid target"
+        );
+    }
+
+    #[test]
+    fn a_local_entry_moves_into_a_folder_but_not_into_itself() {
+        let base = std::env::temp_dir().to_string_lossy().to_string();
+        let folder = local::join_local(&base, "photos");
+        let file = local::join_local(&base, "cat.png");
+        let inner = local::join_local(&folder, "2026");
+
+        assert_eq!(
+            move_destination(PanelSide::Local, &file, "cat.png", &folder),
+            Some(local::join_local(&folder, "cat.png"))
+        );
+        assert_eq!(
+            move_destination(PanelSide::Local, &folder, "photos", &folder),
+            None
+        );
+        assert_eq!(
+            move_destination(PanelSide::Local, &folder, "photos", &inner),
+            None
+        );
+        assert_eq!(
+            move_destination(PanelSide::Local, &file, "cat.png", &base),
+            None,
+            "the file is already in that folder"
         );
     }
 

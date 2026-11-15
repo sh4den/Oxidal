@@ -29,8 +29,16 @@ use crate::settings::{AppSettings, EditUploadMode, RemoteOpenMode};
 use super::{
     FileClient, FileDrag, PanelSide, SftpEntry, SftpEvent, display_name, format_kind,
     format_modified, format_permissions, format_size, has_parent, is_runnable, join_path,
-    join_remote, parent_path, safe_local_name, unique_destination,
+    join_remote, move_destination, parent_path, safe_local_name, unique_destination,
 };
+
+fn accepts_drop(drag: &FileDrag, panel: EntityId, side: PanelSide, target_dir: &str) -> bool {
+    if drag.side != side {
+        return true;
+    }
+    drag.source == panel
+        && move_destination(side, &drag.entry_path, &drag.name, target_dir).is_some()
+}
 
 pub enum PanelEvent {
     TransferRequested { drag: FileDrag, dest_dir: String },
@@ -40,30 +48,64 @@ pub enum PanelEvent {
 
 pub struct DragPreview {
     label: SharedString,
+    detail: SharedString,
     is_dir: bool,
+    grab: gpui_kit::Point<Pixels>,
 }
 
 impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
+        let theme = cx.theme();
+        let (accent, icon) = if self.is_dir {
+            (theme.warning, IconName::Folder)
+        } else {
+            (theme.primary, IconName::File)
+        };
+
+        let card = h_flex()
             .items_center()
-            .gap_2()
-            .px_2()
+            .gap_1p5()
+            .max_w(px(240.))
+            .pl_1()
+            .pr_2()
             .py_1()
             .rounded_md()
             .border_1()
-            .border_color(cx.theme().primary)
-            .bg(cx.theme().popover)
-            .shadow_md()
+            .border_color(accent.opacity(0.5))
+            .bg(theme.popover)
+            .text_color(theme.popover_foreground)
+            .font_family(theme.font_family.clone())
             .text_xs()
-            .child(if self.is_dir {
-                Icon::new(IconName::Folder)
-                    .xsmall()
-                    .text_color(cx.theme().warning)
-            } else {
-                Icon::new(IconName::File).xsmall()
-            })
-            .child(self.label.clone())
+            .shadow_md()
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(18.))
+                    .rounded_sm()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(accent.opacity(0.18))
+                    .child(Icon::new(icon).xsmall().text_color(accent)),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(self.label.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme.muted_foreground)
+                    .child(self.detail.clone()),
+            );
+
+        div()
+            .pl((self.grab.x - px(13.)).max(px(0.)))
+            .pt((self.grab.y - px(13.)).max(px(0.)))
+            .child(card)
     }
 }
 
@@ -1173,13 +1215,40 @@ impl SftpPanel {
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
-                let _ = this.update(cx, |panel, cx| panel.upload_paths(&paths, cx));
+                let _ = this.update(cx, |panel, cx| {
+                    let remote_dir = panel.current_path.clone();
+                    panel.upload_paths(&paths, &remote_dir, cx)
+                });
             }
         })
         .detach();
     }
 
-    fn upload_paths(&self, paths: &[PathBuf], cx: &mut Context<Self>) {
+    fn drop_into(&mut self, drag: &FileDrag, target_dir: &str, cx: &mut Context<Self>) {
+        if drag.side != self.side {
+            cx.emit(PanelEvent::TransferRequested {
+                drag: drag.clone(),
+                dest_dir: target_dir.to_string(),
+            });
+            return;
+        }
+        if drag.source != cx.entity_id() {
+            return;
+        }
+        if let Some(destination) =
+            move_destination(self.side, &drag.entry_path, &drag.name, target_dir)
+        {
+            self.client.move_entry(drag.entry_path.clone(), destination);
+            cx.notify();
+        }
+    }
+
+    fn parent_dir(&self) -> Option<String> {
+        has_parent(self.side, &self.current_path)
+            .then(|| parent_path(self.side, &self.current_path))
+    }
+
+    fn upload_paths(&self, paths: &[PathBuf], remote_dir: &str, cx: &mut Context<Self>) {
         let FileClient::Remote(client) = &self.client else {
             return;
         };
@@ -1191,7 +1260,7 @@ impl SftpPanel {
             if name.is_empty() {
                 continue;
             }
-            let remote = join_remote(&self.current_path, &name);
+            let remote = join_remote(remote_dir, &name);
             if local.is_dir() {
                 client.upload_dir(local.clone(), remote);
             } else {
@@ -1224,6 +1293,14 @@ impl SftpPanel {
         let view = cx.entity();
         let show_hidden = self.show_hidden;
         let is_remote = self.side == PanelSide::Remote;
+        let parent_dir = self.parent_dir();
+        let up_button = Button::new("sftp-up")
+            .ghost()
+            .xsmall()
+            .icon(IconName::ArrowUp)
+            .tooltip("Up a directory")
+            .disabled(parent_dir.is_none())
+            .on_click(cx.listener(|panel, _, _, cx| panel.go_up(cx)));
         h_flex()
             .items_center()
             .gap_1()
@@ -1231,15 +1308,30 @@ impl SftpPanel {
             .py_1()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(
-                Button::new("sftp-up")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::ArrowUp)
-                    .tooltip("Up a directory")
-                    .disabled(!has_parent(self.side, &self.current_path))
-                    .on_click(cx.listener(|panel, _, _, cx| panel.go_up(cx))),
-            )
+            .child(match parent_dir {
+                Some(parent) => {
+                    let panel_id = cx.entity_id();
+                    let side = self.side;
+                    div()
+                        .rounded_md()
+                        .drag_over::<FileDrag>({
+                            let parent = parent.clone();
+                            move |style, drag, _, cx| {
+                                if accepts_drop(drag, panel_id, side, &parent) {
+                                    style.bg(cx.theme().primary.opacity(0.25))
+                                } else {
+                                    style
+                                }
+                            }
+                        })
+                        .on_drop(cx.listener(move |panel, drag: &FileDrag, _, cx| {
+                            panel.drop_into(drag, &parent, cx);
+                        }))
+                        .child(up_button)
+                        .into_any_element()
+                }
+                None => up_button.into_any_element(),
+            })
             .child(
                 Button::new("sftp-home")
                     .ghost()
@@ -1443,17 +1535,56 @@ impl SftpPanel {
             }))
             .on_drag(
                 FileDrag {
+                    source: cx.entity_id(),
                     side: self.side,
                     entry_path: entry.path.clone(),
                     name: entry.name.clone(),
                     is_dir: entry.is_dir,
                 },
-                |drag, _, _, cx| {
-                    let label = SharedString::from(display_name(&drag.name));
-                    let is_dir = drag.is_dir;
-                    cx.new(|_| DragPreview { label, is_dir })
+                {
+                    let detail = SharedString::from(if entry.is_dir {
+                        format_kind(entry)
+                    } else {
+                        format!("{} · {}", format_kind(entry), format_size(entry.size))
+                    });
+                    move |drag, grab, _, cx| {
+                        let preview = DragPreview {
+                            label: SharedString::from(display_name(&drag.name)),
+                            detail: detail.clone(),
+                            is_dir: drag.is_dir,
+                            grab,
+                        };
+                        cx.new(|_| preview)
+                    }
                 },
             )
+            .when(entry.is_dir, |this| {
+                let panel_id = cx.entity_id();
+                let side = self.side;
+                let target = entry.path.clone();
+                let drop_target = entry.path.clone();
+                let upload_target = entry.path.clone();
+                this.drag_over::<FileDrag>(move |style, drag, _, cx| {
+                    if accepts_drop(drag, panel_id, side, &target) {
+                        style.bg(cx.theme().primary.opacity(0.25))
+                    } else {
+                        style
+                    }
+                })
+                .on_drop(cx.listener(move |panel, drag: &FileDrag, _, cx| {
+                    panel.drop_into(drag, &drop_target, cx);
+                }))
+                .when(side == PanelSide::Remote, |this| {
+                    this.drag_over::<ExternalPaths>(|style, _, _, cx| {
+                        style.bg(cx.theme().primary.opacity(0.25))
+                    })
+                    .on_drop(cx.listener(
+                        move |panel, paths: &ExternalPaths, _, cx| {
+                            panel.upload_paths(paths.paths(), &upload_target, cx);
+                        },
+                    ))
+                })
+            })
             .child(
                 div()
                     .w(px(ICON_COL_WIDTH))
@@ -1716,7 +1847,8 @@ impl Render for SftpPanel {
                         })
                         .on_drop(cx.listener(
                             |panel, paths: &ExternalPaths, _, cx| {
-                                panel.upload_paths(paths.paths(), cx);
+                                let remote_dir = panel.current_path.clone();
+                                panel.upload_paths(paths.paths(), &remote_dir, cx);
                             },
                         ))
                     })
