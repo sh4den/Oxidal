@@ -1,5 +1,8 @@
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use futures::TryStreamExt as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use russh::client::Handle;
@@ -11,6 +14,7 @@ use crate::proxy::ProxyConfig;
 use crate::ssh_client::{self, SshCredentials};
 
 pub(super) const CHUNK_SIZE: usize = 64 * 1024;
+pub(super) const TRANSFER_BUFFER: usize = 1024 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 // Bounds how long the transport thread lingers waiting for the disconnect to flush.
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -21,25 +25,32 @@ pub(super) const RECONNECT_ATTEMPTS: u32 = 8;
 const RECONNECT_FIRST_DELAY: Duration = Duration::from_secs(1);
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 const WRITE_PACKET_LEN: u32 = 256 * 1024;
+const MAX_IN_FLIGHT: usize = 64;
+const PARALLEL_FILES: usize = 8;
 
 pub(super) struct Progress {
-    last: Instant,
+    done: Cell<u64>,
+    last: Cell<Instant>,
 }
 
 impl Progress {
     pub(super) fn new() -> Self {
         Self {
-            last: Instant::now(),
+            done: Cell::new(0),
+            last: Cell::new(Instant::now()),
         }
     }
 
-    pub(super) fn due(&mut self) -> bool {
+    pub(super) async fn advance(&self, bytes: u64, out_tx: &async_channel::Sender<SftpEvent>) {
+        let done = self.done.get() + bytes;
+        self.done.set(done);
         let now = Instant::now();
-        if now.duration_since(self.last) >= PROGRESS_INTERVAL {
-            self.last = now;
-            return true;
+        if now.duration_since(self.last.get()) >= PROGRESS_INTERVAL {
+            self.last.set(now);
+            let _ = out_tx
+                .send(SftpEvent::TransferProgress { transferred: done })
+                .await;
         }
-        false
     }
 }
 
@@ -84,6 +95,8 @@ pub fn spawn(
 fn sftp_config() -> russh_sftp::client::Config {
     russh_sftp::client::Config {
         max_write_packet_len: WRITE_PACKET_LEN,
+        max_concurrent_reads: MAX_IN_FLIGHT,
+        max_concurrent_writes: MAX_IN_FLIGHT,
         ..Default::default()
     }
 }
@@ -108,13 +121,16 @@ impl Target {
         let channel = session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
         let sftp = SftpSession::new_with_config(channel.into_stream(), sftp_config()).await?;
-        Ok(Connection { session, sftp })
+        Ok(Connection {
+            session,
+            sftp: Rc::new(sftp),
+        })
     }
 }
 
 struct Connection {
     session: Handle<ssh_client::Handler>,
-    sftp: SftpSession,
+    sftp: Rc<SftpSession>,
 }
 
 impl Connection {
@@ -142,7 +158,7 @@ pub(super) fn reconnect_delay(attempt: u32) -> Duration {
 
 async fn reconnect(
     target: &Target,
-    current_dir: &str,
+    current_dir: &RefCell<String>,
     out_tx: &async_channel::Sender<SftpEvent>,
     cmd_rx: &async_channel::Receiver<SftpCommand>,
 ) -> anyhow::Result<Connection> {
@@ -156,7 +172,8 @@ async fn reconnect(
             .await;
         match target.open().await {
             Ok(connection) => {
-                list_and_send(&connection.sftp, current_dir.to_string(), out_tx).await;
+                let dir = current_dir.borrow().clone();
+                list_and_send(&connection.sftp, dir, out_tx).await;
                 return Ok(connection);
             }
             Err(err) => last_err = err,
@@ -173,15 +190,23 @@ async fn reconnect(
     ))
 }
 
+struct Shared {
+    current_dir: RefCell<String>,
+    transferring: Cell<bool>,
+    last_used: Cell<Instant>,
+}
+
+type Job = (Rc<SftpSession>, SftpCommand);
+
 async fn run(
     target: Target,
     initial_path: String,
     out_tx: async_channel::Sender<SftpEvent>,
     cmd_rx: async_channel::Receiver<SftpCommand>,
 ) -> anyhow::Result<()> {
-    let mut connection = target.open().await?;
+    let connection = target.open().await?;
 
-    let mut current_dir = connection
+    let current_dir = connection
         .sftp
         .canonicalize(initial_path.clone())
         .await
@@ -189,9 +214,43 @@ async fn run(
 
     list_and_send(&connection.sftp, current_dir.clone(), &out_tx).await;
 
+    let shared = Shared {
+        current_dir: RefCell::new(current_dir),
+        transferring: Cell::new(false),
+        last_used: Cell::new(Instant::now()),
+    };
+    let (job_tx, job_rx) = async_channel::unbounded::<Job>();
+
+    let commands = async {
+        let result = command_loop(&target, connection, &shared, &out_tx, &cmd_rx, &job_tx).await;
+        job_rx.close();
+        result
+    };
+    let transfers = async {
+        while let Ok((sftp, cmd)) = job_rx.recv().await {
+            if job_rx.is_closed() {
+                break;
+            }
+            shared.transferring.set(true);
+            transfer(&sftp, cmd, &shared, &out_tx).await;
+            shared.transferring.set(false);
+            shared.last_used.set(Instant::now());
+        }
+    };
+    let (result, ()) = tokio::join!(commands, transfers);
+    result
+}
+
+async fn command_loop(
+    target: &Target,
+    mut connection: Connection,
+    shared: &Shared,
+    out_tx: &async_channel::Sender<SftpEvent>,
+    cmd_rx: &async_channel::Receiver<SftpCommand>,
+    job_tx: &async_channel::Sender<Job>,
+) -> anyhow::Result<()> {
     let mut health = tokio::time::interval(HEALTH_INTERVAL);
     health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut last_used = Instant::now();
 
     loop {
         let cmd = tokio::select! {
@@ -201,21 +260,25 @@ async fn run(
             },
             _ = health.tick() => {
                 if connection.session.is_closed() {
-                    connection = reconnect(&target, &current_dir, &out_tx, &cmd_rx).await?;
-                    last_used = Instant::now();
+                    connection = reconnect(target, &shared.current_dir, out_tx, cmd_rx).await?;
+                    shared.last_used.set(Instant::now());
                 }
                 continue;
             }
         };
 
-        if connection.session.is_closed()
-            || (last_used.elapsed() >= IDLE_PROBE_AFTER && !connection.answers().await)
-        {
-            connection = reconnect(&target, &current_dir, &out_tx, &cmd_rx).await?;
+        let idle =
+            !shared.transferring.get() && shared.last_used.get().elapsed() >= IDLE_PROBE_AFTER;
+        if connection.session.is_closed() || (idle && !connection.answers().await) {
+            connection = reconnect(target, &shared.current_dir, out_tx, cmd_rx).await?;
         }
 
-        execute(&connection.sftp, cmd, &mut current_dir, &out_tx).await;
-        last_used = Instant::now();
+        if is_transfer(&cmd) {
+            let _ = job_tx.send((connection.sftp.clone(), cmd)).await;
+        } else {
+            execute(&connection.sftp, cmd, &shared.current_dir, out_tx).await;
+        }
+        shared.last_used.set(Instant::now());
     }
 
     // Panel is gone: close the subsystem and the session rather than leaving the
@@ -225,26 +288,39 @@ async fn run(
     Ok(())
 }
 
+fn is_transfer(cmd: &SftpCommand) -> bool {
+    matches!(
+        cmd,
+        SftpCommand::Upload { .. }
+            | SftpCommand::Download { .. }
+            | SftpCommand::Read { .. }
+            | SftpCommand::Write { .. }
+            | SftpCommand::UploadDir { .. }
+            | SftpCommand::DownloadDir { .. }
+    )
+}
+
 async fn execute(
     sftp: &SftpSession,
     cmd: SftpCommand,
-    current_dir: &mut String,
+    current_dir: &RefCell<String>,
     out_tx: &async_channel::Sender<SftpEvent>,
 ) {
+    let dir = current_dir.borrow().clone();
     match cmd {
         SftpCommand::List { path } => {
-            *current_dir = path.clone();
+            *current_dir.borrow_mut() = path.clone();
             list_and_send(sftp, path, out_tx).await;
         }
         SftpCommand::CreateDir { name } => {
-            let path = join_remote(current_dir, &name);
+            let path = join_remote(&dir, &name);
             if let Err(err) = sftp.create_dir(path).await {
                 send_error(out_tx, format!("Couldn't create folder: {err}")).await;
             }
-            list_and_send(sftp, current_dir.clone(), out_tx).await;
+            list_and_send(sftp, dir, out_tx).await;
         }
         SftpCommand::CreateFile { name } => {
-            let path = join_remote(current_dir, &name);
+            let path = join_remote(&dir, &name);
             let flags = OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE;
             match sftp.open_with_flags(path, flags).await {
                 Ok(mut file) => {
@@ -252,13 +328,13 @@ async fn execute(
                 }
                 Err(err) => send_error(out_tx, format!("Couldn't create file: {err}")).await,
             }
-            list_and_send(sftp, current_dir.clone(), out_tx).await;
+            list_and_send(sftp, dir, out_tx).await;
         }
         SftpCommand::Rename { from, to } => {
             if let Err(err) = sftp.rename(from, to).await {
                 send_error(out_tx, format!("Couldn't rename: {err}")).await;
             }
-            list_and_send(sftp, current_dir.clone(), out_tx).await;
+            list_and_send(sftp, dir, out_tx).await;
         }
         SftpCommand::Move { from, to } => {
             if sftp.symlink_metadata(to.clone()).await.is_ok() {
@@ -274,7 +350,7 @@ async fn execute(
                 return;
             }
             match sftp.rename(from, to).await {
-                Ok(()) => list_and_send(sftp, current_dir.clone(), out_tx).await,
+                Ok(()) => list_and_send(sftp, dir, out_tx).await,
                 Err(err) => send_error(out_tx, format!("Couldn't move: {err}")).await,
             }
         }
@@ -282,17 +358,28 @@ async fn execute(
             if let Err(err) = sftp.remove_file(path).await {
                 send_error(out_tx, format!("Couldn't delete file: {err}")).await;
             }
-            list_and_send(sftp, current_dir.clone(), out_tx).await;
+            list_and_send(sftp, dir, out_tx).await;
         }
         SftpCommand::RemoveDir { path } => {
             if let Err(err) = sftp.remove_dir(path).await {
                 send_error(out_tx, format!("Couldn't delete folder: {err}")).await;
             }
-            list_and_send(sftp, current_dir.clone(), out_tx).await;
+            list_and_send(sftp, dir, out_tx).await;
         }
+        _ => {}
+    }
+}
+
+async fn transfer(
+    sftp: &SftpSession,
+    cmd: SftpCommand,
+    shared: &Shared,
+    out_tx: &async_channel::Sender<SftpEvent>,
+) {
+    match cmd {
         SftpCommand::Upload { local, remote } => {
             do_upload(sftp, &local, &remote, out_tx).await;
-            list_and_send(sftp, current_dir.clone(), out_tx).await;
+            refresh_current(sftp, &shared.current_dir, out_tx).await;
         }
         SftpCommand::Download {
             remote,
@@ -312,15 +399,16 @@ async fn execute(
         }
         SftpCommand::Write { remote, bytes, ack } => {
             do_write(sftp, &remote, &bytes, &ack, out_tx).await;
-            list_and_send(sftp, current_dir.clone(), out_tx).await;
+            refresh_current(sftp, &shared.current_dir, out_tx).await;
         }
         SftpCommand::UploadDir { local, remote } => {
             do_upload_dir(sftp, &local, &remote, out_tx).await;
-            list_and_send(sftp, current_dir.clone(), out_tx).await;
+            refresh_current(sftp, &shared.current_dir, out_tx).await;
         }
         SftpCommand::DownloadDir { remote, local } => {
             do_download_dir(sftp, &remote, &local, out_tx).await;
         }
+        _ => {}
     }
 }
 
@@ -341,9 +429,29 @@ async fn list_and_send(
     }
 }
 
+async fn refresh_current(
+    sftp: &SftpSession,
+    current_dir: &RefCell<String>,
+    out_tx: &async_channel::Sender<SftpEvent>,
+) {
+    let path = current_dir.borrow().clone();
+    if let Ok(entries) = read_dir(sftp, &path).await
+        && *current_dir.borrow() == path
+    {
+        let _ = out_tx.send(SftpEvent::Listing { path, entries }).await;
+    }
+}
+
 async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntry>> {
+    let mut entries = read_dir_unsorted(sftp, path).await?;
+    super::sort_entries(&mut entries);
+    entries.shrink_to_fit();
+    Ok(entries)
+}
+
+async fn read_dir_unsorted(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntry>> {
     let read_dir = sftp.read_dir(path).await?;
-    let mut entries: Vec<SftpEntry> = read_dir
+    Ok(read_dir
         .filter(|entry| {
             let name = entry.file_name();
             name != "." && name != ".."
@@ -369,16 +477,7 @@ async fn read_dir(sftp: &SftpSession, path: &str) -> anyhow::Result<Vec<SftpEntr
                     .or_else(|| metadata.gid.map(|gid| gid.to_string())),
             }
         })
-        .collect();
-
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-    entries.shrink_to_fit();
-
-    Ok(entries)
+        .collect())
 }
 
 pub(super) fn transfer_label(path: &std::path::Path, fallback: &str) -> String {
@@ -394,29 +493,20 @@ async fn copy_up(
     local: &std::path::Path,
     remote: &str,
     out_tx: &async_channel::Sender<SftpEvent>,
-    done: &mut u64,
+    progress: &Progress,
 ) -> anyhow::Result<()> {
     let mut local_file = tokio::fs::File::open(local).await?;
     let mut remote_file = sftp.create(remote).await?;
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut progress = Progress::new();
+    let mut buf = vec![0u8; TRANSFER_BUFFER];
     loop {
         let n = local_file.read(&mut buf).await?;
         if n == 0 {
             break;
         }
         remote_file.write_all(&buf[..n]).await?;
-        *done += n as u64;
-        if progress.due() {
-            let _ = out_tx
-                .send(SftpEvent::TransferProgress { transferred: *done })
-                .await;
-        }
+        progress.advance(n as u64, out_tx).await;
     }
     remote_file.shutdown().await?;
-    let _ = out_tx
-        .send(SftpEvent::TransferProgress { transferred: *done })
-        .await;
     Ok(())
 }
 
@@ -433,7 +523,7 @@ async fn copy_down(
     remote: &str,
     local: &std::path::Path,
     out_tx: &async_channel::Sender<SftpEvent>,
-    done: &mut u64,
+    progress: &Progress,
 ) -> anyhow::Result<()> {
     let mut remote_file = sftp.open(remote).await?;
     let mut local_file = create_new(local).await.map_err(|err| {
@@ -446,37 +536,30 @@ async fn copy_down(
             anyhow::anyhow!("couldn't create {}: {err}", local.display())
         }
     })?;
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut progress = Progress::new();
+    let mut buf = vec![0u8; TRANSFER_BUFFER];
     loop {
         let n = remote_file.read(&mut buf).await?;
         if n == 0 {
             break;
         }
         local_file.write_all(&buf[..n]).await?;
-        *done += n as u64;
-        if progress.due() {
-            let _ = out_tx
-                .send(SftpEvent::TransferProgress { transferred: *done })
-                .await;
-        }
+        progress.advance(n as u64, out_tx).await;
     }
     remote_file.shutdown().await?;
     local_file.flush().await?;
-    let _ = out_tx
-        .send(SftpEvent::TransferProgress { transferred: *done })
-        .await;
     Ok(())
 }
 
 pub(super) async fn finish_transfer(
     out_tx: &async_channel::Sender<SftpEvent>,
     result: anyhow::Result<()>,
+    local_changed: bool,
 ) -> bool {
     let ok = result.is_ok();
     let _ = out_tx
         .send(SftpEvent::TransferFinished {
             error: result.err().map(|e| e.to_string()),
+            local_changed,
         })
         .await;
     ok
@@ -503,9 +586,8 @@ async fn do_upload(
         })
         .await;
 
-    let mut done = 0u64;
-    let result = copy_up(sftp, local, remote, out_tx, &mut done).await;
-    finish_transfer(out_tx, result).await
+    let result = copy_up(sftp, local, remote, out_tx, &Progress::new()).await;
+    finish_transfer(out_tx, result, false).await
 }
 
 async fn do_download(
@@ -529,9 +611,8 @@ async fn do_download(
         })
         .await;
 
-    let mut done = 0u64;
-    let result = copy_down(sftp, remote, local, out_tx, &mut done).await;
-    finish_transfer(out_tx, result).await
+    let result = copy_down(sftp, remote, local, out_tx, &Progress::new()).await;
+    finish_transfer(out_tx, result, true).await
 }
 
 pub(super) const MAX_READ: u64 = 10 * 1024 * 1024;
@@ -562,24 +643,16 @@ async fn do_read(
     let result = async {
         let mut file = sftp.open(remote).await?;
         let mut buf = Vec::with_capacity(total as usize);
-        let mut chunk = vec![0u8; CHUNK_SIZE];
-        let mut progress = Progress::new();
+        let progress = Progress::new();
         loop {
-            let n = file.read(&mut chunk).await?;
+            let n = file.read_buf(&mut buf).await?;
             if n == 0 {
                 break;
             }
-            buf.extend_from_slice(&chunk[..n]);
             if buf.len() as u64 > MAX_READ {
                 anyhow::bail!("the file grew past the size limit while reading");
             }
-            if progress.due() {
-                let _ = out_tx
-                    .send(SftpEvent::TransferProgress {
-                        transferred: buf.len() as u64,
-                    })
-                    .await;
-            }
+            progress.advance(n as u64, out_tx).await;
         }
         file.shutdown().await?;
         anyhow::Ok(buf)
@@ -587,7 +660,10 @@ async fn do_read(
     .await;
 
     let _ = out_tx
-        .send(SftpEvent::TransferFinished { error: None })
+        .send(SftpEvent::TransferFinished {
+            error: None,
+            local_changed: false,
+        })
         .await;
     result.map_err(|err| format!("Couldn't read {remote}: {err}"))
 }
@@ -608,16 +684,10 @@ async fn do_write(
 
     let result = async {
         let mut file = sftp.create(remote).await?;
-        let mut done = 0u64;
-        let mut progress = Progress::new();
-        for chunk in bytes.chunks(CHUNK_SIZE) {
+        let progress = Progress::new();
+        for chunk in bytes.chunks(TRANSFER_BUFFER) {
             file.write_all(chunk).await?;
-            done += chunk.len() as u64;
-            if progress.due() {
-                let _ = out_tx
-                    .send(SftpEvent::TransferProgress { transferred: done })
-                    .await;
-            }
+            progress.advance(chunk.len() as u64, out_tx).await;
         }
         file.shutdown().await?;
         anyhow::Ok(())
@@ -628,6 +698,7 @@ async fn do_write(
     let _ = out_tx
         .send(SftpEvent::TransferFinished {
             error: error.clone(),
+            local_changed: false,
         })
         .await;
     let _ = ack.send(error).await;
@@ -643,22 +714,31 @@ pub(super) async fn plan_upload(
     local_root: &std::path::Path,
     remote_root: &str,
 ) -> anyhow::Result<(Vec<String>, Vec<PlannedFile<std::path::PathBuf, String>>)> {
+    let local_root = local_root.to_path_buf();
+    let remote_root = remote_root.to_string();
+    tokio::task::spawn_blocking(move || plan_upload_blocking(&local_root, &remote_root)).await?
+}
+
+fn plan_upload_blocking(
+    local_root: &std::path::Path,
+    remote_root: &str,
+) -> anyhow::Result<(Vec<String>, Vec<PlannedFile<std::path::PathBuf, String>>)> {
     let mut dirs = vec![remote_root.to_string()];
     let mut files = Vec::new();
     let mut pending = vec![(local_root.to_path_buf(), remote_root.to_string())];
 
     while let Some((local_dir, remote_dir)) = pending.pop() {
-        let mut reader = tokio::fs::read_dir(&local_dir).await?;
-        while let Some(entry) = reader.next_entry().await? {
+        for entry in std::fs::read_dir(&local_dir)? {
+            let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
             let remote_path = join_remote(&remote_dir, &name);
-            let file_type = entry.file_type().await?;
+            let file_type = entry.file_type()?;
             if file_type.is_dir() {
                 dirs.push(remote_path.clone());
                 pending.push((entry.path(), remote_path));
             } else if file_type.is_file() {
                 files.push(PlannedFile {
-                    size: entry.metadata().await.map(|m| m.len()).unwrap_or(0),
+                    size: entry.metadata().map(|m| m.len()).unwrap_or(0),
                     source: entry.path(),
                     destination: remote_path,
                 });
@@ -667,6 +747,19 @@ pub(super) async fn plan_upload(
     }
 
     Ok((dirs, files))
+}
+
+pub(super) fn dirs_by_depth(dirs: &[String]) -> Vec<Vec<&String>> {
+    let mut levels: Vec<Vec<&String>> = Vec::new();
+    for dir in dirs {
+        let depth = dir.matches('/').count();
+        if levels.len() <= depth {
+            levels.resize_with(depth + 1, Vec::new);
+        }
+        levels[depth].push(dir);
+    }
+    levels.retain(|level| !level.is_empty());
+    levels
 }
 
 async fn plan_download(
@@ -682,7 +775,7 @@ async fn plan_download(
     let mut pending = vec![(remote_root.to_string(), local_root.to_path_buf())];
 
     while let Some((remote_dir, local_dir)) = pending.pop() {
-        for entry in read_dir(sftp, &remote_dir).await? {
+        for entry in read_dir_unsorted(sftp, &remote_dir).await? {
             let local_path = local_dir.join(safe_local_name(&entry.name));
             if entry.is_dir {
                 dirs.push(local_path.clone());
@@ -722,18 +815,20 @@ async fn do_upload_dir(
         .await;
 
     let result = async {
-        for dir in &dirs {
-            let _ = sftp.create_dir(dir.clone()).await;
+        for level in dirs_by_depth(&dirs) {
+            futures::future::join_all(level.into_iter().map(|dir| sftp.create_dir(dir.clone())))
+                .await;
         }
-        let mut done = 0u64;
-        for file in &files {
-            copy_up(sftp, &file.source, &file.destination, out_tx, &mut done).await?;
-        }
-        anyhow::Ok(())
+        let progress = Progress::new();
+        futures::stream::iter(files.iter().map(anyhow::Ok))
+            .try_for_each_concurrent(PARALLEL_FILES, |file| {
+                copy_up(sftp, &file.source, &file.destination, out_tx, &progress)
+            })
+            .await
     }
     .await;
 
-    finish_transfer(out_tx, result).await;
+    finish_transfer(out_tx, result, false).await;
 }
 
 async fn do_download_dir(
@@ -758,18 +853,18 @@ async fn do_download_dir(
         .await;
 
     let result = async {
-        for dir in &dirs {
-            tokio::fs::create_dir_all(dir).await?;
-        }
-        let mut done = 0u64;
-        for file in &files {
-            copy_down(sftp, &file.source, &file.destination, out_tx, &mut done).await?;
-        }
-        anyhow::Ok(())
+        tokio::task::spawn_blocking(move || dirs.iter().try_for_each(std::fs::create_dir_all))
+            .await??;
+        let progress = Progress::new();
+        futures::stream::iter(files.iter().map(anyhow::Ok))
+            .try_for_each_concurrent(PARALLEL_FILES, |file| {
+                copy_down(sftp, &file.source, &file.destination, out_tx, &progress)
+            })
+            .await
     }
     .await;
 
-    finish_transfer(out_tx, result).await;
+    finish_transfer(out_tx, result, true).await;
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use serialport::SerialPort;
 
 use super::backend::{Backend, BackendEvent, EVENT_CAPACITY};
 
-const IO_TIMEOUT: Duration = Duration::from_millis(50);
+const IO_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub fn spawn(port_name: String, baud_rate: u32) -> anyhow::Result<Backend> {
     let mut writer = serialport::new(&port_name, baud_rate)

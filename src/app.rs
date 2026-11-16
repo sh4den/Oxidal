@@ -4,11 +4,14 @@ use crate::settings::{self, AppSettings};
 use crate::settings_view::SettingsView;
 use crate::sftp::{SftpPanel, SftpWorkspace};
 use crate::terminal::{self, TerminalView};
+use gpui_kit::assets::IconName as Lucide;
+use secrecy::{ExposeSecret as _, SecretString};
+
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Context, Div, ElementId, Entity, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, WindowHandle,
-    canvas, div, prelude::FluentBuilder as _, px,
+    Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled as _, WeakEntity, Window,
+    WindowHandle, canvas, div, prelude::FluentBuilder as _, px,
 };
 
 use gpui_kit::component::button::Button;
@@ -51,6 +54,22 @@ const WORD_MOVE_MODIFIER: &str = if cfg!(target_os = "macos") {
 // Row chrome around a label: margins, padding, icon, gaps and the hover buttons.
 const ROW_CHROME_WIDTH: f32 = 132.;
 const APPROX_CHAR_WIDTH: f32 = 7.;
+
+fn store_changed_secrets(previous: Option<&Session>, session: &Session) {
+    let changed = |old: Option<&SecretString>, new: &SecretString| match old {
+        Some(old) => old.expose_secret() != new.expose_secret(),
+        None => !new.expose_secret().is_empty(),
+    };
+    if changed(previous.map(|p| &p.password), &session.password) {
+        crate::credentials::store_password(session.id, &session.password);
+    }
+    if changed(previous.map(|p| &p.key_passphrase), &session.key_passphrase) {
+        crate::credentials::store_key_passphrase(session.id, &session.key_passphrase);
+    }
+    if changed(previous.map(|p| &p.proxy_password), &session.proxy_password) {
+        crate::credentials::store_proxy_password(session.id, &session.proxy_password);
+    }
+}
 
 fn label_capacity(sidebar_width: gpui_kit::Pixels) -> usize {
     let text_width = f32::from(sidebar_width) - ROW_CHROME_WIDTH;
@@ -355,6 +374,41 @@ pub struct OxidalApp {
     session_windows: HashMap<Option<Uuid>, WindowHandle<Root>>,
     dragging: Option<DragSource>,
     tab_scroll: ScrollHandle,
+    sidebar_pane: Option<Entity<SidebarPane>>,
+}
+
+struct SidebarPane {
+    app: WeakEntity<OxidalApp>,
+}
+
+impl SidebarPane {
+    fn new(
+        app: &Entity<OxidalApp>,
+        sidebar_state: &Entity<ResizableState>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.observe(app, |_, _, cx| cx.notify()).detach();
+        cx.observe(sidebar_state, |_, _, cx| cx.notify()).detach();
+        cx.observe_global::<AppSettings>(|_, cx| cx.notify())
+            .detach();
+        Self {
+            app: app.downgrade(),
+        }
+    }
+}
+
+impl Render for SidebarPane {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.app
+            .update(cx, |app, cx| {
+                if app.effective_sidebar_mode() == SidebarMode::Explorer {
+                    app.render_explorer_panel(cx).into_any_element()
+                } else {
+                    app.render_sessions_panel(cx).into_any_element()
+                }
+            })
+            .unwrap_or_else(|_| div().into_any_element())
+    }
 }
 
 impl OxidalApp {
@@ -439,7 +493,19 @@ impl OxidalApp {
             session_windows: HashMap::new(),
             dragging: None,
             tab_scroll: ScrollHandle::new(),
+            sidebar_pane: None,
         }
+    }
+
+    fn sidebar_pane(&mut self, cx: &mut Context<Self>) -> Entity<SidebarPane> {
+        if let Some(pane) = &self.sidebar_pane {
+            return pane.clone();
+        }
+        let app = cx.entity();
+        let sidebar_state = self.sidebar_state.clone();
+        let pane = cx.new(|cx| SidebarPane::new(&app, &sidebar_state, cx));
+        self.sidebar_pane = Some(pane.clone());
+        pane
     }
 
     fn is_dragging(&self, source: DragSource, cx: &gpui_kit::App) -> bool {
@@ -514,9 +580,7 @@ impl OxidalApp {
     }
 
     pub fn add_session(&mut self, new_session: Session, cx: &mut Context<Self>) {
-        crate::credentials::store_password(new_session.id, &new_session.password);
-        crate::credentials::store_key_passphrase(new_session.id, &new_session.key_passphrase);
-        crate::credentials::store_proxy_password(new_session.id, &new_session.proxy_password);
+        store_changed_secrets(None, &new_session);
         self.sessions.push(new_session);
         session::save_sessions(&self.sessions);
         cx.notify();
@@ -526,9 +590,7 @@ impl OxidalApp {
         if let Some(existing) = self.sessions.iter_mut().find(|s| s.id == updated.id) {
             let mut updated = updated;
             updated.show_hidden_files = existing.show_hidden_files;
-            crate::credentials::store_password(updated.id, &updated.password);
-            crate::credentials::store_key_passphrase(updated.id, &updated.key_passphrase);
-            crate::credentials::store_proxy_password(updated.id, &updated.proxy_password);
+            store_changed_secrets(existing.secrets_loaded().then_some(&*existing), &updated);
             *existing = updated;
             session::save_sessions(&self.sessions);
             cx.notify();
@@ -647,8 +709,14 @@ impl OxidalApp {
         cx.notify();
     }
 
+    fn session_with_secrets(&mut self, id: Uuid) -> Option<Session> {
+        let session = self.sessions.iter_mut().find(|s| s.id == id)?;
+        session.ensure_secrets();
+        Some(session.clone())
+    }
+
     fn connect_session(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(target) = self.sessions.iter().find(|s| s.id == id).cloned() else {
+        let Some(target) = self.session_with_secrets(id) else {
             return;
         };
 
@@ -1044,9 +1112,7 @@ impl OxidalApp {
                             .icon(IconName::Settings2)
                             .tooltip("Edit")
                             .on_click(cx.listener(move |view, _, _window, cx| {
-                                let Some(session) =
-                                    view.sessions.iter().find(|s| s.id == id).cloned()
-                                else {
+                                let Some(session) = view.session_with_secrets(id) else {
                                     return;
                                 };
                                 view.open_session_window(Some(session), cx);
@@ -1206,7 +1272,7 @@ impl OxidalApp {
             .border_color(cx.theme().sidebar_border)
             .child(self.render_rail_item(
                 "sidebar-sessions",
-                Icon::default().path("icons/oxidal/list.svg"),
+                Icon::new(Lucide::List),
                 "Sessions",
                 sessions_active,
                 SidebarMode::Sessions,
@@ -1569,7 +1635,7 @@ impl OxidalApp {
                                 Button::new("new-folder")
                                     .ghost()
                                     .xsmall()
-                                    .icon(Icon::default().path("icons/oxidal/folder-plus.svg"))
+                                    .icon(Icon::new(Lucide::FolderPlus))
                                     .tooltip("New Folder")
                                     .on_click(cx.listener(|_view, _, window, cx| {
                                         let weak_app = cx.weak_entity();
@@ -2092,13 +2158,11 @@ impl Render for OxidalApp {
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
             .child({
-                let sidebar = if self.sidebar_collapsed {
-                    None
-                } else if self.effective_sidebar_mode() == SidebarMode::Explorer {
-                    Some(self.render_explorer_panel(cx).into_any_element())
-                } else {
-                    Some(self.render_sessions_panel(cx).into_any_element())
-                };
+                let sidebar = (!self.sidebar_collapsed).then(|| {
+                    self.sidebar_pane(cx)
+                        .cached(StyleRefinement::default().size_full())
+                        .into_any_element()
+                });
 
                 let content = h_flex()
                     .flex_1()

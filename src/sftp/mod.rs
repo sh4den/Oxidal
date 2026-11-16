@@ -101,6 +101,7 @@ enum SftpEvent {
     },
     TransferFinished {
         error: Option<String>,
+        local_changed: bool,
     },
     FileLoaded {
         remote: String,
@@ -358,6 +359,10 @@ pub fn display_name(name: &str) -> String {
     name.chars()
         .map(|c| if is_deceptive(c) { '\u{fffd}' } else { c })
         .collect()
+}
+
+fn sort_entries(entries: &mut [SftpEntry]) {
+    entries.sort_by_cached_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
 }
 
 const WINDOWS_RESERVED: [&str; 22] = [

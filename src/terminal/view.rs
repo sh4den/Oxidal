@@ -1,25 +1,28 @@
+use gpui_kit::assets::IconName as Lucide;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, hover_card::HoverCard};
 use gpui_kit::{
-    Anchor, AnyElement, App, Bounds, ClipboardItem, Context, Div, FocusHandle, Font, FontWeight,
-    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement as _, Pixels, Point, Render,
-    ScrollEvent, ShapedLine, SharedString, StrikethroughStyle, Styled as _, Task, TextAlign,
-    TextRun, UnderlineStyle, Window, actions, canvas, div, fill, hsla, point,
-    prelude::FluentBuilder as _, px, relative, rgb, size,
+    Anchor, AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, CursorStyle, Div,
+    DragMoveEvent, Entity, FocusHandle, Font, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PaintQuad, ParentElement as _, Pixels, Point, Render, ScrollEvent, ScrollHandle, ShapedLine,
+    SharedString, StatefulInteractiveElement as _, StrikethroughStyle, StyleRefinement,
+    Styled as _, Task, TextAlign, TextRun, UnderlineStyle, Window, actions, canvas, div, fill,
+    hsla, point, prelude::FluentBuilder as _, px, relative, rgb, size,
 };
 
 use super::backend::{Backend, BackendEvent};
-use super::grid::{Cell, Grid, TerminalPalette};
+use super::grid::{Cell, Color, Grid, TerminalPalette};
 use super::stats::{self, DiskInfo, RemoteStats, TempInfo};
 use crate::settings::AppSettings;
 
 const CPU_HISTORY_LEN: usize = 30;
-const FEED_BUDGET: Duration = Duration::from_millis(8);
-const FEED_PAUSE: Duration = Duration::from_millis(8);
+const FEED_BUDGET: Duration = Duration::from_millis(4);
+const FEED_PAUSE: Duration = Duration::from_millis(4);
 const AUTOSCROLL_TICK: Duration = Duration::from_millis(16);
+const RESIZE_SETTLE: Duration = Duration::from_millis(50);
 const AUTOSCROLL_MIN: f32 = 8.;
 const AUTOSCROLL_MAX: f32 = 400.;
 const AUTOSCROLL_RANGE: f32 = 8.;
@@ -93,13 +96,13 @@ pub struct TerminalView {
     backend: Backend,
     focus_handle: FocusHandle,
     closed_message: Option<String>,
-    monitored: bool,
-    stats: Option<RemoteStats>,
-    cpu_history: VecDeque<f32>,
+    monitor: Option<Entity<MonitorBar>>,
     selection: Option<Selection>,
     layout: Option<(Bounds<Pixels>, Pixels, Pixels)>,
     scroll_offset: f32,
     drag_task: Option<Task<()>>,
+    resize_task: Option<Task<()>>,
+    last_mouse_report: Option<(u8, usize, usize)>,
 }
 
 impl TerminalView {
@@ -147,42 +150,53 @@ impl TerminalView {
         cx.observe_global::<AppSettings>(|_, cx| cx.notify())
             .detach();
 
-        let monitored = stats_rx.is_some();
-        if let Some(rx) = stats_rx {
-            cx.spawn(async move |this, cx| {
-                while let Ok(stats) = rx.recv().await {
-                    if this
-                        .update(cx, |view: &mut Self, cx| {
-                            if let Some(cpu) = stats.cpu {
-                                view.cpu_history.push_back(cpu);
-                                while view.cpu_history.len() > CPU_HISTORY_LEN {
-                                    view.cpu_history.pop_front();
+        let monitor = stats_rx.map(|rx| {
+            cx.new(|cx| {
+                cx.spawn(async move |this, cx| {
+                    while let Ok(stats) = rx.recv().await {
+                        if this
+                            .update(cx, |bar: &mut MonitorBar, cx| {
+                                if let Some(cpu) = stats.cpu {
+                                    bar.cpu_history.push_back(cpu);
+                                    while bar.cpu_history.len() > CPU_HISTORY_LEN {
+                                        bar.cpu_history.pop_front();
+                                    }
                                 }
-                            }
-                            view.stats = Some(stats);
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break;
+                                bar.stats = Some(stats);
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
+                })
+                .detach();
+                cx.observe_global::<AppSettings>(|_, cx| cx.notify())
+                    .detach();
+                MonitorBar {
+                    stats: None,
+                    cpu_history: VecDeque::new(),
+                    scroll: ScrollHandle::new(),
+                    visible: Vec::new(),
+                    dragging: None,
+                    preview: None,
                 }
             })
-            .detach();
-        }
+        });
 
         Self {
             grid: Grid::new(rows, cols),
             backend,
             focus_handle,
             closed_message: None,
-            monitored,
-            stats: None,
-            cpu_history: VecDeque::new(),
+            monitor,
             selection: None,
             layout: None,
             scroll_offset: 0.,
             drag_task: None,
+            resize_task: None,
+            last_mouse_report: None,
         }
     }
 
@@ -315,7 +329,10 @@ impl TerminalView {
             return;
         }
         self.grid.resize(rows, cols);
-        self.backend.resize(rows as u16, cols as u16);
+        self.resize_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(RESIZE_SETTLE).await;
+            let _ = this.update(cx, |view, _| view.backend.resize(rows as u16, cols as u16));
+        }));
         self.selection = None;
         cx.notify();
     }
@@ -344,9 +361,24 @@ impl TerminalView {
         if self.grid.mouse_mode == 0 {
             return;
         }
+        if !drag {
+            self.last_mouse_report = None;
+        }
+        let bytes = self.mouse_report(button, line, col, press, drag);
+        self.backend.write_input(&bytes);
+    }
+
+    fn mouse_report(
+        &self,
+        button: u8,
+        line: usize,
+        col: usize,
+        press: bool,
+        drag: bool,
+    ) -> Vec<u8> {
         let row = line.saturating_sub(self.grid.screen_top_line());
         let code = button + if drag { 32 } else { 0 };
-        let bytes = if self.grid.mouse_sgr {
+        if self.grid.mouse_sgr {
             format!(
                 "\x1b[<{};{};{}{}",
                 code,
@@ -360,8 +392,7 @@ impl TerminalView {
             let cx = 32 + (col + 1).min(223) as u8;
             let cy = 32 + (row + 1).min(223) as u8;
             vec![0x1b, b'[', b'M', cb, cx, cy]
-        };
-        self.backend.write_input(&bytes);
+        }
     }
 
     fn selected_text(&self) -> Option<String> {
@@ -450,11 +481,7 @@ impl Render for TerminalView {
             .clamp(0., self.grid.scrollback_len() as f32);
         let scrolled_lines = self.scroll_offset.round() as usize;
 
-        let surface_opacity = if opacity < 1.0 && cx.theme().mode.is_dark() {
-            0.
-        } else {
-            opacity
-        };
+        let surface_opacity = surface_opacity(opacity, cx);
         let (surface, surface_foreground) = {
             let palette = cx.global::<TerminalPalette>();
             (palette.background, palette.foreground)
@@ -686,7 +713,10 @@ impl Render for TerminalView {
                         Some(MouseButton::Right) => 2,
                         _ => return,
                     };
-                    if let Some((row, col)) = view.cell_at(event.position, true) {
+                    if let Some((row, col)) = view.cell_at(event.position, true)
+                        && view.last_mouse_report != Some((code, row, col))
+                    {
+                        view.last_mouse_report = Some((code, row, col));
                         view.send_mouse(code, row, col, true, true);
                     }
                 }
@@ -705,9 +735,8 @@ impl Render for TerminalView {
                 if view.grid.mouse_mode != 0 && !event.modifiers.shift {
                     if let Some((row, col)) = view.cell_at(event.position, true) {
                         let button = if up { 64 } else { 65 };
-                        for _ in 0..lines {
-                            view.send_mouse(button, row, col, true, false);
-                        }
+                        let report = view.mouse_report(button, row, col, true, false);
+                        view.backend.write_input(&report.repeat(lines));
                     }
                 } else if view.grid.alt_active() {
                     let seq: &[u8] = match (up, view.grid.application_cursor_keys) {
@@ -716,9 +745,7 @@ impl Render for TerminalView {
                         (false, true) => b"\x1bOB",
                         (false, false) => b"\x1b[B",
                     };
-                    for _ in 0..lines {
-                        view.backend.write_input(seq);
-                    }
+                    view.backend.write_input(&seq.repeat(lines));
                 } else {
                     view.scroll_by(scrolled);
                 }
@@ -773,15 +800,407 @@ impl Render for TerminalView {
                         )
                     }),
             )
-            .when(self.monitored, |this| {
-                this.child(self.render_monitor_bar(surface_opacity, cx))
+            .when_some(self.monitor.clone(), |this, monitor| {
+                this.child(
+                    monitor.cached(
+                        StyleRefinement::default()
+                            .flex_none()
+                            .w_full()
+                            .h(px(MONITOR_BAR_HEIGHT)),
+                    ),
+                )
             })
     }
 }
 
-impl TerminalView {
-    fn render_monitor_bar(&self, surface_opacity: f32, cx: &App) -> AnyElement {
-        let mut items: Vec<AnyElement> = Vec::new();
+const MONITOR_BAR_HEIGHT: f32 = 24.;
+
+fn surface_opacity(opacity: f32, cx: &App) -> f32 {
+    if opacity < 1.0 && cx.theme().mode.is_dark() {
+        0.
+    } else {
+        opacity
+    }
+}
+
+struct MonitorBar {
+    stats: Option<RemoteStats>,
+    cpu_history: VecDeque<f32>,
+    scroll: ScrollHandle,
+    visible: Vec<MonitorStat>,
+    dragging: Option<MonitorStat>,
+    preview: Option<Vec<MonitorStat>>,
+}
+
+impl Render for MonitorBar {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let opacity = cx.global::<AppSettings>().opacity.clamp(0.3, 1.0);
+        let surface_opacity = surface_opacity(opacity, cx);
+        if !cx.has_active_drag() {
+            self.dragging = None;
+            self.preview = None;
+        }
+        let order = monitor_order(cx);
+        let mut items = self.items(cx);
+        items.sort_by_key(|(stat, _)| order.iter().position(|o| o == stat));
+        self.visible = items.iter().map(|(stat, _)| *stat).collect();
+        if let Some(preview) = &self.preview {
+            items.sort_by_key(|(stat, _)| preview.iter().position(|o| o == stat));
+        }
+        let dragging = self.dragging;
+        let items: Vec<AnyElement> = if items.is_empty() {
+            vec![
+                div()
+                    .px_2()
+                    .text_color(hsla(0., 0., 0.45, 1.))
+                    .child(Icon::new(IconName::Loader).xsmall())
+                    .into_any_element(),
+            ]
+        } else {
+            items
+                .into_iter()
+                .map(|(stat, element)| draggable_stat(stat, element, dragging == Some(stat), cx))
+                .collect()
+        };
+        let max = self.scroll.max_offset().x;
+        let overflowing = max > px(0.5);
+        let mut current = self.scroll.offset();
+        if current.x < -max {
+            current.x = -max;
+            self.scroll.set_offset(current);
+        }
+        let offset = current.x;
+        let at_start = offset >= px(0.);
+        let at_end = offset <= -max;
+
+        div()
+            .flex_none()
+            .flex()
+            .w_full()
+            .items_center()
+            .h(px(MONITOR_BAR_HEIGHT))
+            .text_xs()
+            .text_color(hsla(0., 0., 0.75, 1.))
+            .bg(hsla(0., 0., 0.11, 1.).opacity(surface_opacity))
+            .border_t_1()
+            .border_color(hsla(0., 0., 0.2, 1.))
+            .when(overflowing, |this| {
+                this.child(scroll_arrow(
+                    "monitor-scroll-left",
+                    IconName::ChevronLeft,
+                    !at_start,
+                    cx.listener(|bar, _, _, cx| bar.scroll_by(MONITOR_SCROLL_STEP, cx)),
+                ))
+            })
+            .child(
+                div()
+                    .id("monitor-scroll")
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .overflow_x_hidden()
+                    .track_scroll(&self.scroll)
+                    .on_drag_move::<MonitorDrag>(cx.listener(
+                        |bar, event: &DragMoveEvent<MonitorDrag>, _, cx| {
+                            if !event.bounds.contains(&event.event.position)
+                                && bar.preview.is_some()
+                            {
+                                bar.preview = None;
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .on_drop(cx.listener(|bar, _: &MonitorDrag, _, cx| bar.drop(cx)))
+                    .on_scroll(cx.listener(|bar, event: &ScrollEvent, window, cx| {
+                        let delta = event.delta.pixel_delta(window.line_height());
+                        let step = if delta.x == px(0.) { delta.y } else { delta.x };
+                        bar.scroll_by(step, cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .h_full()
+                            .px_1()
+                            .children(items),
+                    ),
+            )
+            .when(overflowing, |this| {
+                this.child(scroll_arrow(
+                    "monitor-scroll-right",
+                    IconName::ChevronRight,
+                    !at_end,
+                    cx.listener(|bar, _, _, cx| bar.scroll_by(-MONITOR_SCROLL_STEP, cx)),
+                ))
+            })
+    }
+}
+
+const MONITOR_SCROLL_STEP: Pixels = px(160.);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MonitorStat {
+    Os,
+    Cpu,
+    Memory,
+    Upload,
+    Download,
+    Connections,
+    User,
+    Uptime,
+    Temperature,
+    Disk,
+}
+
+impl MonitorStat {
+    const ALL: [MonitorStat; 10] = [
+        MonitorStat::Os,
+        MonitorStat::Cpu,
+        MonitorStat::Memory,
+        MonitorStat::Upload,
+        MonitorStat::Download,
+        MonitorStat::Connections,
+        MonitorStat::User,
+        MonitorStat::Uptime,
+        MonitorStat::Temperature,
+        MonitorStat::Disk,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            MonitorStat::Os => "os",
+            MonitorStat::Cpu => "cpu",
+            MonitorStat::Memory => "memory",
+            MonitorStat::Upload => "upload",
+            MonitorStat::Download => "download",
+            MonitorStat::Connections => "connections",
+            MonitorStat::User => "user",
+            MonitorStat::Uptime => "uptime",
+            MonitorStat::Temperature => "temperature",
+            MonitorStat::Disk => "disk",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            MonitorStat::Os => "System",
+            MonitorStat::Cpu => "CPU",
+            MonitorStat::Memory => "Memory",
+            MonitorStat::Upload => "Upload",
+            MonitorStat::Download => "Download",
+            MonitorStat::Connections => "Connections",
+            MonitorStat::User => "User",
+            MonitorStat::Uptime => "Uptime",
+            MonitorStat::Temperature => "Temperature",
+            MonitorStat::Disk => "Disk",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            MonitorStat::Os => Icon::new(IconName::Globe),
+            MonitorStat::Cpu => Icon::new(IconName::Cpu),
+            MonitorStat::Memory => Icon::new(IconName::MemoryStick),
+            MonitorStat::Upload => Icon::new(IconName::ArrowUp),
+            MonitorStat::Download => Icon::new(IconName::ArrowDown),
+            MonitorStat::Connections => Icon::new(IconName::Network),
+            MonitorStat::User => Icon::new(IconName::User),
+            MonitorStat::Uptime => Icon::new(Lucide::Clock),
+            MonitorStat::Temperature => thermometer(),
+            MonitorStat::Disk => Icon::new(IconName::HardDrive),
+        }
+    }
+}
+
+fn monitor_order(cx: &App) -> Vec<MonitorStat> {
+    let saved = &cx.global::<AppSettings>().monitor_order;
+    let mut order: Vec<MonitorStat> = saved
+        .iter()
+        .filter_map(|key| MonitorStat::ALL.into_iter().find(|stat| stat.key() == key))
+        .collect();
+    for stat in MonitorStat::ALL {
+        if !order.contains(&stat) {
+            order.push(stat);
+        }
+    }
+    order
+}
+
+fn preview_step(
+    mut order: Vec<MonitorStat>,
+    dragged: MonitorStat,
+    hovered: MonitorStat,
+    past_middle: bool,
+) -> Vec<MonitorStat> {
+    let (Some(from), Some(to)) = (
+        order.iter().position(|s| *s == dragged),
+        order.iter().position(|s| *s == hovered),
+    ) else {
+        return order;
+    };
+    if (from < to && past_middle) || (from > to && !past_middle) {
+        let stat = order.remove(from);
+        order.insert(to, stat);
+    }
+    order
+}
+
+fn merged_order(saved: Vec<MonitorStat>, visible: &[MonitorStat]) -> Vec<MonitorStat> {
+    let mut shown = visible.iter().copied();
+    saved
+        .into_iter()
+        .map(|stat| {
+            if visible.contains(&stat) {
+                shown.next().unwrap_or(stat)
+            } else {
+                stat
+            }
+        })
+        .collect()
+}
+
+fn save_monitor_order(order: Vec<MonitorStat>, cx: &mut App) {
+    let keys: Vec<String> = order.iter().map(|s| s.key().to_string()).collect();
+    if cx.global::<AppSettings>().monitor_order != keys {
+        cx.global_mut::<AppSettings>().monitor_order = keys;
+        crate::settings::save_settings(cx.global::<AppSettings>());
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MonitorDrag {
+    stat: MonitorStat,
+}
+
+impl Render for MonitorDrag {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let accent = cx.theme().primary;
+        div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .h(px(22.))
+            .px_2p5()
+            .rounded(px(6.))
+            .bg(hsla(0., 0., 0.16, 0.96))
+            .border_1()
+            .border_color(accent)
+            .shadow_md()
+            .text_xs()
+            .text_color(hsla(0., 0., 0.92, 1.))
+            .child(div().text_color(accent).child(self.stat.icon().xsmall()))
+            .child(self.stat.label())
+    }
+}
+
+fn draggable_stat(
+    stat: MonitorStat,
+    element: AnyElement,
+    dragged: bool,
+    cx: &mut Context<MonitorBar>,
+) -> AnyElement {
+    let primary = cx.theme().primary;
+    div()
+        .id(("monitor-stat", stat as usize))
+        .flex_none()
+        .flex()
+        .items_center()
+        .h(px(18.))
+        .px_1p5()
+        .rounded(px(4.))
+        .cursor(CursorStyle::OpenHand)
+        .when(dragged, |this| this.opacity(0.45).bg(primary.opacity(0.18)))
+        .when(!dragged, |this| {
+            this.hover(|style| style.bg(hsla(0., 0., 1., 0.05)))
+        })
+        .on_drag(MonitorDrag { stat }, |drag, _, _, cx| cx.new(|_| *drag))
+        .on_drag_move::<MonitorDrag>(cx.listener(
+            move |bar, event: &DragMoveEvent<MonitorDrag>, _, cx| {
+                let position = event.event.position;
+                if !event.bounds.contains(&position) {
+                    return;
+                }
+                let past_middle = position.x > event.bounds.center().x;
+                let dragged = event.drag(cx).stat;
+                bar.hover_stat(dragged, stat, past_middle, cx);
+            },
+        ))
+        .on_drop(cx.listener(|bar, _: &MonitorDrag, _, cx| bar.drop(cx)))
+        .child(element)
+        .into_any_element()
+}
+
+fn scroll_arrow(
+    id: &'static str,
+    icon: IconName,
+    enabled: bool,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(20.))
+        .h_full()
+        .border_color(hsla(0., 0., 0.2, 1.))
+        .when(id.ends_with("left"), |this| this.border_r_1())
+        .when(id.ends_with("right"), |this| this.border_l_1())
+        .text_color(if enabled {
+            hsla(0., 0., 0.85, 1.)
+        } else {
+            hsla(0., 0., 0.35, 1.)
+        })
+        .when(enabled, |this| {
+            this.cursor_pointer()
+                .hover(|style| style.bg(hsla(0., 0., 0.2, 1.)))
+                .on_click(on_click)
+        })
+        .child(Icon::new(icon).xsmall())
+}
+
+impl MonitorBar {
+    fn hover_stat(
+        &mut self,
+        dragged: MonitorStat,
+        hovered: MonitorStat,
+        past_middle: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.preview.clone().unwrap_or_else(|| self.visible.clone());
+        let next = preview_step(current, dragged, hovered, past_middle);
+        if self.dragging != Some(dragged) || self.preview.as_ref() != Some(&next) {
+            self.dragging = Some(dragged);
+            self.preview = Some(next);
+            cx.notify();
+        }
+    }
+
+    fn drop(&mut self, cx: &mut Context<Self>) {
+        if let Some(preview) = self.preview.take() {
+            save_monitor_order(merged_order(monitor_order(cx), &preview), cx);
+        }
+        self.dragging = None;
+        cx.notify();
+    }
+
+    fn scroll_by(&mut self, step: Pixels, cx: &mut Context<Self>) {
+        let max = self.scroll.max_offset().x;
+        let mut offset = self.scroll.offset();
+        let x = (offset.x + step).clamp(-max, px(0.));
+        if x != offset.x {
+            offset.x = x;
+            self.scroll.set_offset(offset);
+            cx.notify();
+        }
+    }
+
+    fn items(&self, cx: &App) -> Vec<(MonitorStat, AnyElement)> {
+        let mut items: Vec<(MonitorStat, AnyElement)> = Vec::new();
         if let Some(stats) = &self.stats {
             if let Some(sysname) = &stats.sysname {
                 let os = match stats.os {
@@ -791,80 +1210,89 @@ impl TerminalView {
                     ),
                     None => segment(IconName::Globe),
                 };
-                items.push(os.child(sysname.clone()).into_any_element());
+                items.push((
+                    MonitorStat::Os,
+                    os.child(sysname.clone()).into_any_element(),
+                ));
             }
-            items.push(
+            items.push((
+                MonitorStat::Cpu,
                 segment(IconName::Cpu)
                     .child(cpu_chart(&self.cpu_history))
                     .when_some(stats.cpu, |this, cpu| {
                         this.child(format!("{:.0}%", cpu * 100.))
                     })
                     .into_any_element(),
-            );
+            ));
             if let Some((used, total)) = stats.mem {
                 let frac = used as f32 / total.max(1) as f32;
-                items.push(
+                items.push((
+                    MonitorStat::Memory,
                     segment(IconName::MemoryStick)
                         .child(meter_bar(frac))
                         .child(format!("{}/{}", fmt_size(used), fmt_size(total)))
                         .into_any_element(),
-                );
+                ));
             }
             if let Some((rx, tx)) = stats.net {
-                items.push(
+                items.push((
+                    MonitorStat::Upload,
                     segment_colored(IconName::ArrowUp, hsla(0.75, 0.6, 0.65, 1.))
                         .child(rate_cell(tx))
                         .into_any_element(),
-                );
-                items.push(
+                ));
+                items.push((
+                    MonitorStat::Download,
                     segment_colored(IconName::ArrowDown, hsla(0.36, 0.55, 0.5, 1.))
                         .child(rate_cell(rx))
                         .into_any_element(),
-                );
+                ));
             }
             if let Some((count, port)) = stats.connections {
-                items.push(
+                items.push((
+                    MonitorStat::Connections,
                     segment(IconName::Network)
                         .child(format!("Connections: {count} (port {port})"))
                         .into_any_element(),
-                );
+                ));
             }
             if let Some(user) = &stats.user {
-                items.push(
+                items.push((
+                    MonitorStat::User,
                     HoverCard::new("monitor-who")
                         .anchor(Anchor::BottomLeft)
                         .open_delay(Duration::from_millis(250))
                         .trigger(segment(IconName::User).child(user.clone()))
                         .child(who_details(&stats.who, cx))
                         .into_any_element(),
-                );
+                ));
             }
             if let Some(uptime) = stats.uptime {
-                items.push(
-                    segment_icon(
-                        Icon::default().path("icons/oxidal/clock.svg"),
-                        hsla(0., 0., 0.5, 1.),
-                    )
-                    .child(fmt_uptime(uptime))
-                    .into_any_element(),
-                );
+                items.push((
+                    MonitorStat::Uptime,
+                    segment_icon(Icon::new(Lucide::Clock), hsla(0., 0., 0.5, 1.))
+                        .child(fmt_uptime(uptime))
+                        .into_any_element(),
+                ));
             }
             if let Some(temps) = &stats.temps {
                 let label = stats::headline_temp(temps)
                     .map(|t| format!("{:.0}°C", t.value))
                     .unwrap_or_else(|| "--".to_string());
-                items.push(
+                items.push((
+                    MonitorStat::Temperature,
                     HoverCard::new("monitor-temps")
                         .anchor(Anchor::BottomLeft)
                         .open_delay(Duration::from_millis(250))
                         .trigger(segment_icon(thermometer(), hsla(0., 0., 0.5, 1.)).child(label))
                         .child(temp_details(temps, cx))
                         .into_any_element(),
-                );
+                ));
             }
             if let Some((used, total)) = stats.disk {
                 let frac = used as f32 / total.max(1) as f32;
-                items.push(
+                items.push((
+                    MonitorStat::Disk,
                     HoverCard::new("monitor-disks")
                         .anchor(Anchor::BottomLeft)
                         .open_delay(Duration::from_millis(250))
@@ -875,33 +1303,10 @@ impl TerminalView {
                         )
                         .child(disk_details(&stats.disks, cx))
                         .into_any_element(),
-                );
+                ));
             }
         }
-        if items.is_empty() {
-            items.push(
-                div()
-                    .text_color(hsla(0., 0., 0.45, 1.))
-                    .child(Icon::new(IconName::Loader).xsmall())
-                    .into_any_element(),
-            );
-        }
-
-        div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap_4()
-            .h(px(24.))
-            .px_2()
-            .text_xs()
-            .text_color(hsla(0., 0., 0.75, 1.))
-            .bg(hsla(0., 0., 0.11, 1.).opacity(surface_opacity))
-            .border_t_1()
-            .border_color(hsla(0., 0., 0.2, 1.))
-            .overflow_hidden()
-            .children(items)
-            .into_any_element()
+        items
     }
 }
 
@@ -940,7 +1345,7 @@ fn fmt_uptime(secs: u64) -> String {
 }
 
 fn thermometer() -> Icon {
-    Icon::default().path("icons/oxidal/thermometer.svg")
+    Icon::new(Lucide::Thermometer)
 }
 
 fn rate_cell(bytes_per_sec: f64) -> Div {
@@ -1307,6 +1712,66 @@ fn fmt_rate(bytes_per_sec: f64) -> String {
     }
 }
 
+struct RunFonts {
+    regular: Font,
+    bold: Font,
+    italic: Font,
+    bold_italic: Font,
+}
+
+impl RunFonts {
+    fn new(base: &Font) -> Self {
+        Self {
+            regular: base.clone(),
+            bold: base.clone().bold(),
+            italic: base.clone().italic(),
+            bold_italic: base.clone().bold().italic(),
+        }
+    }
+
+    fn run(&self, style: RunStyle, len: usize) -> TextRun {
+        let font = match (style.bold, style.italic) {
+            (false, false) => &self.regular,
+            (true, false) => &self.bold,
+            (false, true) => &self.italic,
+            (true, true) => &self.bold_italic,
+        };
+        TextRun {
+            len,
+            font: font.clone(),
+            color: style.color,
+            background_color: None,
+            underline: style.underline.then(|| UnderlineStyle {
+                thickness: px(1.),
+                color: Some(style.color),
+                wavy: false,
+            }),
+            strikethrough: style.strike.then(|| StrikethroughStyle {
+                thickness: px(1.),
+                color: Some(style.color),
+            }),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ColorCache {
+    last: Option<(Color, Hsla)>,
+}
+
+impl ColorCache {
+    fn resolve(&mut self, color: Color, palette: &TerminalPalette) -> Hsla {
+        if let Some((cached, hsla)) = self.last
+            && cached == color
+        {
+            return hsla;
+        }
+        let hsla = color.as_fg(palette);
+        self.last = Some((color, hsla));
+        hsla
+    }
+}
+
 fn build_paint(
     grid: &Grid,
     top: f64,
@@ -1328,6 +1793,8 @@ fn build_paint(
     let cursor = grid
         .cursor_visible
         .then_some((grid.screen_top_line() + grid.cursor_row, grid.cursor_col));
+    let fonts = RunFonts::new(base_font);
+    let mut fg_cache = ColorCache::default();
 
     for row in 0..=grid.rows {
         let line_id = top_line + row;
@@ -1366,51 +1833,11 @@ fn build_paint(
             }
         }
 
-        let mut text = String::new();
+        let mut text = String::with_capacity(grid.cols);
+        let mut runs: Vec<TextRun> = Vec::new();
         let mut style: Option<RunStyle> = None;
-        let mut start_col = 0;
-        let mut flush = |text: &mut String, style: Option<RunStyle>, start_col: usize| {
-            let Some(style) = style else {
-                text.clear();
-                return;
-            };
-            if text.trim().is_empty() && !style.underline && !style.strike {
-                text.clear();
-                return;
-            }
-            let mut font = base_font.clone();
-            if style.bold {
-                font = font.bold();
-            }
-            if style.italic {
-                font = font.italic();
-            }
-            let run = TextRun {
-                len: text.len(),
-                font,
-                color: style.color,
-                background_color: None,
-                underline: style.underline.then(|| UnderlineStyle {
-                    thickness: px(1.),
-                    color: Some(style.color),
-                    wavy: false,
-                }),
-                strikethrough: style.strike.then(|| StrikethroughStyle {
-                    thickness: px(1.),
-                    color: Some(style.color),
-                }),
-            };
-            let shaped = window.text_system().shape_line(
-                SharedString::from(std::mem::take(text)),
-                font_size,
-                &[run],
-                Some(char_width),
-            );
-            lines.push((
-                shaped,
-                point(bounds.origin.x + char_width * start_col as f32, y),
-            ));
-        };
+        let mut run_start = 0;
+        let mut visible_end = 0;
 
         for col in 0..grid.cols {
             let cell = cell(col);
@@ -1418,7 +1845,7 @@ fn build_paint(
             let mut color = if is_cursor {
                 palette.background
             } else {
-                cell.fg.as_fg(palette)
+                fg_cache.resolve(cell.fg, palette)
             };
             if cell.dim() {
                 color.a *= 0.6;
@@ -1431,13 +1858,41 @@ fn build_paint(
                 strike: cell.strike(),
             };
             if style != Some(cell_style) {
-                flush(&mut text, style.take(), start_col);
+                if let Some(previous) = style {
+                    runs.push(fonts.run(previous, text.len() - run_start));
+                }
                 style = Some(cell_style);
-                start_col = col;
+                run_start = text.len();
             }
-            text.push(cell.ch());
+            let ch = cell.ch();
+            text.push(ch);
+            if !ch.is_whitespace() || cell_style.underline || cell_style.strike {
+                visible_end = text.len();
+            }
         }
-        flush(&mut text, style, start_col);
+        if let Some(last) = style {
+            runs.push(fonts.run(last, text.len() - run_start));
+        }
+        if visible_end == 0 {
+            continue;
+        }
+        text.truncate(visible_end);
+        let mut remaining = visible_end;
+        runs.retain_mut(|run| {
+            if remaining == 0 {
+                return false;
+            }
+            run.len = run.len.min(remaining);
+            remaining -= run.len;
+            true
+        });
+        let shaped = window.text_system().shape_line(
+            SharedString::from(text),
+            font_size,
+            &runs,
+            Some(char_width),
+        );
+        lines.push((shaped, point(bounds.origin.x, y)));
     }
 
     (quads, lines)
@@ -1518,6 +1973,36 @@ fn translate_key(event: &KeyDownEvent, application_cursor_keys: bool) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hovering_past_the_middle_of_a_neighbour_swaps_places() {
+        use MonitorStat::*;
+        let order = vec![Os, Cpu, Memory, Disk];
+        assert_eq!(
+            preview_step(order.clone(), Os, Memory, false),
+            order,
+            "the left half of a stat to the right is not far enough yet"
+        );
+        assert_eq!(
+            preview_step(order.clone(), Os, Memory, true),
+            vec![Cpu, Memory, Os, Disk]
+        );
+        assert_eq!(
+            preview_step(order.clone(), Disk, Cpu, false),
+            vec![Os, Disk, Cpu, Memory]
+        );
+        assert_eq!(preview_step(order.clone(), Cpu, Cpu, true), order);
+    }
+
+    #[test]
+    fn a_new_order_keeps_hidden_stats_where_they_were() {
+        use MonitorStat::*;
+        let saved = vec![Os, Temperature, Cpu, Memory, Disk];
+        assert_eq!(
+            merged_order(saved, &[Disk, Os, Cpu, Memory]),
+            vec![Disk, Temperature, Os, Cpu, Memory]
+        );
+    }
 
     #[test]
     fn a_paste_cannot_close_its_own_bracket() {

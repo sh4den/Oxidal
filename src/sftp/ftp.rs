@@ -10,8 +10,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
 
 use super::client::{
-    CHUNK_SIZE, MAX_READ, PlannedFile, Progress, RECONNECT_ATTEMPTS, create_new, finish_transfer,
-    plan_upload, reconnect_delay, send_error, transfer_label,
+    CHUNK_SIZE, MAX_READ, PlannedFile, Progress, RECONNECT_ATTEMPTS, TRANSFER_BUFFER, create_new,
+    finish_transfer, plan_upload, reconnect_delay, send_error, transfer_label,
 };
 use super::{SftpClient, SftpCommand, SftpEntry, SftpEvent, join_remote, parent_remote};
 use crate::cert_trust::{self, CertificateFailure, PinningVerifier};
@@ -659,14 +659,37 @@ impl Connection {
     }
 
     async fn read_dir(&mut self, path: &str) -> anyhow::Result<(String, Vec<SftpEntry>)> {
-        self.control
-            .command(&format!("CWD {path}"))
-            .await?
-            .completed()?;
-        let dir = self.pwd().await.unwrap_or_else(|_| path.to_string());
+        let (dir, mut entries) = self.read_dir_unsorted(path).await?;
+        super::sort_entries(&mut entries);
+        entries.shrink_to_fit();
+        Ok((dir, entries))
+    }
+
+    async fn read_dir_unsorted(&mut self, path: &str) -> anyhow::Result<(String, Vec<SftpEntry>)> {
+        let direct = if self.features.mlsd {
+            plain_absolute(path)
+        } else {
+            None
+        };
+        let is_direct = direct.is_some();
+        let dir = match direct {
+            Some(dir) => dir,
+            None => {
+                self.control
+                    .command(&format!("CWD {path}"))
+                    .await?
+                    .completed()?;
+                self.pwd().await.unwrap_or_else(|_| path.to_string())
+            }
+        };
 
         let entries = if self.features.mlsd {
-            let raw = self.retrieve_all("MLSD", MAX_LISTING).await?;
+            let command = if is_direct {
+                format!("MLSD {dir}")
+            } else {
+                "MLSD".to_string()
+            };
+            let raw = self.retrieve_all(&command, MAX_LISTING).await?;
             parse_listing(&raw, parse_mlsd_line)
         } else {
             let raw = if self.features.list_all_refused {
@@ -685,7 +708,7 @@ impl Connection {
             parse_listing(&raw, |line| parse_list_line(line, now))
         };
 
-        let mut entries: Vec<SftpEntry> = entries
+        let entries: Vec<SftpEntry> = entries
             .into_iter()
             .filter(|entry| entry.name != "." && entry.name != "..")
             .map(|mut entry| {
@@ -693,23 +716,25 @@ impl Connection {
                 entry
             })
             .collect();
-        entries.sort_by(|a, b| {
-            b.is_dir
-                .cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
-        entries.shrink_to_fit();
         Ok((dir, entries))
     }
 
     async fn exists(&mut self, path: &str) -> anyhow::Result<bool> {
+        if self.features.mlsd {
+            let reply = self.control.command(&format!("MLST {path}")).await?;
+            match reply.code {
+                250 => return Ok(true),
+                550 => return Ok(false),
+                _ => {}
+            }
+        }
         let parent = parent_remote(path);
         let name = path
             .trim_end_matches('/')
             .rsplit('/')
             .next()
             .unwrap_or(path);
-        let (_, entries) = self.read_dir(&parent).await?;
+        let (_, entries) = self.read_dir_unsorted(&parent).await?;
         Ok(entries.iter().any(|entry| entry.name == name))
     }
 
@@ -979,12 +1004,11 @@ async fn copy_up(
     local: &Path,
     remote: &str,
     out_tx: &async_channel::Sender<SftpEvent>,
-    done: &mut u64,
+    progress: &Progress,
 ) -> anyhow::Result<()> {
     let mut local_file = tokio::fs::File::open(local).await?;
     let mut data = connection.start_transfer(&format!("STOR {remote}")).await?;
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut progress = Progress::new();
+    let mut buf = vec![0u8; TRANSFER_BUFFER];
     let copied = async {
         loop {
             let n = local_file.read(&mut buf).await?;
@@ -992,12 +1016,7 @@ async fn copy_up(
                 break;
             }
             write_data(&mut data.stream, &buf[..n]).await?;
-            *done += n as u64;
-            if progress.due() {
-                let _ = out_tx
-                    .send(SftpEvent::TransferProgress { transferred: *done })
-                    .await;
-            }
+            progress.advance(n as u64, out_tx).await;
         }
         anyhow::Ok(())
     }
@@ -1006,11 +1025,7 @@ async fn copy_up(
         connection.abandon(data).await;
         return Err(err);
     }
-    connection.finish(data).await?;
-    let _ = out_tx
-        .send(SftpEvent::TransferProgress { transferred: *done })
-        .await;
-    Ok(())
+    connection.finish(data).await
 }
 
 async fn copy_down(
@@ -1018,7 +1033,7 @@ async fn copy_down(
     remote: &str,
     local: &Path,
     out_tx: &async_channel::Sender<SftpEvent>,
-    done: &mut u64,
+    progress: &Progress,
 ) -> anyhow::Result<()> {
     let mut local_file = create_new(local).await.map_err(|err| {
         if err.kind() == std::io::ErrorKind::AlreadyExists {
@@ -1038,8 +1053,7 @@ async fn copy_down(
             return Err(err);
         }
     };
-    let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut progress = Progress::new();
+    let mut buf = vec![0u8; TRANSFER_BUFFER];
     let copied = async {
         loop {
             let n = read_data(&mut data.stream, &mut buf).await?;
@@ -1047,12 +1061,7 @@ async fn copy_down(
                 break;
             }
             local_file.write_all(&buf[..n]).await?;
-            *done += n as u64;
-            if progress.due() {
-                let _ = out_tx
-                    .send(SftpEvent::TransferProgress { transferred: *done })
-                    .await;
-            }
+            progress.advance(n as u64, out_tx).await;
         }
         local_file.flush().await?;
         anyhow::Ok(())
@@ -1062,11 +1071,7 @@ async fn copy_down(
         connection.abandon(data).await;
         return Err(err);
     }
-    connection.finish(data).await?;
-    let _ = out_tx
-        .send(SftpEvent::TransferProgress { transferred: *done })
-        .await;
-    Ok(())
+    connection.finish(data).await
 }
 
 async fn do_upload(
@@ -1088,9 +1093,8 @@ async fn do_upload(
             total: Some(total),
         })
         .await;
-    let mut done = 0u64;
-    let result = copy_up(connection, local, remote, out_tx, &mut done).await;
-    finish_transfer(out_tx, result).await
+    let result = copy_up(connection, local, remote, out_tx, &Progress::new()).await;
+    finish_transfer(out_tx, result, false).await
 }
 
 async fn do_download(
@@ -1106,9 +1110,8 @@ async fn do_download(
             total,
         })
         .await;
-    let mut done = 0u64;
-    let result = copy_down(connection, remote, local, out_tx, &mut done).await;
-    finish_transfer(out_tx, result).await
+    let result = copy_down(connection, remote, local, out_tx, &Progress::new()).await;
+    finish_transfer(out_tx, result, true).await
 }
 
 async fn do_read(
@@ -1137,7 +1140,7 @@ async fn do_read(
         let mut data = connection.start_transfer(&format!("RETR {remote}")).await?;
         let mut buf = Vec::with_capacity(total.unwrap_or(0) as usize);
         let mut chunk = vec![0u8; CHUNK_SIZE];
-        let mut progress = Progress::new();
+        let progress = Progress::new();
         let read = async {
             loop {
                 let n = read_data(&mut data.stream, &mut chunk).await?;
@@ -1148,13 +1151,7 @@ async fn do_read(
                 if buf.len() as u64 > MAX_READ {
                     anyhow::bail!("the file is too large to open here");
                 }
-                if progress.due() {
-                    let _ = out_tx
-                        .send(SftpEvent::TransferProgress {
-                            transferred: buf.len() as u64,
-                        })
-                        .await;
-                }
+                progress.advance(n as u64, out_tx).await;
             }
             anyhow::Ok(())
         }
@@ -1169,7 +1166,10 @@ async fn do_read(
     .await;
 
     let _ = out_tx
-        .send(SftpEvent::TransferFinished { error: None })
+        .send(SftpEvent::TransferFinished {
+            error: None,
+            local_changed: false,
+        })
         .await;
     result.map_err(|err| format!("Couldn't read {remote}: {err}"))
 }
@@ -1190,17 +1190,11 @@ async fn do_write(
 
     let result = async {
         let mut data = connection.start_transfer(&format!("STOR {remote}")).await?;
-        let mut done = 0u64;
-        let mut progress = Progress::new();
+        let progress = Progress::new();
         let written = async {
-            for chunk in bytes.chunks(CHUNK_SIZE) {
+            for chunk in bytes.chunks(TRANSFER_BUFFER) {
                 write_data(&mut data.stream, chunk).await?;
-                done += chunk.len() as u64;
-                if progress.due() {
-                    let _ = out_tx
-                        .send(SftpEvent::TransferProgress { transferred: done })
-                        .await;
-                }
+                progress.advance(chunk.len() as u64, out_tx).await;
             }
             anyhow::Ok(())
         }
@@ -1217,6 +1211,7 @@ async fn do_write(
     let _ = out_tx
         .send(SftpEvent::TransferFinished {
             error: error.clone(),
+            local_changed: false,
         })
         .await;
     let _ = ack.send(error).await;
@@ -1235,7 +1230,7 @@ async fn plan_download(
     let mut pending = vec![(remote_root.to_string(), local_root.to_path_buf())];
 
     while let Some((remote_dir, local_dir)) = pending.pop() {
-        let (_, entries) = connection.read_dir(&remote_dir).await?;
+        let (_, entries) = connection.read_dir_unsorted(&remote_dir).await?;
         for entry in entries {
             let local_path = local_dir.join(super::safe_local_name(&entry.name));
             if entry.is_dir {
@@ -1282,14 +1277,14 @@ async fn do_upload_dir(
                 anyhow::bail!("The connection was lost");
             }
         }
-        let mut done = 0u64;
+        let progress = Progress::new();
         for file in &files {
             copy_up(
                 connection,
                 &file.source,
                 &file.destination,
                 out_tx,
-                &mut done,
+                &progress,
             )
             .await?;
         }
@@ -1297,7 +1292,7 @@ async fn do_upload_dir(
     }
     .await;
 
-    finish_transfer(out_tx, result).await;
+    finish_transfer(out_tx, result, false).await;
 }
 
 async fn do_download_dir(
@@ -1322,17 +1317,16 @@ async fn do_download_dir(
         .await;
 
     let result = async {
-        for dir in &dirs {
-            tokio::fs::create_dir_all(dir).await?;
-        }
-        let mut done = 0u64;
+        tokio::task::spawn_blocking(move || dirs.iter().try_for_each(std::fs::create_dir_all))
+            .await??;
+        let progress = Progress::new();
         for file in &files {
             copy_down(
                 connection,
                 &file.source,
                 &file.destination,
                 out_tx,
-                &mut done,
+                &progress,
             )
             .await?;
         }
@@ -1340,7 +1334,23 @@ async fn do_download_dir(
     }
     .await;
 
-    finish_transfer(out_tx, result).await;
+    finish_transfer(out_tx, result, true).await;
+}
+
+fn plain_absolute(path: &str) -> Option<String> {
+    if !path.starts_with('/')
+        || path
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+    {
+        return None;
+    }
+    let trimmed = path.trim_end_matches('/');
+    Some(if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    })
 }
 
 fn parse_pwd(text: &str) -> Option<String> {

@@ -93,7 +93,7 @@ impl SettingsView {
             |_view, _, event: &SliderEvent, window, cx| match event {
                 SliderEvent::Change(value) => {
                     cx.global_mut::<AppSettings>().opacity = value.start();
-                    settings::apply_appearance(window, cx);
+                    settings::apply_opacity(window, cx);
                 }
                 SliderEvent::Release(_) => {
                     settings::save_settings(cx.global::<AppSettings>());
@@ -499,8 +499,13 @@ impl SettingsView {
             cx,
         );
 
-        let theme = cx.global::<AppSettings>().theme.clone();
         let editing = self.editing;
+        let hexes: Vec<SharedString> = {
+            let theme = &cx.global::<AppSettings>().theme;
+            all_slots()
+                .map(|slot| SharedString::from(theme.color(slot, editing).to_hex()))
+                .collect()
+        };
         let foreground = cx.theme().foreground;
         let panel = cx.theme().muted.opacity(0.4);
         let hover = cx.theme().accent;
@@ -546,7 +551,7 @@ impl SettingsView {
                                         div()
                                             .text_xs()
                                             .text_color(muted)
-                                            .child(theme.color(slot, editing).to_hex()),
+                                            .child(hexes[index].clone()),
                                     ),
                             )
                     })
@@ -851,7 +856,7 @@ impl SettingsView {
                 "Column hint",
                 Some(
                     "The strip that appears on hover when a file list has more columns than fit \
-                     on screen.",
+                     on screen. Hold Shift and scroll to reach them.",
                 ),
                 hint_toggle,
                 muted,
