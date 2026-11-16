@@ -42,6 +42,8 @@ pub struct AppSettings {
     pub remote_open: Option<RemoteOpenMode>,
     #[serde(default)]
     pub theme: ThemeSettings,
+    #[serde(default)]
+    pub monitor_order: Vec<String>,
 }
 
 fn default_show_column_hint() -> bool {
@@ -80,6 +82,7 @@ impl Default for AppSettings {
             edit_upload: None,
             remote_open: None,
             theme: ThemeSettings::default(),
+            monitor_order: Vec::new(),
         }
     }
 }
@@ -128,11 +131,7 @@ pub fn apply_appearance(window: &mut Window, cx: &mut App) {
 
     let opacity = settings.opacity.clamp(0.3, 1.0);
     let translucent = opacity < 1.0;
-    window.set_background_appearance(if translucent {
-        WindowBackgroundAppearance::Transparent
-    } else {
-        WindowBackgroundAppearance::Opaque
-    });
+    apply_window_appearance(window, cx);
 
     if translucent {
         let theme = Theme::global_mut(cx);
@@ -141,12 +140,47 @@ pub fn apply_appearance(window: &mut Window, cx: &mut App) {
         theme.colors.title_bar.a = 0.0;
         theme.colors.overlay.a = 0.0;
         theme.tokens = (&theme.colors).into();
-        theme.tokens.background = {
-            let mut base = theme.tokens.background.color;
-            base.a = opacity;
-            base.into()
-        };
+        set_background_alpha(theme, opacity);
     }
+    APPLIED_TRANSLUCENT.set(Some(translucent));
+    window.refresh();
+}
+
+thread_local! {
+    static APPLIED_TRANSLUCENT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+fn set_background_alpha(theme: &mut Theme, opacity: f32) {
+    let mut base = theme.tokens.background.color;
+    base.a = opacity;
+    theme.tokens.background = base.into();
+}
+
+/// Sets only the window's background mode, for windows opened after the
+/// themes were built.
+pub fn apply_window_appearance(window: &mut Window, cx: &App) {
+    let opacity = cx.global::<AppSettings>().opacity.clamp(0.3, 1.0);
+    window.set_background_appearance(if opacity < 1.0 {
+        WindowBackgroundAppearance::Transparent
+    } else {
+        WindowBackgroundAppearance::Opaque
+    });
+}
+
+/// Applies an opacity change without rebuilding the themes while the window
+/// stays translucent.
+pub fn apply_opacity(window: &mut Window, cx: &mut App) {
+    let opacity = cx.global::<AppSettings>().opacity.clamp(0.3, 1.0);
+    let translucent = opacity < 1.0;
+    match (translucent, APPLIED_TRANSLUCENT.get()) {
+        (false, Some(false)) => return,
+        (true, Some(true)) => {}
+        _ => {
+            apply_appearance(window, cx);
+            return;
+        }
+    }
+    set_background_alpha(Theme::global_mut(cx), opacity);
     window.refresh();
 }
 
@@ -166,14 +200,20 @@ pub fn config_dir() -> PathBuf {
         .join("Oxidal")
 }
 
+static CONFIG_DIR_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn prepare_config_dir() -> std::io::Result<PathBuf> {
     let dir = config_dir();
+    if CONFIG_DIR_READY.load(std::sync::atomic::Ordering::Relaxed) && dir.is_dir() {
+        return Ok(dir);
+    }
     fs::create_dir_all(&dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
     }
+    CONFIG_DIR_READY.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(dir)
 }
 

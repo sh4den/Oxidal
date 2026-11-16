@@ -14,24 +14,6 @@ macro_rules! bundled_icons {
 }
 
 const BUNDLED: &[(&str, &[u8])] = bundled_icons![
-    "activity",
-    "clock",
-    "cloud",
-    "cluster",
-    "code",
-    "container",
-    "database",
-    "file-plus",
-    "firewall",
-    "flask",
-    "folder-plus",
-    "gauge",
-    "git-branch",
-    "key",
-    "layers",
-    "list",
-    "lock",
-    "monitor",
     "os/almalinux",
     "os/alpinelinux",
     "os/apple",
@@ -57,18 +39,7 @@ const BUNDLED: &[(&str, &[u8])] = bundled_icons![
     "os/rockylinux",
     "os/ubuntu",
     "os/voidlinux",
-    "package",
-    "plug",
-    "router",
     "scroll-hint",
-    "server",
-    "shield",
-    "signal",
-    "thermometer",
-    "usb",
-    "wifi",
-    "wrench",
-    "zap",
 ];
 
 pub const LOGO: &str = "images/oxidal/logo.png";
@@ -82,11 +53,11 @@ impl AssetSource for Assets {
         if let Some((_, data)) = BUNDLED.iter().find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(data)));
         }
-        gpui_kit::assets::Assets.load(path)
+        gpui_kit::assets::AllAssets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut items = gpui_kit::assets::Assets.list(path)?;
+        let mut items = gpui_kit::assets::AllAssets.list(path)?;
         items.extend(
             BUNDLED
                 .iter()

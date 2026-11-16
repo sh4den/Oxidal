@@ -4,6 +4,7 @@ mod app;
 mod assets;
 mod cert_trust;
 mod credentials;
+mod forms;
 mod host_keys;
 mod proxy;
 mod session;
@@ -17,7 +18,7 @@ mod terminal;
 mod theme;
 mod update;
 
-use gpui_kit::component::{Root, Theme, ThemeMode, TitleBar};
+use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::{
     App, AppContext as _, Bounds, KeyBinding, WindowBackgroundAppearance, WindowBounds,
     WindowOptions, px, size,
@@ -64,12 +65,6 @@ fn main() {
 
         let settings = settings::load_settings();
         let opacity = settings.opacity;
-        let mode = if settings.dark_mode {
-            ThemeMode::Dark
-        } else {
-            ThemeMode::Light
-        };
-        Theme::change(mode, None, cx);
         cx.set_global(settings);
 
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
