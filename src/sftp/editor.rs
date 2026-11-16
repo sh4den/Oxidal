@@ -14,7 +14,6 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, actions,
     div, prelude::FluentBuilder as _, px, size,
 };
-use sha2::{Digest as _, Sha256};
 
 use crate::settings::AppSettings;
 
@@ -33,8 +32,7 @@ pub struct EditorWindow {
     name: SharedString,
     language_label: Option<SharedString>,
     editor: Entity<EditorState>,
-    original_len: usize,
-    original_digest: [u8; 32],
+    original: String,
     modified: bool,
     is_markdown: bool,
     preview_doc: Option<Entity<TextViewState>>,
@@ -44,12 +42,20 @@ pub struct EditorWindow {
     close_after_save: bool,
 }
 
-fn digest_rope(rope: &Rope) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    for chunk in rope.chunks() {
-        hasher.update(chunk);
+fn rope_matches(rope: &Rope, text: &str) -> bool {
+    if rope.len() != text.len() {
+        return false;
     }
-    hasher.finalize().into()
+    let bytes = text.as_bytes();
+    let mut offset = 0;
+    for chunk in rope.chunks() {
+        let end = offset + chunk.len();
+        if bytes.get(offset..end) != Some(chunk.as_bytes()) {
+            return false;
+        }
+        offset = end;
+    }
+    true
 }
 
 pub fn open(
@@ -68,7 +74,7 @@ pub fn open(
         ..Default::default()
     };
     cx.open_window(options, |window, cx| {
-        crate::settings::apply_appearance(window, cx);
+        crate::settings::apply_window_appearance(window, cx);
         let view = cx.new(|cx| EditorWindow::new(client, remote, name, text, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     })?;
@@ -90,8 +96,7 @@ impl EditorWindow {
         };
         let language = extension.clone().unwrap_or_else(|| "text".to_string());
         let is_markdown = matches!(language.as_str(), "md" | "markdown");
-        let original_len = text.len();
-        let original_digest = Sha256::digest(&text).into();
+        let original = text.clone();
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
@@ -122,8 +127,7 @@ impl EditorWindow {
             name: SharedString::from(name),
             language_label: extension.map(|ext| SharedString::from(ext.to_uppercase())),
             editor,
-            original_len,
-            original_digest,
+            original,
             modified: false,
             is_markdown,
             preview_doc: None,
@@ -137,7 +141,7 @@ impl EditorWindow {
     fn refresh_modified(&mut self, cx: &mut Context<Self>) {
         let modified = {
             let rope = self.editor.read(cx).text();
-            rope.len() != self.original_len || digest_rope(rope) != self.original_digest
+            !rope_matches(rope, &self.original)
         };
         if modified != self.modified {
             self.modified = modified;
@@ -205,19 +209,20 @@ impl EditorWindow {
         if self.saving {
             return;
         }
-        let text = self.editor.read(cx).text().to_string();
-        let digest: [u8; 32] = Sha256::digest(&text).into();
-        if text.len() == self.original_len && digest == self.original_digest {
-            self.close_after_save = false;
-            return;
-        }
+        let text = {
+            let rope = self.editor.read(cx).text();
+            if rope_matches(rope, &self.original) {
+                self.close_after_save = false;
+                return;
+            }
+            rope.to_string()
+        };
         self.saving = true;
         self.status = None;
-        let len = text.len();
         let handle = self.handle;
         let ack = self
             .client
-            .write_file(self.remote.clone(), text.into_bytes());
+            .write_file(self.remote.clone(), text.clone().into_bytes());
         cx.spawn(async move |this, cx| {
             let result = ack.recv().await;
             let mut close_window = false;
@@ -225,8 +230,7 @@ impl EditorWindow {
                 editor.saving = false;
                 editor.status = Some(match result {
                     Ok(None) => {
-                        editor.original_len = len;
-                        editor.original_digest = digest;
+                        editor.original = text;
                         close_window = editor.close_after_save;
                         SaveStatus::Saved
                     }

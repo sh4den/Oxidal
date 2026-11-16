@@ -115,6 +115,7 @@ pub async fn connect(
         inactivity_timeout: None,
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
+        window_size: 16 * 1024 * 1024,
         ..Default::default()
     });
 

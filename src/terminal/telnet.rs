@@ -77,7 +77,7 @@ async fn run(
     let mut telnet = Telnet::new(rows, cols);
     writer.write_all(&telnet.initial_offers()).await?;
 
-    let mut buf = [0u8; 4096];
+    let mut buf = vec![0u8; 64 * 1024];
     loop {
         tokio::select! {
             input = in_rx.recv() => {

@@ -114,8 +114,10 @@ impl SftpWorkspace {
             PanelEvent::TransferRequested { drag, dest_dir } => {
                 self.transfer(drag, dest_dir, cx);
             }
-            PanelEvent::TransferFinished => {
-                self.local.update(cx, |panel, cx| panel.refresh_listing(cx));
+            PanelEvent::TransferFinished { local_changed } => {
+                if *local_changed {
+                    self.local.update(cx, |panel, cx| panel.refresh_listing(cx));
+                }
             }
             PanelEvent::SelectionChanged => cx.notify(),
         }
@@ -219,24 +221,25 @@ fn selected_of(panel: &Entity<SftpPanel>, cx: &Context<SftpWorkspace>) -> Option
     panel.read(cx).selected_entry().cloned()
 }
 
+fn selected_name(panel: &Entity<SftpPanel>, cx: &Context<SftpWorkspace>) -> Option<String> {
+    panel
+        .read(cx)
+        .selected_entry()
+        .map(|entry| super::display_name(&entry.name))
+}
+
 impl Render for SftpWorkspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let local_selection = selected_of(&self.local, cx);
-        let remote_selection = selected_of(&self.remote, cx);
+        let local_selection = selected_name(&self.local, cx);
+        let remote_selection = selected_name(&self.remote, cx);
         let local_path = SharedString::from(self.local.read(cx).current_path().to_string());
 
         let upload_tooltip = match &local_selection {
-            Some(entry) => format!(
-                "Send \"{}\" to the remote folder",
-                super::display_name(&entry.name)
-            ),
+            Some(name) => format!("Send \"{name}\" to the remote folder"),
             None => "Select something on the left first".to_string(),
         };
         let download_tooltip = match &remote_selection {
-            Some(entry) => format!(
-                "Bring \"{}\" to the local folder",
-                super::display_name(&entry.name)
-            ),
+            Some(name) => format!("Bring \"{name}\" to the local folder"),
             None => "Select something on the right first".to_string(),
         };
 

@@ -6,7 +6,7 @@ use vte::{Params, Perform};
 
 const SCROLLBACK_MAX: usize = 5000;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub enum Color {
     #[default]
     Default,
@@ -93,6 +93,10 @@ impl Cell {
 
     fn blank(attrs: &Attrs) -> Self {
         Self::new(' ', attrs.fg, attrs.bg, 0)
+    }
+
+    fn set_ch(&mut self, ch: char) {
+        self.ch_flags = (self.ch_flags & !CHAR_MASK) | ch as u32;
     }
 
     pub fn ch(self) -> char {
@@ -281,20 +285,13 @@ impl Grid {
 
     fn push_scrollback(&mut self, count: usize) {
         // Both callers discard the pushed rows afterwards (blank-fill or
-        // resize-skip), so move them out and recycle trimmed rows instead
-        // of cloning. Recycled rows are only reused if their width matches.
-        let cols = self.cols;
-        for row in self.cells.iter_mut().take(count) {
-            let replacement = if self.scrollback.len() >= SCROLLBACK_MAX {
+        // resize-skip), so only the used prefix is copied into scrollback.
+        for row in self.cells.iter().take(count) {
+            if self.scrollback.len() >= SCROLLBACK_MAX {
                 self.scrollback_trimmed += 1;
-                self.scrollback.pop_front()
-            } else {
-                None
+                self.scrollback.pop_front();
             }
-            .filter(|recycled| recycled.len() == cols)
-            .unwrap_or_else(|| vec![Cell::BLANK; cols].into_boxed_slice());
-            let line = std::mem::replace(row, replacement);
-            self.scrollback.push_back(trim_trailing_blanks(line));
+            self.scrollback.push_back(Box::from(&row[..used_len(row)]));
         }
     }
 
@@ -484,6 +481,10 @@ impl Grid {
     }
 
     fn put_char(&mut self, ch: char) {
+        if unicode_normalization::char::is_combining_mark(ch) {
+            self.combine_with_previous(ch);
+            return;
+        }
         let graphics = if self.shift_out {
             self.g1_graphics
         } else {
@@ -514,6 +515,17 @@ impl Grid {
         };
         self.cells[self.cursor_row][self.cursor_col] = Cell::new(ch, fg, bg, self.attrs.flags());
         self.cursor_col += 1;
+    }
+
+    fn combine_with_previous(&mut self, mark: char) {
+        let Some(col) = self.cursor_col.min(self.cols).checked_sub(1) else {
+            return;
+        };
+        let cell = &mut self.cells[self.cursor_row][col];
+        if let Some(composed) = unicode_normalization::char::compose(cell.ch(), mark) {
+            cell.set_ch(composed);
+            self.last_printed = Some(composed);
+        }
     }
 
     fn reverse_line_feed(&mut self) {
@@ -641,17 +653,10 @@ impl Grid {
     }
 }
 
-fn trim_trailing_blanks(line: Box<[Cell]>) -> Box<[Cell]> {
-    let used = line
-        .iter()
+fn used_len(line: &[Cell]) -> usize {
+    line.iter()
         .rposition(|cell| !cell.is_blank())
-        .map_or(0, |last| last + 1);
-    if used == line.len() {
-        return line;
-    }
-    let mut line = line.into_vec();
-    line.truncate(used);
-    line.into_boxed_slice()
+        .map_or(0, |last| last + 1)
 }
 
 fn resized_cells(
@@ -990,5 +995,26 @@ mod tests {
         assert_eq!(row[0].bg.as_bg(&palette), Some(palette.foreground));
         assert_eq!(row[1].fg.as_fg(&palette), palette.foreground);
         assert_eq!(row[1].bg.as_bg(&palette), None);
+    }
+
+    #[test]
+    fn a_combining_accent_joins_the_letter_before_it() {
+        let mut grid = Grid::new(2, 10);
+        grid.feed("inte\u{301}gre\u{301}!".as_bytes());
+
+        let row = grid.line_cells(grid.screen_top_line()).expect("row");
+        let text: String = row.iter().map(|cell| cell.ch()).collect();
+        assert_eq!(text.trim_end(), "intégré!");
+        assert_eq!(grid.cursor_col, 8);
+    }
+
+    #[test]
+    fn a_combining_mark_with_no_letter_before_it_is_dropped() {
+        let mut grid = Grid::new(2, 10);
+        grid.feed("\u{301}a".as_bytes());
+
+        let row = grid.line_cells(grid.screen_top_line()).expect("row");
+        assert_eq!(row[0].ch(), 'a');
+        assert_eq!(grid.cursor_col, 1);
     }
 }
