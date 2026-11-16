@@ -1,5 +1,8 @@
+use gpui_kit::assets::IconName as Lucide;
+use std::cell::OnceCell;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::{
@@ -42,7 +45,7 @@ fn accepts_drop(drag: &FileDrag, panel: EntityId, side: PanelSide, target_dir: &
 
 pub enum PanelEvent {
     TransferRequested { drag: FileDrag, dest_dir: String },
-    TransferFinished,
+    TransferFinished { local_changed: bool },
     SelectionChanged,
 }
 
@@ -192,6 +195,54 @@ impl Render for ColumnDrag {
     }
 }
 
+struct RowText {
+    id: SharedString,
+    path: SharedString,
+    name: SharedString,
+    size: SharedString,
+    kind: SharedString,
+    modified: SharedString,
+    accessed: SharedString,
+    access: SharedString,
+    owner: SharedString,
+    group: SharedString,
+}
+
+impl RowText {
+    fn new(entry: &SftpEntry) -> Self {
+        let text = |value: String| SharedString::from(value);
+        Self {
+            id: text(format!("sftp-entry-{}", entry.path)),
+            path: text(entry.path.clone()),
+            name: text(display_name(&entry.name)),
+            size: if entry.is_dir {
+                SharedString::default()
+            } else {
+                text(format_size(entry.size))
+            },
+            kind: text(format_kind(entry)),
+            modified: text(entry.modified.map(format_modified).unwrap_or_default()),
+            accessed: text(entry.accessed.map(format_modified).unwrap_or_default()),
+            access: text(format_permissions(entry.is_dir, entry.permissions)),
+            owner: text(entry.owner.clone().unwrap_or_default()),
+            group: text(entry.group.clone().unwrap_or_default()),
+        }
+    }
+
+    fn column(&self, column: ListColumn) -> SharedString {
+        match column {
+            ListColumn::Name => self.name.clone(),
+            ListColumn::Size => self.size.clone(),
+            ListColumn::Kind => self.kind.clone(),
+            ListColumn::Modified => self.modified.clone(),
+            ListColumn::Accessed => self.accessed.clone(),
+            ListColumn::Access => self.access.clone(),
+            ListColumn::Owner => self.owner.clone(),
+            ListColumn::Group => self.group.clone(),
+        }
+    }
+}
+
 struct TransferState {
     label: String,
     transferred: u64,
@@ -235,6 +286,7 @@ pub struct SftpPanel {
     side: PanelSide,
     current_path: String,
     entries: Vec<SftpEntry>,
+    row_text: Vec<OnceCell<RowText>>,
     visible: Vec<usize>,
     selected: Option<String>,
     context_entry: Option<SftpEntry>,
@@ -335,7 +387,7 @@ impl SftpPanel {
                         if this
                             .update(cx, |panel, cx| {
                                 panel.current_path = path;
-                                panel.entries = entries;
+                                panel.set_entries(entries);
                                 panel.loading = false;
                                 panel.error = None;
                                 cx.notify();
@@ -398,7 +450,10 @@ impl SftpPanel {
                             break;
                         }
                     }
-                    Ok(SftpEvent::TransferFinished { error }) => {
+                    Ok(SftpEvent::TransferFinished {
+                        error,
+                        local_changed,
+                    }) => {
                         if this
                             .update(cx, |panel, cx| {
                                 panel.transfer = None;
@@ -406,10 +461,7 @@ impl SftpPanel {
                                     panel.error = Some(err);
                                 }
                                 panel.arm_edit_watches();
-                                if panel.side == PanelSide::Remote {
-                                    panel.client.list(panel.current_path.clone());
-                                }
-                                cx.emit(PanelEvent::TransferFinished);
+                                cx.emit(PanelEvent::TransferFinished { local_changed });
                                 cx.notify();
                             })
                             .is_err()
@@ -461,6 +513,7 @@ impl SftpPanel {
             side,
             current_path: "/".to_string(),
             entries: Vec::new(),
+            row_text: Vec::new(),
             visible: Vec::new(),
             selected: None,
             context_entry: None,
@@ -544,6 +597,18 @@ impl SftpPanel {
 
     pub fn current_path(&self) -> &str {
         &self.current_path
+    }
+
+    fn set_entries(&mut self, entries: Vec<SftpEntry>) {
+        self.row_text = std::iter::repeat_with(OnceCell::new)
+            .take(entries.len())
+            .collect();
+        self.entries = entries;
+        self.rebuild_visible();
+    }
+
+    fn row_text(&self, index: usize) -> &RowText {
+        self.row_text[index].get_or_init(|| RowText::new(&self.entries[index]))
     }
 
     fn rebuild_visible(&mut self) {
@@ -1096,9 +1161,21 @@ impl SftpPanel {
             ("New File", "New file name")
         };
         let name = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        crate::forms::confirm_on_enter(&name, window, cx);
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
-            let client = client.clone();
+            let submit = {
+                let client = client.clone();
+                let name = name.clone();
+                Rc::new(move |cx: &mut gpui_kit::App| {
+                    let value = name.read(cx).value().trim().to_string();
+                    match (value.is_empty(), is_dir) {
+                        (true, _) => {}
+                        (false, true) => client.create_dir(value),
+                        (false, false) => client.create_file(value),
+                    }
+                })
+            };
             let name = name.clone();
 
             dialog
@@ -1113,18 +1190,18 @@ impl SftpPanel {
                                     window.close_dialog(cx);
                                 }),
                         )
-                        .child(Button::new("create").primary().label("Create").on_click(
+                        .child(Button::new("create").primary().label("Create").on_click({
+                            let submit = submit.clone();
                             move |_, window, cx| {
-                                let value = name.read(cx).value().trim().to_string();
-                                match (value.is_empty(), is_dir) {
-                                    (true, _) => {}
-                                    (false, true) => client.create_dir(value),
-                                    (false, false) => client.create_file(value),
-                                }
+                                submit(cx);
                                 window.close_dialog(cx);
-                            },
-                        )),
+                            }
+                        })),
                 )
+                .on_ok(move |_, _, cx| {
+                    submit(cx);
+                    true
+                })
         });
     }
 
@@ -1133,11 +1210,21 @@ impl SftpPanel {
         let side = self.side;
         let parent = parent_path(side, &entry.path);
         let name = cx.new(|cx| InputState::new(window, cx).default_value(entry.name.clone()));
+        crate::forms::confirm_on_enter(&name, window, cx);
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
-            let client = client.clone();
-            let parent = parent.clone();
-            let old_path = entry.path.clone();
+            let submit = {
+                let client = client.clone();
+                let parent = parent.clone();
+                let old_path = entry.path.clone();
+                let name = name.clone();
+                Rc::new(move |cx: &mut gpui_kit::App| {
+                    let value = name.read(cx).value().trim().to_string();
+                    if !value.is_empty() {
+                        client.rename(old_path.clone(), join_path(side, &parent, &value));
+                    }
+                })
+            };
             let name = name.clone();
 
             dialog
@@ -1152,17 +1239,18 @@ impl SftpPanel {
                                     window.close_dialog(cx);
                                 }),
                         )
-                        .child(Button::new("rename").primary().label("Rename").on_click(
+                        .child(Button::new("rename").primary().label("Rename").on_click({
+                            let submit = submit.clone();
                             move |_, window, cx| {
-                                let value = name.read(cx).value().trim().to_string();
-                                if !value.is_empty() {
-                                    client
-                                        .rename(old_path.clone(), join_path(side, &parent, &value));
-                                }
+                                submit(cx);
                                 window.close_dialog(cx);
-                            },
-                        )),
+                            }
+                        })),
                 )
+                .on_ok(move |_, _, cx| {
+                    submit(cx);
+                    true
+                })
         });
     }
 
@@ -1358,7 +1446,7 @@ impl SftpPanel {
                 Button::new("sftp-new-file")
                     .ghost()
                     .xsmall()
-                    .icon(Icon::default().path("icons/oxidal/file-plus.svg"))
+                    .icon(Icon::new(Lucide::FilePlus))
                     .tooltip("New file")
                     .on_click(cx.listener(|panel, _, window, cx| {
                         panel.new_entry_dialog(false, window, cx);
@@ -1368,7 +1456,7 @@ impl SftpPanel {
                 Button::new("sftp-new-folder")
                     .ghost()
                     .xsmall()
-                    .icon(Icon::default().path("icons/oxidal/folder-plus.svg"))
+                    .icon(Icon::new(Lucide::FolderPlus))
                     .tooltip("New folder")
                     .on_click(cx.listener(|panel, _, window, cx| {
                         panel.new_entry_dialog(true, window, cx);
@@ -1396,6 +1484,7 @@ impl SftpPanel {
                                 .checked(show_hidden)
                                 .on_click(window.listener_for(&view, |panel, _, _, cx| {
                                     panel.show_hidden = !panel.show_hidden;
+                                    panel.rebuild_visible();
                                     (panel.on_show_hidden_changed)(panel.show_hidden, cx);
                                     cx.notify();
                                 })),
@@ -1491,8 +1580,8 @@ impl SftpPanel {
                     .get(range.start..end)
                     .unwrap_or(&[])
                     .iter()
-                    .filter_map(|index| panel.entries.get(*index))
-                    .map(|entry| panel.render_row(entry, cx))
+                    .filter(|index| **index < panel.entries.len())
+                    .map(|index| panel.render_row(*index, cx))
                     .collect::<Vec<_>>()
             }),
         )
@@ -1503,13 +1592,15 @@ impl SftpPanel {
         list.into_any_element()
     }
 
-    fn render_row(&self, entry: &SftpEntry, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let entry = &self.entries[index];
+        let text = self.row_text(index);
         let selected = self.selected.as_deref() == Some(entry.path.as_str());
-        let menu_path = entry.path.clone();
-        let click_path = entry.path.clone();
+        let menu_path = text.path.clone();
+        let click_path = text.path.clone();
 
         let mut row = h_flex()
-            .id(SharedString::from(format!("sftp-entry-{}", entry.path)))
+            .id(text.id.clone())
             .items_center()
             .gap_2()
             .px_2()
@@ -1528,7 +1619,7 @@ impl SftpPanel {
                         panel.open_entry(&entry, window, cx);
                     }
                 } else {
-                    panel.selected = Some(click_path.clone());
+                    panel.selected = Some(click_path.to_string());
                     cx.emit(PanelEvent::SelectionChanged);
                     cx.notify();
                 }
@@ -1542,15 +1633,17 @@ impl SftpPanel {
                     is_dir: entry.is_dir,
                 },
                 {
-                    let detail = SharedString::from(if entry.is_dir {
-                        format_kind(entry)
-                    } else {
-                        format!("{} · {}", format_kind(entry), format_size(entry.size))
-                    });
+                    let kind = text.kind.clone();
+                    let size = text.size.clone();
                     move |drag, grab, _, cx| {
+                        let detail = if drag.is_dir {
+                            kind.clone()
+                        } else {
+                            SharedString::from(format!("{kind} · {size}"))
+                        };
                         let preview = DragPreview {
                             label: SharedString::from(display_name(&drag.name)),
-                            detail: detail.clone(),
+                            detail,
                             is_dir: drag.is_dir,
                             grab,
                         };
@@ -1561,9 +1654,9 @@ impl SftpPanel {
             .when(entry.is_dir, |this| {
                 let panel_id = cx.entity_id();
                 let side = self.side;
-                let target = entry.path.clone();
-                let drop_target = entry.path.clone();
-                let upload_target = entry.path.clone();
+                let target = text.path.clone();
+                let drop_target = text.path.clone();
+                let upload_target = text.path.clone();
                 this.drag_over::<FileDrag>(move |style, drag, _, cx| {
                     if accepts_drop(drag, panel_id, side, &target) {
                         style.bg(cx.theme().primary.opacity(0.25))
@@ -1608,26 +1701,14 @@ impl SftpPanel {
                     .text_sm()
                     .text_ellipsis_middle()
                     .when(entry.is_dir, |this| this.font_weight(FontWeight::MEDIUM))
-                    .child(SharedString::from(display_name(&entry.name))),
+                    .child(text.name.clone()),
             );
 
         for column in self.visible_columns() {
-            let value = match column {
-                ListColumn::Name => continue,
-                ListColumn::Size => {
-                    if entry.is_dir {
-                        String::new()
-                    } else {
-                        format_size(entry.size)
-                    }
-                }
-                ListColumn::Kind => format_kind(entry),
-                ListColumn::Modified => entry.modified.map(format_modified).unwrap_or_default(),
-                ListColumn::Accessed => entry.accessed.map(format_modified).unwrap_or_default(),
-                ListColumn::Access => format_permissions(entry.is_dir, entry.permissions),
-                ListColumn::Owner => entry.owner.clone().unwrap_or_default(),
-                ListColumn::Group => entry.group.clone().unwrap_or_default(),
-            };
+            if column == ListColumn::Name {
+                continue;
+            }
+            let value = text.column(column);
             row = row.child(
                 div()
                     .w(px(self.column_width(column)))
@@ -1645,7 +1726,7 @@ impl SftpPanel {
             MouseButton::Right,
             cx.listener(move |panel, _: &MouseDownEvent, _, cx| {
                 panel.context_entry = panel.entry_at(&menu_path);
-                panel.selected = Some(menu_path.clone());
+                panel.selected = Some(menu_path.to_string());
                 cx.emit(PanelEvent::SelectionChanged);
                 cx.notify();
             }),
@@ -1769,7 +1850,6 @@ impl Render for SftpPanel {
         let columns_view = cx.entity();
         let hidden_columns = self.hidden_columns;
         let is_remote_panel = self.side == PanelSide::Remote;
-        self.rebuild_visible();
         let visible_count = self.visible.len();
         let no_rows = visible_count == 0;
         let entry_list = (!no_rows).then(|| self.render_entries(visible_count, cx));
@@ -2061,10 +2141,14 @@ impl Render for SftpPanel {
                                 .border_l_1()
                                 .border_color(cx.theme().border)
                                 .text_xs()
-                                .text_color(cx.theme().muted_foreground)
+                                .text_color(cx.theme().foreground)
                                 .cursor_pointer()
                                 .tooltip(|window, cx| {
-                                    Tooltip::new("Hide this hint").build(window, cx)
+                                    Tooltip::new(
+                                        "Hold Shift and scroll to see the other columns. \
+                                         Click to hide this hint.",
+                                    )
+                                    .build(window, cx)
                                 })
                                 .invisible()
                                 .group_hover(group_name, |this| this.visible())
@@ -2072,14 +2156,13 @@ impl Render for SftpPanel {
                                 .on_click(cx.listener(|panel, _, window, cx| {
                                     panel.hide_column_hint_dialog(window, cx);
                                 }))
-                                .child(Icon::new(IconName::ChevronRight).xsmall())
                                 .child(
                                     svg()
                                         .path("icons/oxidal/scroll-hint.svg")
                                         .w(px(SCROLL_HINT_LABEL_WIDTH))
                                         .h(px(SCROLL_HINT_LABEL_HEIGHT))
                                         .flex_none()
-                                        .text_color(cx.theme().muted_foreground),
+                                        .text_color(cx.theme().foreground),
                                 )
                                 .child(Icon::new(IconName::ChevronRight).xsmall()),
                         )
