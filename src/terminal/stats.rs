@@ -1,6 +1,14 @@
 use std::time::Instant;
 
-pub const MONITOR_SCRIPT: &str = "while true; do echo @@OXIDAL@@; echo @sys; uname -n 2>/dev/null; echo @kernel; uname -s 2>/dev/null; echo @os; cat /etc/os-release 2>/dev/null; echo @uptime; cat /proc/uptime 2>/dev/null || { sysctl -n kern.boottime; date +%s; } 2>/dev/null; echo @user; whoami 2>/dev/null; echo @who; who 2>/dev/null; echo @stat; cat /proc/stat 2>/dev/null; echo @mem; cat /proc/meminfo 2>/dev/null; echo @net; cat /proc/net/dev 2>/dev/null; echo @conn; netstat -tn 2>/dev/null; echo @df; df -kP 2>/dev/null; echo @sensors; command -v sensors 2>/dev/null; echo @temp; sensors -u 2>/dev/null; sleep 1; done";
+pub const MONITOR_SCRIPT: &str = "echo @@OXIDAL@@; i=0; while true; do \
+if [ $i -eq 0 ]; then echo @sys; uname -n 2>/dev/null; echo @kernel; uname -s 2>/dev/null; echo @os; cat /etc/os-release 2>/dev/null; echo @user; whoami 2>/dev/null; fi; \
+if [ $((i % 5)) -eq 0 ]; then echo @who; who 2>/dev/null; echo @df; df -kP 2>/dev/null; echo @sensors; command -v sensors 2>/dev/null; echo @temp; sensors -u 2>/dev/null; fi; \
+echo @uptime; { read -r u rest < /proc/uptime && printf '%s\\n' \"$u\"; } 2>/dev/null || { sysctl -n kern.boottime; date +%s; } 2>/dev/null; \
+echo @stat; { read -r l < /proc/stat && printf '%s\\n' \"$l\"; } 2>/dev/null; \
+echo @mem; { while read -r k v rest; do case $k in MemTotal:|MemAvailable:) printf '%s\\n' \"$k $v\";; esac; done < /proc/meminfo; } 2>/dev/null; \
+echo @net; { while read -r l; do printf '%s\\n' \"$l\"; done < /proc/net/dev; } 2>/dev/null; \
+echo @conn; command -v netstat >/dev/null 2>&1 && { echo netstat; netstat -tn 2>/dev/null | grep ESTABLISHED; }; \
+echo @@OXIDAL@@; i=$((i + 1)); sleep 1; done";
 
 const MARKER: &[u8] = b"@@OXIDAL@@";
 const CPU_CHIPS: &[&str] = &[
@@ -156,7 +164,7 @@ pub struct FrameSplitter {
 }
 
 impl FrameSplitter {
-    pub fn push(&mut self, data: &[u8]) -> Vec<String> {
+    pub fn push(&mut self, data: &[u8]) -> Option<String> {
         self.buf.extend_from_slice(data);
 
         let mut i = self.scanned;
@@ -171,22 +179,17 @@ impl FrameSplitter {
         self.scanned = i;
 
         if self.starts.len() < 2 {
-            return Vec::new();
+            return None;
         }
 
-        let mut frames = Vec::with_capacity(self.starts.len() - 1);
-        for pair in self.starts.windows(2) {
-            frames.push(
-                String::from_utf8_lossy(&self.buf[pair[0] + MARKER.len()..pair[1]]).into_owned(),
-            );
-        }
-
+        let last = self.starts[self.starts.len() - 2];
         let cut = self.starts[self.starts.len() - 1];
+        let frame = String::from_utf8_lossy(&self.buf[last + MARKER.len()..cut]).into_owned();
         self.buf.drain(..cut);
         self.scanned -= cut;
         self.starts.clear();
         self.starts.push(0);
-        frames
+        Some(frame)
     }
 }
 
@@ -194,6 +197,17 @@ pub struct StatsParser {
     port: u16,
     prev_cpu: Option<(u64, u64)>,
     prev_net: Option<(u64, u64, Instant)>,
+    last: RemoteStats,
+}
+
+#[derive(Default)]
+struct Seen {
+    sys: bool,
+    os: bool,
+    user: bool,
+    who: bool,
+    df: bool,
+    sensors: bool,
 }
 
 impl StatsParser {
@@ -202,10 +216,50 @@ impl StatsParser {
             port,
             prev_cpu: None,
             prev_net: None,
+            last: RemoteStats::default(),
         }
     }
 
     pub fn parse_frame(&mut self, frame: &str) -> RemoteStats {
+        let mut seen = Seen::default();
+        let mut stats = self.parse_sections(frame, &mut seen);
+        let last = &mut self.last;
+        if seen.sys {
+            last.sysname = stats.sysname.clone();
+        } else {
+            stats.sysname = last.sysname.clone();
+        }
+        if seen.os {
+            last.os = stats.os;
+        } else {
+            stats.os = last.os;
+        }
+        if seen.user {
+            last.user = stats.user.clone();
+        } else {
+            stats.user = last.user.clone();
+        }
+        if seen.who {
+            last.who = stats.who.clone();
+        } else {
+            stats.who = last.who.clone();
+        }
+        if seen.df {
+            last.disks = stats.disks.clone();
+            last.disk = stats.disk;
+        } else {
+            stats.disks = last.disks.clone();
+            stats.disk = last.disk;
+        }
+        if seen.sensors {
+            last.temps = stats.temps.clone();
+        } else {
+            stats.temps = last.temps.clone();
+        }
+        stats
+    }
+
+    fn parse_sections(&mut self, frame: &str, seen: &mut Seen) -> RemoteStats {
         let mut stats = RemoteStats::default();
         let mut section = "";
         let mut cpu_sample = None;
@@ -226,6 +280,15 @@ impl StatsParser {
             let line = line.trim_end();
             if let Some(name) = line.strip_prefix('@') {
                 section = name;
+                match name {
+                    "sys" => seen.sys = true,
+                    "os" | "kernel" => seen.os = true,
+                    "user" => seen.user = true,
+                    "who" => seen.who = true,
+                    "df" => seen.df = true,
+                    "sensors" => seen.sensors = true,
+                    _ => {}
+                }
                 continue;
             }
             match section {
@@ -604,5 +667,37 @@ in0:
 
         let empty = StatsParser::new(22).parse_frame(&frame("/usr/bin/sensors", ""));
         assert_eq!(empty.temps, Some(Vec::new()));
+    }
+
+    #[test]
+    fn sections_sent_once_carry_over_to_later_frames() {
+        let mut parser = StatsParser::new(22);
+        let first = parser.parse_frame(
+            "@sys\nbox\n@kernel\nLinux\n@os\nID=debian\n@user\nroot\n@who\nroot pts/0\n\
+             @df\n/dev/sda1 1000 400 600 40% /\n@stat\ncpu  1 0 1 10 0 0 0 0\n",
+        );
+        assert_eq!(first.sysname.as_deref(), Some("box"));
+
+        let later = parser.parse_frame("@stat\ncpu  2 0 2 20 0 0 0 0\n");
+        assert_eq!(later.sysname.as_deref(), Some("box"));
+        assert_eq!(later.user.as_deref(), Some("root"));
+        assert_eq!(
+            later.os.map(|logo| logo.icon),
+            first.os.map(|logo| logo.icon)
+        );
+        assert_eq!(later.who, vec!["root pts/0".to_string()]);
+        assert_eq!(later.disk, Some((400 * 1024, 1000 * 1024)));
+        assert!(later.cpu.is_some());
+    }
+
+    #[test]
+    fn the_splitter_hands_back_only_the_newest_complete_frame() {
+        let mut splitter = FrameSplitter::default();
+        assert_eq!(splitter.push(b"@@OXIDAL@@\n@a\n"), None);
+        assert_eq!(
+            splitter.push(b"@@OXIDAL@@\n@b\n@@OXIDAL@@\n@c"),
+            Some("\n@b\n".to_string())
+        );
+        assert_eq!(splitter.push(b"\n@@OXIDAL@@"), Some("\n@c\n".to_string()));
     }
 }

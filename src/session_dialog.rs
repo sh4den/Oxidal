@@ -10,7 +10,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dialog::{Dialog, DialogFooter},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     select::{SearchableVec, Select, SelectItem, SelectState},
     tab::{Tab, TabBar},
     tooltip::Tooltip,
@@ -123,7 +123,30 @@ fn scrollable_body(
         })
 }
 
-struct SelectedIcon(Option<ItemIcon>);
+const ICON_RESULTS_MAX: usize = 120;
+
+struct SelectedIcon {
+    icon: Option<ItemIcon>,
+    query: Entity<InputState>,
+}
+
+impl SelectedIcon {
+    fn new(icon: Option<ItemIcon>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search all icons"));
+        cx.subscribe(&query, |_, _, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                cx.notify();
+            }
+        })
+        .detach();
+        Self { icon, query }
+    }
+
+    fn select(&mut self, icon: Option<ItemIcon>, cx: &mut Context<Self>) {
+        self.icon = icon;
+        cx.notify();
+    }
+}
 
 struct SelectedColor(ItemColor);
 
@@ -185,68 +208,114 @@ fn cleartext_warning(message: &'static str, cx: &App) -> impl IntoElement {
         )
 }
 
-fn icon_picker(state: &Entity<SelectedIcon>, cx: &App) -> impl IntoElement {
-    let current = state.read(cx).0;
-    let border = cx.theme().border;
-    let primary = cx.theme().primary;
-    let accent = cx.theme().accent;
-    let muted = cx.theme().muted_foreground;
+impl Render for SelectedIcon {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.icon;
+        let border = cx.theme().border;
+        let primary = cx.theme().primary;
+        let accent = cx.theme().accent;
+        let muted = cx.theme().muted_foreground;
+        let query = self.query.read(cx).value().trim().to_string();
+        let searching = !query.is_empty();
 
-    let swatch = move |selected: bool| {
-        div()
-            .h(gpui_kit::px(28.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
-            .border_1()
-            .cursor_pointer()
-            .map(move |this| {
-                if selected {
-                    this.border_color(primary).bg(primary.opacity(0.12))
-                } else {
-                    this.border_color(border).hover(|this| this.bg(accent))
-                }
-            })
-    };
+        let (icons, total) = if searching {
+            let mut matches = ItemIcon::search(&query);
+            let shown: Vec<ItemIcon> = matches.by_ref().take(ICON_RESULTS_MAX).collect();
+            let total = shown.len() + matches.count();
+            (shown, total)
+        } else {
+            let mut shown: Vec<ItemIcon> = ItemIcon::suggested().collect();
+            if let Some(icon) = current
+                && !shown.contains(&icon)
+            {
+                shown.insert(0, icon);
+            }
+            let total = shown.len();
+            (shown, total)
+        };
 
-    v_flex().gap_1().child("Icon").child(
-        h_flex()
+        let swatch = move |selected: bool| {
+            div()
+                .h(gpui_kit::px(28.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .border_1()
+                .cursor_pointer()
+                .map(move |this| {
+                    if selected {
+                        this.border_color(primary).bg(primary.opacity(0.12))
+                    } else {
+                        this.border_color(border).hover(|this| this.bg(accent))
+                    }
+                })
+        };
+
+        let auto = swatch(current.is_none())
+            .id("icon-default")
+            .px_2()
+            .child(
+                div()
+                    .text_xs()
+                    .when(current.is_some(), |this| this.text_color(muted))
+                    .child("Auto"),
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.select(None, cx)));
+
+        let grid = h_flex()
             .flex_wrap()
             .gap_1()
-            .child({
-                let state = state.clone();
-                swatch(current.is_none())
-                    .id("icon-default")
-                    .px_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .when(current.is_some(), |this| this.text_color(muted))
-                            .child("Auto"),
-                    )
-                    .on_click(move |_, _, cx| {
-                        state.update(cx, |s, cx| {
-                            s.0 = None;
-                            cx.notify();
-                        });
-                    })
-            })
-            .children(ItemIcon::ALL.iter().map(|item| {
-                let item = *item;
-                let state = state.clone();
-                swatch(current == Some(item))
-                    .id(SharedString::from(format!("icon-{item:?}")))
+            .when(!searching, |this| this.child(auto))
+            .children(icons.into_iter().map(|icon| {
+                let name = icon.name();
+                swatch(current == Some(icon))
+                    .id(SharedString::new_static(name))
                     .w(gpui_kit::px(28.))
-                    .child(Icon::empty().path(item.path()).small())
-                    .on_click(move |_, _, cx| {
-                        state.update(cx, |s, cx| {
-                            s.0 = Some(item);
-                            cx.notify();
-                        });
-                    })
-            })),
-    )
+                    .child(Icon::empty().path(icon.path()).small())
+                    .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
+                    .on_click(cx.listener(move |this, _, _, cx| this.select(Some(icon), cx)))
+            }));
+
+        let note = if searching && total == 0 {
+            Some(format!("No icon matches \"{query}\""))
+        } else if total > ICON_RESULTS_MAX {
+            Some(format!(
+                "Showing {ICON_RESULTS_MAX} of {total} icons. Keep typing to narrow it down."
+            ))
+        } else {
+            None
+        };
+
+        v_flex()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child("Icon")
+                    .when_some(current, |this, icon| {
+                        this.child(div().text_xs().text_color(muted).child(icon.name()))
+                    }),
+            )
+            .child(
+                Input::new(&self.query)
+                    .small()
+                    .prefix(Icon::new(IconName::Search).xsmall().text_color(muted))
+                    .cleanable(true),
+            )
+            .child(
+                div()
+                    .id("icon-results")
+                    .max_h(gpui_kit::px(196.))
+                    .overflow_y_scroll()
+                    .child(grid),
+            )
+            .when_some(note, |this, note| {
+                this.child(div().text_xs().text_color(muted).child(note))
+            })
+    }
 }
 
 fn color_picker(state: &Entity<SelectedColor>, cx: &App) -> impl IntoElement {
@@ -429,7 +498,7 @@ pub fn open_session_window(
             ..Default::default()
         },
         |window, cx| {
-            crate::settings::apply_appearance(window, cx);
+            crate::settings::apply_window_appearance(window, cx);
             let view = cx.new(|cx| SessionWindow::new(existing, folders, weak_app, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         },
@@ -475,7 +544,7 @@ fn text_field(
     window: &mut Window,
     cx: &mut Context<SessionWindow>,
 ) -> Entity<InputState> {
-    cx.new(|cx| {
+    let input = cx.new(|cx| {
         let mut state = InputState::new(window, cx).default_value(value);
         if !placeholder.is_empty() {
             state = state.placeholder(placeholder);
@@ -484,7 +553,18 @@ fn text_field(
             state = state.masked(true);
         }
         state
-    })
+    });
+    cx.subscribe_in(
+        &input,
+        window,
+        |this: &mut SessionWindow, _, event: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { .. } = event {
+                this.save(window, cx);
+            }
+        },
+    )
+    .detach();
+    input
 }
 
 impl SessionWindow {
@@ -497,16 +577,21 @@ impl SessionWindow {
     ) -> Self {
         let app_observer = weak_app.upgrade().map(|app| {
             cx.observe(&app, |this, app, cx| {
-                this.folders = app.read(cx).folders().to_vec();
-                cx.notify();
+                let folders = app.read(cx).folders();
+                if this.folders.as_slice() != folders {
+                    this.folders = folders.to_vec();
+                    cx.notify();
+                }
             })
         });
         let session = existing.as_ref();
         let editing_id = session.map(|s| s.id);
         let kind = session.map(|s| s.kind).unwrap_or(SessionKind::Ssh);
 
+        window.set_window_title(&window_title(editing_id.is_some(), kind));
+
         let existing_key = session.and_then(|s| s.private_key_path.clone());
-        let key_choices = key_options(existing_key.as_deref());
+        let key_choices = key_options_without_scan(existing_key.as_deref());
         let key_index = existing_key
             .as_deref()
             .and_then(|path| key_choices.iter().position(|o| o.path.as_ref() == path))
@@ -526,12 +611,27 @@ impl SessionWindow {
             .filter(|s| matches!(s.kind, SessionKind::Serial))
             .map(|s| s.host.clone())
             .filter(|h| !h.is_empty());
-        let port_choices = port_options(existing_port.as_deref());
+        let port_choices = extra_port(Vec::new(), existing_port.as_deref());
         let serial_index = existing_port
             .as_deref()
             .and_then(|p| port_choices.iter().position(|o| o.name.as_ref() == p))
             .map(|i| IndexPath::default().row(i));
         let serial_port = cx.new(|cx| SelectState::new(port_choices, serial_index, window, cx));
+
+        cx.spawn_in(window, async move |this, cx| {
+            let (keys, ports) = cx
+                .background_spawn(async move {
+                    (
+                        key_options(existing_key.as_deref()),
+                        port_options(existing_port.as_deref()),
+                    )
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.apply_scan(keys, ports, window, cx);
+            });
+        })
+        .detach();
 
         Self {
             _app_observer: app_observer,
@@ -637,7 +737,7 @@ impl SessionWindow {
             ),
             private_key,
             serial_port,
-            selected_icon: cx.new(|_cx| SelectedIcon(session.and_then(|s| s.icon))),
+            selected_icon: cx.new(|cx| SelectedIcon::new(session.and_then(|s| s.icon), window, cx)),
             selected_color: cx
                 .new(|_cx| SelectedColor(session.map(|s| s.color).unwrap_or(ItemColor::Default))),
             focus_handle: cx.focus_handle(),
@@ -646,12 +746,44 @@ impl SessionWindow {
         }
     }
 
+    fn apply_scan(
+        &mut self,
+        keys: Vec<KeyOption>,
+        ports: Vec<PortOption>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected_key = self.private_key.read(cx).selected_value().cloned();
+        let key_index = selected_key
+            .and_then(|path| keys.iter().position(|o| o.path == path))
+            .unwrap_or(0);
+        let key_searchable = keys.len() > 8;
+        self.private_key = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(keys),
+                Some(IndexPath::default().row(key_index)),
+                window,
+                cx,
+            )
+            .searchable(key_searchable)
+        });
+        self.serial_port.update(cx, |state, cx| {
+            let selected = state.selected_value().cloned();
+            state.set_items(ports, window, cx);
+            if let Some(value) = selected {
+                state.set_selected_value(&value, window, cx);
+            }
+        });
+        cx.notify();
+    }
+
     fn set_kind(&mut self, kind: SessionKind, window: &mut Window, cx: &mut Context<Self>) {
         if self.kind == kind {
             return;
         }
         let prev_port = self.default_port_for(self.kind);
         self.kind = kind;
+        window.set_window_title(&window_title(self.editing_id.is_some(), kind));
         if self.port.read(cx).value() == prev_port.to_string() {
             let port = self.default_port_for(kind);
             self.port.update(cx, |state, cx| {
@@ -853,7 +985,7 @@ impl SessionWindow {
             session.proxy_password = proxy.password;
         }
         session.folder_id = self.folder_id;
-        session.icon = self.selected_icon.read(cx).0;
+        session.icon = self.selected_icon.read(cx).icon;
         session.color = self.selected_color.read(cx).0;
         session.monitoring = self.monitoring;
         session.ftp_security = self.ftp_security;
@@ -1309,7 +1441,7 @@ impl SessionWindow {
                             .child("Shown in the sessions list. Leave empty to use host (user)"),
                     ),
             )
-            .child(icon_picker(&self.selected_icon, cx))
+            .child(self.selected_icon.clone())
             .child(color_picker(&self.selected_color, cx))
             .child(
                 v_flex().gap_1().child("Folder").child(
@@ -1346,16 +1478,6 @@ impl SessionWindow {
 
 impl Render for SessionWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        window.set_window_title(&format!(
-            "{} {} Session",
-            if self.editing_id.is_some() {
-                "Edit"
-            } else {
-                "New"
-            },
-            self.kind.label()
-        ));
-
         let kind = self.kind;
         let tabs = SettingsTab::available(kind);
         let active_index = tabs.iter().position(|tab| *tab == self.tab).unwrap_or(0);
@@ -1484,6 +1606,22 @@ impl Render for SessionWindow {
     }
 }
 
+fn window_title(editing: bool, kind: SessionKind) -> String {
+    format!(
+        "{} {} Session",
+        if editing { "Edit" } else { "New" },
+        kind.label()
+    )
+}
+
+fn key_options_without_scan(extra: Option<&str>) -> Vec<KeyOption> {
+    let mut options = vec![KeyOption::none()];
+    if let Some(extra) = extra.filter(|p| !p.trim().is_empty()) {
+        options.push(KeyOption::from_path(Path::new(extra)));
+    }
+    options
+}
+
 fn key_options(extra: Option<&str>) -> Vec<KeyOption> {
     let mut options = vec![KeyOption::none()];
     if let Some(ssh_dir) = dirs::home_dir().map(|home| home.join(".ssh"))
@@ -1544,6 +1682,10 @@ fn port_options(extra: Option<&str>) -> Vec<PortOption> {
         })
         .collect();
     options.sort_by(|a, b| a.name.cmp(&b.name));
+    extra_port(options, extra)
+}
+
+fn extra_port(mut options: Vec<PortOption>, extra: Option<&str>) -> Vec<PortOption> {
     if let Some(extra) = extra.filter(|p| !p.trim().is_empty())
         && !options.iter().any(|o| o.name.as_ref() == extra)
     {
@@ -1673,7 +1815,8 @@ pub fn open_new_folder_dialog(
     cx: &mut App,
 ) {
     let name = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
-    let selected_icon = cx.new(|_cx| SelectedIcon(None));
+    crate::forms::confirm_on_enter(&name, window, cx);
+    let selected_icon = cx.new(|cx| SelectedIcon::new(None, window, cx));
     let selected_color = cx.new(|_cx| SelectedColor(ItemColor::Default));
     let body_scroll = ScrollHandle::new();
 
@@ -1688,14 +1831,14 @@ pub fn open_new_folder_dialog(
             .gap_3()
             .w_full()
             .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
-            .child(icon_picker(&selected_icon, cx))
+            .child(selected_icon.clone())
             .child(color_picker(&selected_color, cx));
 
         let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
             let value = name.read(cx).value().trim().to_string();
             if !value.is_empty() {
                 let mut folder = SessionFolder::new(value);
-                folder.icon = selected_icon.read(cx).0;
+                folder.icon = selected_icon.read(cx).icon;
                 folder.color = selected_color.read(cx).0;
                 let _ = weak_app.update(cx, |app, cx| {
                     app.add_folder(folder, cx);
@@ -1749,7 +1892,8 @@ pub fn open_edit_folder_dialog(
 ) {
     let folder_id = folder.id;
     let name = cx.new(|cx| InputState::new(window, cx).default_value(folder.name.clone()));
-    let selected_icon = cx.new(|_cx| SelectedIcon(folder.icon));
+    crate::forms::confirm_on_enter(&name, window, cx);
+    let selected_icon = cx.new(|cx| SelectedIcon::new(folder.icon, window, cx));
     let selected_color = cx.new(|_cx| SelectedColor(folder.color));
     let body_scroll = ScrollHandle::new();
 
@@ -1764,7 +1908,7 @@ pub fn open_edit_folder_dialog(
             .gap_3()
             .w_full()
             .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
-            .child(icon_picker(&selected_icon, cx))
+            .child(selected_icon.clone())
             .child(color_picker(&selected_color, cx));
 
         let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
@@ -1772,7 +1916,7 @@ pub fn open_edit_folder_dialog(
             if !value.is_empty() {
                 let mut folder = SessionFolder::new(value);
                 folder.id = folder_id;
-                folder.icon = selected_icon.read(cx).0;
+                folder.icon = selected_icon.read(cx).icon;
                 folder.color = selected_color.read(cx).0;
                 let _ = weak_app.update(cx, |app, cx| {
                     app.update_folder(folder, cx);

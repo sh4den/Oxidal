@@ -1,3 +1,4 @@
+use gpui_kit::assets::IconName as Lucide;
 use std::fs;
 use std::path::PathBuf;
 
@@ -71,162 +72,137 @@ impl FtpSecurity {
     pub const IMPLICIT_PORT: u16 = 990;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ItemIcon {
-    Terminal,
-    Code,
-    Server,
-    Cluster,
-    Container,
-    Database,
-    Drive,
-    Cpu,
-    Memory,
-    Usb,
-    Network,
-    Router,
-    Wifi,
-    Signal,
-    Globe,
-    Cloud,
-    Firewall,
-    Shield,
-    Lock,
-    Key,
-    Layers,
-    Package,
-    GitBranch,
-    Monitor,
-    Gauge,
-    Activity,
-    Zap,
-    Plug,
-    Clock,
-    Flask,
-    Wrench,
-    Bot,
-    Building,
-    User,
-    Folder,
-    FolderOpen,
-    Star,
-    Heart,
-    Bell,
-    Inbox,
-    Map,
-    Chart,
-    Github,
-    Book,
-    Dashboard,
-    Frame,
-    Palette,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ItemIcon(Lucide);
+
+const SUGGESTED_ICONS: &[&str] = &[
+    "square-terminal",
+    "code",
+    "server",
+    "layout-grid",
+    "container",
+    "database",
+    "hard-drive",
+    "cpu",
+    "memory-stick",
+    "usb",
+    "network",
+    "router",
+    "wifi",
+    "signal",
+    "globe",
+    "cloud",
+    "brick-wall",
+    "shield",
+    "lock",
+    "key",
+    "layers",
+    "package",
+    "git-branch",
+    "monitor",
+    "gauge",
+    "activity",
+    "zap",
+    "plug",
+    "clock",
+    "flask-conical",
+    "wrench",
+    "bot",
+    "building-2",
+    "user",
+    "folder",
+    "folder-open",
+    "star",
+    "heart",
+    "bell",
+    "inbox",
+    "map",
+    "chart-pie",
+    "github",
+    "book-open",
+    "layout-dashboard",
+    "frame",
+    "palette",
+];
+
+struct IconCatalog {
+    icons: Vec<(ItemIcon, String)>,
+    by_name: std::collections::HashMap<String, ItemIcon>,
 }
 
+static CATALOG: std::sync::LazyLock<IconCatalog> = std::sync::LazyLock::new(|| {
+    let icons: Vec<(ItemIcon, String)> = Lucide::ALL
+        .iter()
+        .map(|icon| {
+            let path = icon.path();
+            let name = path
+                .trim_start_matches("icons/")
+                .trim_end_matches(".svg")
+                .to_string();
+            (ItemIcon(*icon), name)
+        })
+        .collect();
+    let by_name = icons
+        .iter()
+        .map(|(icon, name)| (name.clone(), *icon))
+        .collect();
+    IconCatalog { icons, by_name }
+});
+
 impl ItemIcon {
-    pub const ALL: [ItemIcon; 47] = [
-        ItemIcon::Terminal,
-        ItemIcon::Code,
-        ItemIcon::Server,
-        ItemIcon::Cluster,
-        ItemIcon::Container,
-        ItemIcon::Database,
-        ItemIcon::Drive,
-        ItemIcon::Cpu,
-        ItemIcon::Memory,
-        ItemIcon::Usb,
-        ItemIcon::Network,
-        ItemIcon::Router,
-        ItemIcon::Wifi,
-        ItemIcon::Signal,
-        ItemIcon::Globe,
-        ItemIcon::Cloud,
-        ItemIcon::Firewall,
-        ItemIcon::Shield,
-        ItemIcon::Lock,
-        ItemIcon::Key,
-        ItemIcon::Layers,
-        ItemIcon::Package,
-        ItemIcon::GitBranch,
-        ItemIcon::Monitor,
-        ItemIcon::Gauge,
-        ItemIcon::Activity,
-        ItemIcon::Zap,
-        ItemIcon::Plug,
-        ItemIcon::Clock,
-        ItemIcon::Flask,
-        ItemIcon::Wrench,
-        ItemIcon::Bot,
-        ItemIcon::Building,
-        ItemIcon::User,
-        ItemIcon::Folder,
-        ItemIcon::FolderOpen,
-        ItemIcon::Star,
-        ItemIcon::Heart,
-        ItemIcon::Bell,
-        ItemIcon::Inbox,
-        ItemIcon::Map,
-        ItemIcon::Chart,
-        ItemIcon::Github,
-        ItemIcon::Book,
-        ItemIcon::Dashboard,
-        ItemIcon::Frame,
-        ItemIcon::Palette,
-    ];
+    pub const UNKNOWN: ItemIcon = ItemIcon(Lucide::CircleQuestionMark);
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        CATALOG.by_name.get(name).copied()
+    }
+
+    pub fn name(self) -> &'static str {
+        CATALOG
+            .icons
+            .iter()
+            .find(|(icon, _)| *icon == self)
+            .map_or("", |(_, name)| name.as_str())
+    }
+
+    /// The short list shown before the user searches.
+    pub fn suggested() -> impl Iterator<Item = ItemIcon> {
+        SUGGESTED_ICONS
+            .iter()
+            .filter_map(|name| CATALOG.by_name.get(*name).copied())
+    }
+
+    /// Every icon whose name contains all the words of `query`, in catalog order.
+    pub fn search(query: &str) -> impl Iterator<Item = ItemIcon> + '_ {
+        let words: Vec<String> = query
+            .split(|c: char| c.is_whitespace() || c == '-')
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        CATALOG
+            .icons
+            .iter()
+            .filter(move |(_, name)| words.iter().all(|word| name.contains(word.as_str())))
+            .map(|(icon, _)| *icon)
+    }
 }
 
 impl IconNamed for ItemIcon {
     fn path(self) -> SharedString {
-        let bundled = |name: &str| SharedString::from(format!("icons/oxidal/{name}.svg"));
-        match self {
-            ItemIcon::Terminal => IconName::SquareTerminal.path(),
-            ItemIcon::Code => bundled("code"),
-            ItemIcon::Server => bundled("server"),
-            ItemIcon::Cluster => bundled("cluster"),
-            ItemIcon::Container => bundled("container"),
-            ItemIcon::Database => bundled("database"),
-            ItemIcon::Drive => IconName::HardDrive.path(),
-            ItemIcon::Cpu => IconName::Cpu.path(),
-            ItemIcon::Memory => IconName::MemoryStick.path(),
-            ItemIcon::Usb => bundled("usb"),
-            ItemIcon::Network => IconName::Network.path(),
-            ItemIcon::Router => bundled("router"),
-            ItemIcon::Wifi => bundled("wifi"),
-            ItemIcon::Signal => bundled("signal"),
-            ItemIcon::Globe => IconName::Globe.path(),
-            ItemIcon::Cloud => bundled("cloud"),
-            ItemIcon::Firewall => bundled("firewall"),
-            ItemIcon::Shield => bundled("shield"),
-            ItemIcon::Lock => bundled("lock"),
-            ItemIcon::Key => bundled("key"),
-            ItemIcon::Layers => bundled("layers"),
-            ItemIcon::Package => bundled("package"),
-            ItemIcon::GitBranch => bundled("git-branch"),
-            ItemIcon::Monitor => bundled("monitor"),
-            ItemIcon::Gauge => bundled("gauge"),
-            ItemIcon::Activity => bundled("activity"),
-            ItemIcon::Zap => bundled("zap"),
-            ItemIcon::Plug => bundled("plug"),
-            ItemIcon::Clock => bundled("clock"),
-            ItemIcon::Flask => bundled("flask"),
-            ItemIcon::Wrench => bundled("wrench"),
-            ItemIcon::Bot => IconName::Bot.path(),
-            ItemIcon::Building => IconName::Building2.path(),
-            ItemIcon::User => IconName::User.path(),
-            ItemIcon::Folder => IconName::Folder.path(),
-            ItemIcon::FolderOpen => IconName::FolderOpen.path(),
-            ItemIcon::Star => IconName::Star.path(),
-            ItemIcon::Heart => IconName::Heart.path(),
-            ItemIcon::Bell => IconName::Bell.path(),
-            ItemIcon::Inbox => IconName::Inbox.path(),
-            ItemIcon::Map => IconName::Map.path(),
-            ItemIcon::Chart => IconName::ChartPie.path(),
-            ItemIcon::Github => IconName::Github.path(),
-            ItemIcon::Book => IconName::BookOpen.path(),
-            ItemIcon::Dashboard => IconName::LayoutDashboard.path(),
-            ItemIcon::Frame => IconName::Frame.path(),
-            ItemIcon::Palette => IconName::Palette.path(),
-        }
+        self.0.path()
     }
+}
+
+impl Serialize for ItemIcon {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+fn lenient_icon<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ItemIcon>, D::Error> {
+    let name: Option<String> = Option::deserialize(deserializer)?;
+    Ok(name.map(|name| ItemIcon::from_name(&name).unwrap_or(ItemIcon::UNKNOWN)))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,21 +288,23 @@ pub struct Session {
     pub ftp_security: FtpSecurity,
     #[serde(default)]
     pub ftp_active_mode: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_icon")]
     pub icon: Option<ItemIcon>,
     #[serde(default)]
     pub color: ItemColor,
+    #[serde(skip)]
+    secrets_loaded: bool,
 }
 
 fn default_monitoring() -> bool {
     true
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionFolder {
     pub id: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_icon")]
     pub icon: Option<ItemIcon>,
     #[serde(default)]
     pub color: ItemColor,
@@ -382,7 +360,28 @@ impl Session {
             ftp_active_mode: false,
             icon: None,
             color: ItemColor::default(),
+            secrets_loaded: true,
         }
+    }
+
+    pub fn secrets_loaded(&self) -> bool {
+        self.secrets_loaded
+    }
+
+    pub fn ensure_secrets(&mut self) {
+        if self.secrets_loaded {
+            return;
+        }
+        if let Some(password) = crate::credentials::load_password(self.id) {
+            self.password = password;
+        }
+        if let Some(passphrase) = crate::credentials::load_key_passphrase(self.id) {
+            self.key_passphrase = passphrase;
+        }
+        if let Some(password) = crate::credentials::load_proxy_password(self.id) {
+            self.proxy_password = password;
+        }
+        self.secrets_loaded = true;
     }
 
     pub fn display_icon(&self) -> SharedString {
@@ -499,15 +498,6 @@ pub fn load_sessions() -> Vec<Session> {
     };
     for session in &mut sessions {
         session.name = session.name.trim().to_string();
-        if let Some(password) = crate::credentials::load_password(session.id) {
-            session.password = password;
-        }
-        if let Some(passphrase) = crate::credentials::load_key_passphrase(session.id) {
-            session.key_passphrase = passphrase;
-        }
-        if let Some(password) = crate::credentials::load_proxy_password(session.id) {
-            session.proxy_password = password;
-        }
     }
     sessions
 }
@@ -549,6 +539,44 @@ fn default_sessions() -> Vec<Session> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icons_round_trip_by_lucide_name() {
+        let folder: SessionFolder = serde_json::from_str(
+            r#"{"id":"6f1d0c3e-0000-4000-8000-0000000000f1","name":"A","icon":"brick-wall"}"#,
+        )
+        .expect("folder");
+        assert_eq!(folder.icon.map(ItemIcon::name), Some("brick-wall"));
+
+        let json = serde_json::to_string(&folder).expect("json");
+        let again: SessionFolder = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(again.icon, folder.icon);
+    }
+
+    #[test]
+    fn an_unknown_icon_shows_a_question_mark() {
+        for name in ["Firewall", "no-such-icon"] {
+            let folder: SessionFolder = serde_json::from_str(&format!(
+                r#"{{"id":"6f1d0c3e-0000-4000-8000-0000000000f1","name":"A","icon":"{name}"}}"#
+            ))
+            .expect("folder still loads");
+            assert_eq!(folder.icon, Some(ItemIcon::UNKNOWN), "{name}");
+        }
+    }
+
+    #[test]
+    fn searching_icons_matches_every_word() {
+        let names: Vec<&str> = ItemIcon::search("shield lock")
+            .map(ItemIcon::name)
+            .collect();
+        assert!(names.contains(&"shield-lock"), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .all(|name| name.contains("shield") && name.contains("lock"))
+        );
+        assert_eq!(ItemIcon::suggested().count(), SUGGESTED_ICONS.len());
+    }
 
     fn session(kind: SessionKind, host: &str, user: &str, port: u16) -> Session {
         let mut session = Session::new("", kind);

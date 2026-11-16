@@ -119,9 +119,8 @@ async fn run(
             msg = wait_monitor(&mut monitor) => {
                 match msg {
                     Some(ChannelMsg::Data { ref data }) => {
-                        let batch = frames.push(data);
-                        if let Some(frame) = batch.last() {
-                            let _ = stats_tx.send(parser.parse_frame(frame)).await;
+                        if let Some(frame) = frames.push(data) {
+                            let _ = stats_tx.send(parser.parse_frame(&frame)).await;
                         }
                     }
                     Some(ChannelMsg::ExitStatus { .. })

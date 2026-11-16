@@ -228,8 +228,11 @@ pub fn all_slots() -> impl Iterator<Item = &'static ColorSlot> {
     UI_SLOTS.iter().chain(TERMINAL_SLOTS)
 }
 
+static BASE_TERMINAL: std::sync::LazyLock<TerminalPalette> =
+    std::sync::LazyLock::new(TerminalPalette::default);
+
 fn base_terminal_color(key: &str) -> Option<Hsla> {
-    let base = TerminalPalette::default();
+    let base = &*BASE_TERMINAL;
     match key {
         "terminal.background" => Some(base.background),
         "terminal.foreground" => Some(base.foreground),
