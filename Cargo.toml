@@ -1,11 +1,12 @@
 [package]
 name = "Oxidal"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2024"
 
 [dependencies]
 gpui-kit = { version = "0.9", features = ["tree-sitter-languages"] }
 anyhow = "1.0"
+futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -15,6 +16,7 @@ secrecy = "0.10"
 zeroize = "1.9.1"
 async-channel = "2"
 vte = "0.15"
+unicode-normalization = "0.1"
 portable-pty = "0.9"
 russh = "0.65"
 russh-sftp = "3.0.1"
@@ -23,7 +25,7 @@ chrono = "0.4.45"
 open = "5.4.5"
 sha2 = "0.11"
 tokio = { version = "^1", features = [ "rt", "net", "io-util", "time", "fs", "sync", "macros" ] }
-ureq = { version = "3.5", features = [ "json" ] }
+ureq = { version = "3.5", default-features = false, features = [ "rustls", "json" ] }
 tokio-socks = "0.5.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
@@ -46,6 +48,3 @@ codegen-units = 1
 debug = 0
 strip = "symbols"
 panic = "abort"
-incremental = false
-overflow-checks = false
-debug-assertions = false

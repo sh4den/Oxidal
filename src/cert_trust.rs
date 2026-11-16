@@ -221,6 +221,7 @@ pub struct PinningVerifier {
     host: String,
     port: u16,
     store: PathBuf,
+    pins: std::sync::OnceLock<Vec<String>>,
     failure: Mutex<Option<CertificateFailure>>,
 }
 
@@ -253,7 +254,10 @@ impl ServerCertVerifier for PinningVerifier {
             Err(error) => error,
         };
         let fingerprint = fingerprint(end_entity);
-        if stored_for(&self.store, &self.host, self.port).contains(&fingerprint) {
+        let pins = self
+            .pins
+            .get_or_init(|| stored_for(&self.store, &self.host, self.port));
+        if pins.contains(&fingerprint) {
             return Ok(ServerCertVerified::assertion());
         }
         if let Ok(mut failure) = self.failure.lock() {
@@ -299,6 +303,7 @@ pub fn client_config(
         host: host.to_string(),
         port,
         store: store_path(),
+        pins: std::sync::OnceLock::new(),
         failure: Mutex::new(None),
     });
     let config = ClientConfig::builder_with_provider(provider)
