@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use futures::TryStreamExt as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use russh::ChannelMsg;
 use russh::client::Handle;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileType, OpenFlags};
@@ -18,17 +17,16 @@ pub(super) const CHUNK_SIZE: usize = 64 * 1024;
 pub(super) const TRANSFER_BUFFER: usize = 1024 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 // Bounds how long the transport thread lingers waiting for the disconnect to flush.
-pub(super) const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-pub(super) const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
-pub(super) const IDLE_PROBE_AFTER: Duration = Duration::from_secs(20);
-pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
+const IDLE_PROBE_AFTER: Duration = Duration::from_secs(20);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const RECONNECT_ATTEMPTS: u32 = 8;
 const RECONNECT_FIRST_DELAY: Duration = Duration::from_secs(1);
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
-const SUBSYSTEM_TIMEOUT: Duration = Duration::from_secs(15);
 const WRITE_PACKET_LEN: u32 = 256 * 1024;
 const MAX_IN_FLIGHT: usize = 64;
-pub(super) const PARALLEL_FILES: usize = 8;
+const PARALLEL_FILES: usize = 8;
 
 pub(super) struct Progress {
     done: Cell<u64>,
@@ -103,64 +101,30 @@ fn sftp_config() -> russh_sftp::client::Config {
     }
 }
 
-pub(super) struct Target {
-    pub(super) host: String,
-    pub(super) port: u16,
+struct Target {
+    host: String,
+    port: u16,
     credentials: SshCredentials,
     proxy: Option<ProxyConfig>,
 }
 
 impl Target {
-    pub(super) async fn ssh(&self) -> anyhow::Result<Handle<ssh_client::Handler>> {
-        ssh_client::connect(
+    async fn open(&self) -> anyhow::Result<Connection> {
+        let session = ssh_client::connect(
             self.host.clone(),
             self.port,
             self.credentials.clone(),
             self.proxy.clone(),
         )
-        .await
-    }
+        .await?;
 
-    async fn open(&self) -> anyhow::Result<Connection> {
-        let session = self.ssh().await?;
-        match open_sftp(&session).await? {
-            Some(sftp) => Ok(Connection {
-                session,
-                sftp: Rc::new(sftp),
-            }),
-            None => anyhow::bail!("the server stopped offering SFTP"),
-        }
-    }
-}
-
-async fn open_sftp(session: &Handle<ssh_client::Handler>) -> anyhow::Result<Option<SftpSession>> {
-    let mut channel = session.channel_open_session().await?;
-    channel.request_subsystem(true, "sftp").await?;
-    let accepted = tokio::time::timeout(SUBSYSTEM_TIMEOUT, async {
-        loop {
-            match channel.wait().await {
-                Some(ChannelMsg::Success) => return true,
-                Some(
-                    ChannelMsg::Failure
-                    | ChannelMsg::Eof
-                    | ChannelMsg::Close
-                    | ChannelMsg::ExitStatus { .. },
-                )
-                | None => return false,
-                Some(_) => {}
-            }
-        }
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("timed out waiting for the server to start SFTP"))?;
-    if !accepted {
-        let _ = channel.close().await;
-        return Ok(None);
-    }
-    match SftpSession::new_with_config(channel.into_stream(), sftp_config()).await {
-        Ok(sftp) => Ok(Some(sftp)),
-        Err(_) if !session.is_closed() => Ok(None),
-        Err(err) => Err(err.into()),
+        let channel = session.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+        let sftp = SftpSession::new_with_config(channel.into_stream(), sftp_config()).await?;
+        Ok(Connection {
+            session,
+            sftp: Rc::new(sftp),
+        })
     }
 }
 
@@ -226,10 +190,10 @@ async fn reconnect(
     ))
 }
 
-pub(super) struct Shared {
-    pub(super) current_dir: RefCell<String>,
-    pub(super) transferring: Cell<bool>,
-    pub(super) last_used: Cell<Instant>,
+struct Shared {
+    current_dir: RefCell<String>,
+    transferring: Cell<bool>,
+    last_used: Cell<Instant>,
 }
 
 type Job = (Rc<SftpSession>, SftpCommand);
@@ -240,14 +204,7 @@ async fn run(
     out_tx: async_channel::Sender<SftpEvent>,
     cmd_rx: async_channel::Receiver<SftpCommand>,
 ) -> anyhow::Result<()> {
-    let session = target.ssh().await?;
-    let Some(sftp) = open_sftp(&session).await? else {
-        return super::scp::run(target, session, initial_path, out_tx, cmd_rx).await;
-    };
-    let connection = Connection {
-        session,
-        sftp: Rc::new(sftp),
-    };
+    let connection = target.open().await?;
 
     let current_dir = connection
         .sftp
