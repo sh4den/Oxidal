@@ -143,3 +143,33 @@ fn moves_refuse_to_replace_an_existing_target() {
     assert!(script.ends_with(r"mv -- '/a/it'\''s' '/b/x'"));
     assert!(script.contains(&format!("exit {EXISTS_STATUS}")));
 }
+
+#[test]
+fn shell_prefixes_are_stripped_from_errors() {
+    for (raw, expected) in [
+        (
+            "sh: can't create /home/u/a.txt: File exists",
+            "can't create /home/u/a.txt: File exists",
+        ),
+        (
+            "sh: 1: cannot create /home/u/a.txt: File exists",
+            "cannot create /home/u/a.txt: File exists",
+        ),
+        (
+            "sh: line 1: /home/u/a.txt: cannot overwrite existing file",
+            "/home/u/a.txt: cannot overwrite existing file",
+        ),
+        (
+            "sh:1: file exists: /home/u/a.txt",
+            "file exists: /home/u/a.txt",
+        ),
+        (
+            "rmdir: '/home/u/docs': Directory not empty",
+            "rmdir: '/home/u/docs': Directory not empty",
+        ),
+        ("sh: 12abc: odd", "12abc: odd"),
+        ("sh:", "sh:"),
+    ] {
+        assert_eq!(strip_shell_prefix(raw), expected, "{raw}");
+    }
+}
