@@ -1502,7 +1502,7 @@ fn month_number(token: &str) -> Option<u32> {
         .map(|ix| ix as u32 + 1)
 }
 
-fn parse_list_line(line: &str, now: chrono::DateTime<chrono::Utc>) -> Option<SftpEntry> {
+pub(super) fn parse_list_line(line: &str, now: chrono::DateTime<chrono::Utc>) -> Option<SftpEntry> {
     parse_unix_line(line, now).or_else(|| parse_dos_line(line))
 }
 
