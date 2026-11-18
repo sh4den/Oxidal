@@ -7,7 +7,10 @@ fn joining_and_walking_up_are_inverse() {
 
     assert!(child.starts_with(&dir));
     assert!(child.ends_with("oxidal-child"));
-    assert_eq!(parent_local(&child), dir.trim_end_matches(['/', '\\']).to_string());
+    assert_eq!(
+        parent_local(&child),
+        dir.trim_end_matches(['/', '\\']).to_string()
+    );
 }
 
 #[test]
