@@ -1291,13 +1291,13 @@ impl SftpPanel {
         });
     }
 
-    fn upload_prompt(&self, cx: &mut Context<Self>) {
+    fn upload_prompt(&self, directories: bool, cx: &mut Context<Self>) {
         if !matches!(self.client, FileClient::Remote(_)) {
             return;
         }
         let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: true,
+            files: !directories,
+            directories,
             multiple: true,
             prompt: Some(SharedString::from("Upload")),
         });
@@ -1464,12 +1464,20 @@ impl SftpPanel {
             )
             .when(is_remote, |this| {
                 this.child(
+                    Button::new("sftp-upload-files")
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(Lucide::FileUp))
+                        .tooltip("Upload files")
+                        .on_click(cx.listener(|panel, _, _, cx| panel.upload_prompt(false, cx))),
+                )
+                .child(
                     Button::new("sftp-upload")
                         .ghost()
                         .xsmall()
-                        .icon(IconName::ArrowUp)
-                        .label("Upload")
-                        .on_click(cx.listener(|panel, _, _, cx| panel.upload_prompt(cx))),
+                        .icon(Icon::new(Lucide::FolderUp))
+                        .tooltip("Upload folders")
+                        .on_click(cx.listener(|panel, _, _, cx| panel.upload_prompt(true, cx))),
                 )
             })
             .child(div().flex_1())
@@ -1806,10 +1814,13 @@ fn folder_menu(
             }),
         ));
     if is_remote {
-        menu = menu.item(
-            PopupMenuItem::new("Upload...")
-                .on_click(window.listener_for(view, |panel, _, _, cx| panel.upload_prompt(cx))),
-        );
+        menu = menu
+            .item(PopupMenuItem::new("Upload Files...").on_click(
+                window.listener_for(view, |panel, _, _, cx| panel.upload_prompt(false, cx)),
+            ))
+            .item(PopupMenuItem::new("Upload Folders...").on_click(
+                window.listener_for(view, |panel, _, _, cx| panel.upload_prompt(true, cx)),
+            ));
     }
     menu.separator().item(
         PopupMenuItem::new("Refresh")
