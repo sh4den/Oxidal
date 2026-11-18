@@ -5,9 +5,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
-    dialog::DialogFooter,
     h_flex, v_flex,
 };
 use gpui_kit::{App, Hsla, IntoElement, ParentElement as _, Styled as _, Window, div, px};
@@ -151,173 +150,173 @@ pub async fn verify(host: &str, port: u16, key: &PublicKey) -> Result<(), String
         .map_err(|e| format!("Could not write {}: {e}", path.display()))
 }
 
-pub fn open_prompt(request: HostKeyRequest, window: &mut Window, cx: &mut App) {
+pub fn open_prompt(request: HostKeyRequest, _window: &mut Window, cx: &mut App) {
     if request.stored.is_empty() {
-        open_unknown_prompt(request, window, cx)
+        open_unknown_prompt(request, cx)
     } else {
-        open_mismatch_prompt(request, window, cx)
+        open_mismatch_prompt(request, cx)
     }
 }
 
-fn open_unknown_prompt(request: HostKeyRequest, window: &mut Window, cx: &mut App) {
+fn open_unknown_prompt(request: HostKeyRequest, cx: &mut App) {
     let request = Rc::new(request);
 
-    window.open_dialog(cx, move |dialog, _window, cx| {
-        let request = request.clone();
-        let muted = cx.theme().muted_foreground;
+    crate::dialog_window::open(
+        "Unknown host key",
+        px(520.),
+        cx,
+        move |dialog, _window, cx| {
+            let request = request.clone();
+            let muted = cx.theme().muted_foreground;
 
-        dialog
-            .w(px(520.))
-            .title("Unknown host key")
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_3()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_start()
-                            .child(
-                                Icon::new(IconName::TriangleAlert)
-                                    .small()
-                                    .text_color(cx.theme().warning),
-                            )
-                            .child(div().flex_1().min_w_0().text_sm().child(format!(
-                                "{}:{} has never been connected to before, so its identity \
+            dialog
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_3()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_start()
+                                .child(
+                                    Icon::new(IconName::TriangleAlert)
+                                        .small()
+                                        .text_color(cx.theme().warning),
+                                )
+                                .child(div().flex_1().min_w_0().text_sm().child(format!(
+                                    "{}:{} has never been connected to before, so its identity \
                                  cannot be confirmed.",
-                                request.host, request.port
-                            ))),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .p_3()
-                            .rounded_md()
-                            .bg(cx.theme().muted)
-                            .child(detail("Algorithm", &request.algorithm, muted))
-                            .child(detail("Fingerprint", &request.fingerprint, muted)),
-                    )
-                    .child(div().text_xs().text_color(muted).child(
-                        "Continue only if this fingerprint matches the server you expect. \
+                                    request.host, request.port
+                                ))),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .p_3()
+                                .rounded_md()
+                                .bg(cx.theme().muted)
+                                .child(detail("Algorithm", &request.algorithm, muted))
+                                .child(detail("Fingerprint", &request.fingerprint, muted)),
+                        )
+                        .child(div().text_xs().text_color(muted).child(
+                            "Continue only if this fingerprint matches the server you expect. \
                          Trusting it records the key in ~/.ssh/known_hosts, and a later \
                          mismatch will be refused.",
-                    )),
-            )
-            .footer(
-                DialogFooter::new()
-                    .child(Button::new("reject").label("Reject").on_click({
-                        let request = request.clone();
-                        move |_, window, cx| {
-                            request.answer(false);
-                            window.close_dialog(cx);
-                        }
-                    }))
-                    .child(
-                        Button::new("trust")
-                            .primary()
-                            .label("Trust and save")
-                            .on_click({
-                                let request = request.clone();
-                                move |_, window, cx| {
-                                    request.answer(true);
-                                    window.close_dialog(cx);
-                                }
-                            }),
-                    ),
-            )
-    });
+                        )),
+                )
+                .button(Button::new("reject").label("Reject").on_click({
+                    let request = request.clone();
+                    move |_, window, _| {
+                        request.answer(false);
+                        window.remove_window();
+                    }
+                }))
+                .button(
+                    Button::new("trust")
+                        .primary()
+                        .label("Trust and save")
+                        .on_click({
+                            let request = request.clone();
+                            move |_, window, _| {
+                                request.answer(true);
+                                window.remove_window();
+                            }
+                        }),
+                )
+        },
+    );
 }
 
-fn open_mismatch_prompt(request: HostKeyRequest, window: &mut Window, cx: &mut App) {
+fn open_mismatch_prompt(request: HostKeyRequest, cx: &mut App) {
     let request = Rc::new(request);
 
-    window.open_dialog(cx, move |dialog, _window, cx| {
-        let request = request.clone();
-        let muted = cx.theme().muted_foreground;
+    crate::dialog_window::open(
+        "Host key does not match",
+        px(560.),
+        cx,
+        move |dialog, _window, cx| {
+            let request = request.clone();
+            let muted = cx.theme().muted_foreground;
 
-        dialog
-            .w(px(560.))
-            .title("Host key does not match")
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_3()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_start()
-                            .p_2p5()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().danger.opacity(0.5))
-                            .bg(cx.theme().danger.opacity(0.1))
-                            .child(
-                                Icon::new(IconName::TriangleAlert)
-                                    .small()
-                                    .text_color(cx.theme().danger)
-                                    .flex_none(),
-                            )
-                            .child(div().flex_1().min_w_0().text_sm().child(format!(
-                                "{}:{} presented a key that matches none of the keys stored \
+            dialog
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_3()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_start()
+                                .p_2p5()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(cx.theme().danger.opacity(0.5))
+                                .bg(cx.theme().danger.opacity(0.1))
+                                .child(
+                                    Icon::new(IconName::TriangleAlert)
+                                        .small()
+                                        .text_color(cx.theme().danger)
+                                        .flex_none(),
+                                )
+                                .child(div().flex_1().min_w_0().text_sm().child(format!(
+                                    "{}:{} presented a key that matches none of the keys stored \
                                  for it. If something is intercepting this connection, this \
                                  is exactly what a machine-in-the-middle attack looks like.",
-                                request.host, request.port
-                            ))),
-                    )
-                    .child(div().flex_1().min_w_0().text_sm().child(
-                        "It can also be legitimate: the same address can serve more than one \
+                                    request.host, request.port
+                                ))),
+                        )
+                        .child(div().flex_1().min_w_0().text_sm().child(
+                            "It can also be legitimate: the same address can serve more than one \
                          system, such as a dropbear initramfs that unlocks an encrypted disk \
                          before the installed server boots.",
-                    ))
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .p_3()
-                            .rounded_md()
-                            .bg(cx.theme().muted)
-                            .child(detail("Offered", &request.algorithm, muted))
-                            .child(detail("Fingerprint", &request.fingerprint, muted)),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .p_3()
-                            .rounded_md()
-                            .bg(cx.theme().muted)
-                            .children(request.stored.iter().enumerate().map(|(ix, stored)| {
-                                detail(if ix == 0 { "Stored" } else { "" }, stored, muted)
-                            })),
-                    )
-                    .child(div().text_xs().text_color(muted).child(
-                        "Verify the offered fingerprint against the server through another \
+                        ))
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .p_3()
+                                .rounded_md()
+                                .bg(cx.theme().muted)
+                                .child(detail("Offered", &request.algorithm, muted))
+                                .child(detail("Fingerprint", &request.fingerprint, muted)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .p_3()
+                                .rounded_md()
+                                .bg(cx.theme().muted)
+                                .children(request.stored.iter().enumerate().map(|(ix, stored)| {
+                                    detail(if ix == 0 { "Stored" } else { "" }, stored, muted)
+                                })),
+                        )
+                        .child(div().text_xs().text_color(muted).child(
+                            "Verify the offered fingerprint against the server through another \
                          channel before accepting. Accepting adds this key alongside the \
                          stored ones in ~/.ssh/known_hosts, and both identities will be \
                          accepted from then on.",
-                    )),
-            )
-            .footer(
-                DialogFooter::new()
-                    .child(Button::new("reject").primary().label("Reject").on_click({
-                        let request = request.clone();
-                        move |_, window, cx| {
-                            request.answer(false);
-                            window.close_dialog(cx);
-                        }
-                    }))
-                    .child(
-                        Button::new("trust-anyway")
-                            .danger()
-                            .label("I know what I'm doing")
-                            .on_click({
-                                let request = request.clone();
-                                move |_, window, cx| {
-                                    request.answer(true);
-                                    window.close_dialog(cx);
-                                }
-                            }),
-                    ),
-            )
-    });
+                        )),
+                )
+                .button(Button::new("reject").primary().label("Reject").on_click({
+                    let request = request.clone();
+                    move |_, window, _| {
+                        request.answer(false);
+                        window.remove_window();
+                    }
+                }))
+                .button(
+                    Button::new("trust-anyway")
+                        .danger()
+                        .label("I know what I'm doing")
+                        .on_click({
+                            let request = request.clone();
+                            move |_, window, _| {
+                                request.answer(true);
+                                window.remove_window();
+                            }
+                        }),
+                )
+        },
+    );
 }
 
 pub(crate) fn detail(label: &'static str, value: &str, muted: Hsla) -> impl IntoElement {

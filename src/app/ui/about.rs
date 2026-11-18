@@ -1,22 +1,17 @@
 use gpui_kit::{
     FontWeight, InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
-    Styled as _, Window, div, px,
+    Styled as _, div, px,
 };
 
 use gpui_kit::component::button::Button;
-use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, dialog::DialogFooter, h_flex,
-    v_flex,
-};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
-pub(super) fn open_about_dialog(window: &mut Window, cx: &mut gpui_kit::App) {
-    window.open_dialog(cx, |dialog, _window, cx| {
+pub(super) fn open_about_dialog(cx: &mut gpui_kit::App) {
+    crate::dialog_window::open("About", px(420.), cx, |dialog, _window, cx| {
         let muted = cx.theme().muted_foreground;
         dialog
-            .title("About")
             .child(
                 v_flex()
-                    .w(px(380.))
                     .gap_3()
                     .child(
                         h_flex()
@@ -92,12 +87,10 @@ pub(super) fn open_about_dialog(window: &mut Window, cx: &mut gpui_kit::App) {
                             ),
                     ),
             )
-            .footer(
-                DialogFooter::new().child(Button::new("close-about").label("Close").on_click(
-                    |_, window, cx| {
-                        window.close_dialog(cx);
-                    },
-                )),
+            .button(
+                Button::new("close-about")
+                    .label("Close")
+                    .on_click(|_, window, _| window.remove_window()),
             )
     });
 }

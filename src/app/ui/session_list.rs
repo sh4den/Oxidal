@@ -10,8 +10,8 @@ use gpui_kit::{
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _,
-    dialog::DialogFooter, h_flex, input::Input, tooltip::Tooltip, v_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
+    input::Input, tooltip::Tooltip, v_flex,
 };
 
 use crate::app::OxidalApp;
@@ -223,40 +223,38 @@ impl OxidalApp {
                             .xsmall()
                             .icon(IconName::Delete)
                             .tooltip("Delete")
-                            .on_click(cx.listener(move |_view, _, window, cx| {
+                            .on_click(cx.listener(move |_view, _, _window, cx| {
                                 let weak_app = cx.weak_entity();
                                 let name = name.clone();
-                                window.open_dialog(cx, move |dialog, _window, _cx| {
-                                    let weak_app = weak_app.clone();
-                                    dialog
-                                        .title("Delete Session")
-                                        .child(div().w(px(360.)).child(format!(
-                                            "Delete \"{name}\"? This also removes its saved \
-                                             password and closes any open tabs for it."
-                                        )))
-                                        .footer(
-                                            DialogFooter::new()
-                                                .child(
-                                                    Button::new("cancel").label("Cancel").on_click(
-                                                        |_, window, cx| {
-                                                            window.close_dialog(cx);
-                                                        },
-                                                    ),
-                                                )
-                                                .child(
-                                                    Button::new("delete")
-                                                        .danger()
-                                                        .label("Delete")
-                                                        .on_click(move |_, window, cx| {
-                                                            let _ =
-                                                                weak_app.update(cx, |app, cx| {
-                                                                    app.delete_session(id, cx);
-                                                                });
-                                                            window.close_dialog(cx);
-                                                        }),
+                                crate::dialog_window::open(
+                                    "Delete Session",
+                                    px(400.),
+                                    cx,
+                                    move |dialog, _window, _cx| {
+                                        let weak_app = weak_app.clone();
+                                        dialog
+                                            .child(format!(
+                                                "Delete \"{name}\"? This also removes its saved \
+                                                 password and closes any open tabs for it."
+                                            ))
+                                            .button(
+                                                Button::new("cancel").label("Cancel").on_click(
+                                                    |_, window, _| window.remove_window(),
                                                 ),
-                                        )
-                                });
+                                            )
+                                            .button(
+                                                Button::new("delete")
+                                                    .danger()
+                                                    .label("Delete")
+                                                    .on_click(move |_, window, cx| {
+                                                        let _ = weak_app.update(cx, |app, cx| {
+                                                            app.delete_session(id, cx);
+                                                        });
+                                                        window.remove_window();
+                                                    }),
+                                            )
+                                    },
+                                );
                             })),
                     ),
             )
@@ -390,16 +388,14 @@ impl OxidalApp {
                             .xsmall()
                             .icon(IconName::Settings2)
                             .tooltip("Edit")
-                            .on_click(cx.listener(move |view, _, window, cx| {
+                            .on_click(cx.listener(move |view, _, _window, cx| {
                                 let Some(folder) =
                                     view.folders.iter().find(|f| f.id == folder_id).cloned()
                                 else {
                                     return;
                                 };
                                 let weak_app = cx.weak_entity();
-                                session_dialog::open_edit_folder_dialog(
-                                    folder, weak_app, window, cx,
-                                );
+                                session_dialog::open_edit_folder_dialog(folder, weak_app, cx);
                             })),
                     )
                     .child(
@@ -558,11 +554,9 @@ impl OxidalApp {
                                     .xsmall()
                                     .icon(Icon::new(Lucide::FolderPlus))
                                     .tooltip("New Folder")
-                                    .on_click(cx.listener(|_view, _, window, cx| {
+                                    .on_click(cx.listener(|_view, _, _window, cx| {
                                         let weak_app = cx.weak_entity();
-                                        session_dialog::open_new_folder_dialog(
-                                            weak_app, window, cx,
-                                        );
+                                        session_dialog::open_new_folder_dialog(weak_app, cx);
                                     })),
                             )
                             .child(
