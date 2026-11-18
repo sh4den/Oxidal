@@ -4,6 +4,7 @@ mod app;
 mod assets;
 mod cert_trust;
 mod credentials;
+mod dialog_window;
 mod forms;
 mod host_keys;
 mod proxy;

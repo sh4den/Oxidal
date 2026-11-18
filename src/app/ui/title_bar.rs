@@ -65,8 +65,8 @@ impl OxidalApp {
                                 }),
                         )
                         .item(PopupMenuItem::new("About").icon(IconName::Info).on_click(
-                            |_, window, cx| {
-                                open_about_dialog(window, cx);
+                            |_, _, cx| {
+                                open_about_dialog(cx);
                             },
                         ))
                         .separator()

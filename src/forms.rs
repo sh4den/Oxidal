@@ -1,4 +1,4 @@
-use gpui_kit::component::dialog::Confirm;
+use crate::dialog_window::Confirm;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{App, Entity, Window};
 
@@ -8,7 +8,7 @@ pub fn confirm_on_enter(input: &Entity<InputState>, window: &mut Window, cx: &mu
     window
         .subscribe(input, cx, |_, event: &InputEvent, window, cx| {
             if let InputEvent::PressEnter { .. } = event {
-                window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
+                window.dispatch_action(Box::new(Confirm), cx);
             }
         })
         .detach();
