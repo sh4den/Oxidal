@@ -341,11 +341,31 @@ async fn exec(session: &Handle<Handler>, script: &str) -> anyhow::Result<Output>
 fn failure_message(output: &Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     match stderr.lines().map(str::trim).rfind(|line| !line.is_empty()) {
-        Some(line) => line.to_string(),
+        Some(line) => strip_shell_prefix(line).to_string(),
         None => match output.status {
             Some(status) => format!("the command failed with status {status}"),
             None => "the command ended without reporting a status".to_string(),
         },
+    }
+}
+
+fn strip_shell_prefix(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix("sh:") else {
+        return line;
+    };
+    let rest = rest.trim_start();
+    let location = rest.strip_prefix("line ").unwrap_or(rest);
+    let digits = location.len()
+        - location
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .len();
+    let rest = match location[digits..].strip_prefix(':') {
+        Some(after) if digits > 0 => after,
+        _ => rest,
+    };
+    match rest.trim() {
+        "" => line,
+        message => message,
     }
 }
 
