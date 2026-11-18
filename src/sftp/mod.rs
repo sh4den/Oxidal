@@ -3,7 +3,6 @@ pub mod editor;
 mod ftp;
 mod local;
 mod panel;
-mod scp;
 mod workspace;
 
 pub use panel::SftpPanel;
