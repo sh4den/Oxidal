@@ -1,10 +1,11 @@
 [package]
 name = "Oxidal"
-version = "0.9.6"
+version = "1.0.0"
 edition = "2024"
+autotests = false
 
 [dependencies]
-gpui-kit = { version = "0.9", features = ["tree-sitter-languages"] }
+gpui-kit = { version = "0.10", features = [ "tree-sitter-languages" ] }
 anyhow = "1.0"
 futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
@@ -13,7 +14,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "7.0.0"
 keyring = "4.2"
 secrecy = "0.10"
-zeroize = "1.9.1"
+zeroize = "1.9"
 async-channel = "2"
 vte = "0.15"
 unicode-normalization = "0.1"

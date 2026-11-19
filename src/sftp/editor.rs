@@ -1,8 +1,6 @@
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, Rope, Sizable as _, TitleBar,
-    WindowExt as _,
     button::{Button, ButtonVariants as _},
-    dialog::DialogFooter,
     h_flex,
     input::{Editor, EditorState, InputEvent, RopeExt as _},
     text::{TextView, TextViewState},
@@ -11,8 +9,8 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowOptions, actions,
-    div, prelude::FluentBuilder as _, px, size,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowBounds, WindowHandle,
+    WindowOptions, actions, div, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::settings::AppSettings;
@@ -40,6 +38,7 @@ pub struct EditorWindow {
     status: Option<SaveStatus>,
     handle: AnyWindowHandle,
     close_after_save: bool,
+    close_prompt: Option<WindowHandle<Root>>,
 }
 
 fn rope_matches(rope: &Rope, text: &str) -> bool {
@@ -114,11 +113,11 @@ impl EditorWindow {
         window.set_window_title(&format!("{name} — Oxidal"));
 
         let this = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |window, cx| {
+        window.on_window_should_close(cx, move |_, cx| {
             let Some(this) = this.upgrade() else {
                 return true;
             };
-            this.update(cx, |editor, cx| editor.request_close(window, cx))
+            this.update(cx, |editor, cx| editor.request_close(cx))
         });
 
         Self {
@@ -135,6 +134,7 @@ impl EditorWindow {
             status: None,
             handle: window.window_handle(),
             close_after_save: false,
+            close_prompt: None,
         }
     }
 
@@ -149,60 +149,62 @@ impl EditorWindow {
         }
     }
 
-    fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn request_close(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.modified {
             return true;
         }
-        self.confirm_close_dialog(window, cx);
+        self.confirm_close_dialog(cx);
         false
     }
 
-    fn confirm_close_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_close_dialog(&mut self, cx: &mut Context<Self>) {
+        if let Some(prompt) = self.close_prompt
+            && prompt
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            return;
+        }
         let view = cx.entity();
+        let editor_window = self.handle;
         let name = self.name.clone();
 
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            let view = view.clone();
-
-            dialog
-                .w(px(400.))
-                .title("Unsaved changes")
-                .child(format!(
-                    "\"{name}\" has changes that were not uploaded to the server. Save them \
-                     before closing?"
-                ))
-                .footer(
-                    DialogFooter::new()
-                        .child(Button::new("close-cancel").label("Cancel").on_click(
-                            |_, window, cx| {
-                                window.close_dialog(cx);
-                            },
-                        ))
-                        .child(
-                            Button::new("close-discard")
-                                .danger()
-                                .label("Discard")
-                                .on_click(|_, window, cx| {
-                                    window.close_dialog(cx);
-                                    window.remove_window();
-                                }),
-                        )
-                        .child(
-                            Button::new("close-save")
-                                .primary()
-                                .label("Save and close")
-                                .on_click({
-                                    move |_, window, cx| {
-                                        window.close_dialog(cx);
-                                        view.update(cx, |editor, cx| {
-                                            editor.close_after_save = true;
-                                            editor.save(cx);
-                                        });
-                                    }
-                                }),
-                        ),
-                )
-        });
+        self.close_prompt =
+            crate::dialog_window::open("Unsaved changes", px(420.), cx, move |dialog, _, _| {
+                let view = view.clone();
+                dialog
+                    .child(format!(
+                        "\"{name}\" has changes that were not uploaded to the server. Save \
+                         them before closing?"
+                    ))
+                    .button(
+                        Button::new("close-cancel")
+                            .label("Cancel")
+                            .on_click(|_, window, _| window.remove_window()),
+                    )
+                    .button(
+                        Button::new("close-discard")
+                            .danger()
+                            .label("Discard")
+                            .on_click(move |_, window, cx| {
+                                window.remove_window();
+                                let _ =
+                                    editor_window.update(cx, |_, window, _| window.remove_window());
+                            }),
+                    )
+                    .button(
+                        Button::new("close-save")
+                            .primary()
+                            .label("Save and close")
+                            .on_click(move |_, window, cx| {
+                                window.remove_window();
+                                view.update(cx, |editor, cx| {
+                                    editor.close_after_save = true;
+                                    editor.save(cx);
+                                });
+                            }),
+                    )
+            });
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {

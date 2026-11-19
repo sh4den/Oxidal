@@ -6,9 +6,8 @@ use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed as _, IndexPath, Root,
-    Sizable as _, WindowExt as _,
+    Sizable as _,
     button::{Button, ButtonVariants as _},
-    dialog::{Dialog, DialogFooter},
     h_flex,
     input::{Input, InputEvent, InputState},
     select::{SearchableVec, Select, SelectItem, SelectState},
@@ -17,10 +16,10 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Bounds, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
+    App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
     prelude::FluentBuilder as _, px, size,
 };
 use secrecy::{ExposeSecret as _, SecretString};
@@ -33,33 +32,6 @@ use crate::session::{
     FtpSecurity, ItemColor, ItemIcon, Session, SessionFolder, SessionKind, default_proxy_port,
 };
 use crate::ssh_client::SshCredentials;
-
-struct DialogMetrics {
-    width: gpui_kit::Pixels,
-    margin_top: gpui_kit::Pixels,
-    max_height: gpui_kit::Pixels,
-    body_max_height: gpui_kit::Pixels,
-}
-
-fn dialog_metrics(window: &Window, width: gpui_kit::Pixels) -> DialogMetrics {
-    let viewport = window.viewport_size();
-    let margin_top = (viewport.height / 10.).clamp(gpui_kit::px(12.), gpui_kit::px(56.));
-    let max_height = (viewport.height - margin_top * 2.).max(gpui_kit::px(160.));
-
-    DialogMetrics {
-        width: width.min((viewport.width - gpui_kit::px(24.)).max(gpui_kit::px(240.))),
-        margin_top,
-        max_height,
-        body_max_height: (max_height - gpui_kit::px(112.)).max(gpui_kit::px(120.)),
-    }
-}
-
-fn fit_to_window(dialog: Dialog, metrics: &DialogMetrics) -> Dialog {
-    dialog
-        .w(metrics.width)
-        .margin_top(metrics.margin_top)
-        .max_h(metrics.max_height)
-}
 
 fn scrollable_body(
     id: &'static str,
@@ -226,12 +198,18 @@ impl Render for SelectedIcon {
         } else {
             let mut shown: Vec<ItemIcon> = ItemIcon::suggested().collect();
             if let Some(icon) = current
+                && !icon.is_os()
                 && !shown.contains(&icon)
             {
                 shown.insert(0, icon);
             }
             let total = shown.len();
             (shown, total)
+        };
+        let os_logos: Vec<ItemIcon> = if searching {
+            ItemIcon::search_os(&query).collect()
+        } else {
+            ItemIcon::os_logos().collect()
         };
 
         let swatch = move |selected: bool| {
@@ -263,21 +241,37 @@ impl Render for SelectedIcon {
             )
             .on_click(cx.listener(|this, _, _, cx| this.select(None, cx)));
 
+        let tile = |icon: ItemIcon, cx: &mut Context<Self>| {
+            let label = icon.label();
+            swatch(current == Some(icon))
+                .id(SharedString::new_static(icon.name()))
+                .w(gpui_kit::px(28.))
+                .child(Icon::empty().path(icon.path()).small())
+                .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                .on_click(cx.listener(move |this, _, _, cx| this.select(Some(icon), cx)))
+        };
+
         let grid = h_flex()
             .flex_wrap()
             .gap_1()
             .when(!searching, |this| this.child(auto))
-            .children(icons.into_iter().map(|icon| {
-                let name = icon.name();
-                swatch(current == Some(icon))
-                    .id(SharedString::new_static(name))
-                    .w(gpui_kit::px(28.))
-                    .child(Icon::empty().path(icon.path()).small())
-                    .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
-                    .on_click(cx.listener(move |this, _, _, cx| this.select(Some(icon), cx)))
-            }));
+            .children(icons.into_iter().map(|icon| tile(icon, cx)));
 
-        let note = if searching && total == 0 {
+        let os_section = (!os_logos.is_empty()).then(|| {
+            v_flex()
+                .gap_1()
+                .pt_2()
+                .child(div().text_xs().text_color(muted).child("Operating systems"))
+                .child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .children(os_logos.into_iter().map(|icon| tile(icon, cx))),
+                )
+        });
+        let no_os_match = os_section.is_none();
+
+        let note = if searching && total == 0 && no_os_match {
             Some(format!("No icon matches \"{query}\""))
         } else if total > ICON_RESULTS_MAX {
             Some(format!(
@@ -296,7 +290,7 @@ impl Render for SelectedIcon {
                     .justify_between()
                     .child("Icon")
                     .when_some(current, |this, icon| {
-                        this.child(div().text_xs().text_color(muted).child(icon.name()))
+                        this.child(div().text_xs().text_color(muted).child(icon.label()))
                     }),
             )
             .child(
@@ -310,7 +304,8 @@ impl Render for SelectedIcon {
                     .id("icon-results")
                     .max_h(gpui_kit::px(196.))
                     .overflow_y_scroll()
-                    .child(grid),
+                    .child(grid)
+                    .children(os_section),
             )
             .when_some(note, |this, note| {
                 this.child(div().text_xs().text_color(muted).child(note))
@@ -1809,155 +1804,89 @@ fn ssh_check(
     })
 }
 
-pub fn open_new_folder_dialog(
-    weak_app: gpui_kit::WeakEntity<OxidalApp>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let name = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
-    crate::forms::confirm_on_enter(&name, window, cx);
-    let selected_icon = cx.new(|cx| SelectedIcon::new(None, window, cx));
-    let selected_color = cx.new(|_cx| SelectedColor(ItemColor::Default));
-    let body_scroll = ScrollHandle::new();
-
-    window.open_dialog(cx, move |dialog, window, cx| {
-        let weak_app = weak_app.clone();
-        let name = name.clone();
-        let selected_icon = selected_icon.clone();
-        let selected_color = selected_color.clone();
-        let body_scroll = body_scroll.clone();
-
-        let body = v_flex()
-            .gap_3()
-            .w_full()
-            .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
-            .child(selected_icon.clone())
-            .child(color_picker(&selected_color, cx));
-
-        let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
-            let value = name.read(cx).value().trim().to_string();
-            if !value.is_empty() {
-                let mut folder = SessionFolder::new(value);
-                folder.icon = selected_icon.read(cx).icon;
-                folder.color = selected_color.read(cx).0;
-                let _ = weak_app.update(cx, |app, cx| {
-                    app.add_folder(folder, cx);
-                });
-            }
-        });
-
-        let footer = DialogFooter::new()
-            .child(
-                Button::new("cancel")
-                    .label("Cancel")
-                    .on_click(|_, window, cx| {
-                        window.close_dialog(cx);
-                    }),
-            )
-            .child(Button::new("save").primary().label("Save").on_click({
-                let do_save = do_save.clone();
-                move |_, window, cx| {
-                    do_save(cx);
-                    window.close_dialog(cx);
-                }
-            }));
-
-        let metrics = dialog_metrics(window, gpui_kit::px(360.));
-
-        fit_to_window(dialog, &metrics)
-            .title("New Folder")
-            .child(scrollable_body(
-                "new-folder-form",
-                body,
-                &body_scroll,
-                metrics.body_max_height,
-                cx,
-            ))
-            .footer(footer)
-            .on_ok({
-                let do_save = do_save.clone();
-                move |_, _window, cx| {
-                    do_save(cx);
-                    true
-                }
-            })
-    });
+pub fn open_new_folder_dialog(weak_app: gpui_kit::WeakEntity<OxidalApp>, cx: &mut App) {
+    open_folder_window(None, weak_app, cx);
 }
 
 pub fn open_edit_folder_dialog(
     folder: SessionFolder,
     weak_app: gpui_kit::WeakEntity<OxidalApp>,
-    window: &mut Window,
     cx: &mut App,
 ) {
-    let folder_id = folder.id;
-    let name = cx.new(|cx| InputState::new(window, cx).default_value(folder.name.clone()));
-    crate::forms::confirm_on_enter(&name, window, cx);
-    let selected_icon = cx.new(|cx| SelectedIcon::new(folder.icon, window, cx));
-    let selected_color = cx.new(|_cx| SelectedColor(folder.color));
-    let body_scroll = ScrollHandle::new();
+    open_folder_window(Some(folder), weak_app, cx);
+}
 
-    window.open_dialog(cx, move |dialog, window, cx| {
-        let weak_app = weak_app.clone();
-        let name = name.clone();
-        let selected_icon = selected_icon.clone();
-        let selected_color = selected_color.clone();
-        let body_scroll = body_scroll.clone();
-
-        let body = v_flex()
-            .gap_3()
-            .w_full()
-            .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
-            .child(selected_icon.clone())
-            .child(color_picker(&selected_color, cx));
-
-        let do_save: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
-            let value = name.read(cx).value().trim().to_string();
-            if !value.is_empty() {
-                let mut folder = SessionFolder::new(value);
-                folder.id = folder_id;
-                folder.icon = selected_icon.read(cx).icon;
-                folder.color = selected_color.read(cx).0;
-                let _ = weak_app.update(cx, |app, cx| {
-                    app.update_folder(folder, cx);
-                });
+fn open_folder_window(
+    existing: Option<SessionFolder>,
+    weak_app: gpui_kit::WeakEntity<OxidalApp>,
+    cx: &mut App,
+) {
+    let title = if existing.is_some() {
+        "Edit Folder"
+    } else {
+        "New Folder"
+    };
+    crate::dialog_window::open_with(title, px(420.), cx, move |window, cx| {
+        let folder_id = existing.as_ref().map(|folder| folder.id);
+        let name = cx.new(|cx| {
+            let state = InputState::new(window, cx).placeholder("Folder name");
+            match &existing {
+                Some(folder) => state.default_value(folder.name.clone()),
+                None => state,
             }
         });
+        crate::forms::confirm_on_enter(&name, window, cx);
+        name.read(cx).focus_handle(cx).focus(window, cx);
+        let icon = existing.as_ref().and_then(|folder| folder.icon);
+        let selected_icon = cx.new(|cx| SelectedIcon::new(icon, window, cx));
+        let color = existing
+            .as_ref()
+            .map_or(ItemColor::Default, |folder| folder.color);
+        let selected_color = cx.new(|_cx| SelectedColor(color));
 
-        let footer = DialogFooter::new()
-            .child(
-                Button::new("cancel")
-                    .label("Cancel")
-                    .on_click(|_, window, cx| {
-                        window.close_dialog(cx);
-                    }),
-            )
-            .child(Button::new("save").primary().label("Save").on_click({
-                let do_save = do_save.clone();
-                move |_, window, cx| {
-                    do_save(cx);
-                    window.close_dialog(cx);
+        let do_save: Rc<dyn Fn(&mut App)> = {
+            let name = name.clone();
+            let selected_icon = selected_icon.clone();
+            let selected_color = selected_color.clone();
+            Rc::new(move |cx: &mut App| {
+                let value = name.read(cx).value().trim().to_string();
+                if value.is_empty() {
+                    return;
                 }
-            }));
-
-        let metrics = dialog_metrics(window, gpui_kit::px(360.));
-
-        fit_to_window(dialog, &metrics)
-            .title("Edit Folder")
-            .child(scrollable_body(
-                "edit-folder-form",
-                body,
-                &body_scroll,
-                metrics.body_max_height,
-                cx,
-            ))
-            .footer(footer)
-            .on_ok({
-                let do_save = do_save.clone();
-                move |_, _window, cx| {
-                    do_save(cx);
-                    true
-                }
+                let mut folder = SessionFolder::new(value);
+                folder.icon = selected_icon.read(cx).icon;
+                folder.color = selected_color.read(cx).0;
+                let _ = weak_app.update(cx, |app, cx| match folder_id {
+                    Some(id) => {
+                        folder.id = id;
+                        app.update_folder(folder, cx);
+                    }
+                    None => app.add_folder(folder, cx),
+                });
             })
+        };
+
+        move |dialog, _window, cx| {
+            dialog
+                .child(v_flex().gap_1().child("Name").child(Input::new(&name)))
+                .child(selected_icon.clone())
+                .child(color_picker(&selected_color, cx))
+                .button(
+                    Button::new("cancel")
+                        .label("Cancel")
+                        .on_click(|_, window, _| window.remove_window()),
+                )
+                .button(Button::new("save").primary().label("Save").on_click({
+                    let do_save = do_save.clone();
+                    move |_, window, cx| {
+                        do_save(cx);
+                        window.remove_window();
+                    }
+                }))
+                .on_ok({
+                    let do_save = do_save.clone();
+                    move |_, cx| do_save(cx)
+                })
+        }
     });
 }

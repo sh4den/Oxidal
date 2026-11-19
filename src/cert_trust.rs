@@ -5,9 +5,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
-    dialog::DialogFooter,
     h_flex, v_flex,
 };
 use gpui_kit::{
@@ -314,11 +313,16 @@ pub fn client_config(
     Ok((Arc::new(config), verifier))
 }
 
-pub fn open_prompt(request: CertificateRequest, window: &mut Window, cx: &mut App) {
+pub fn open_prompt(request: CertificateRequest, _window: &mut Window, cx: &mut App) {
     let request = Rc::new(request);
     let changed = !request.stored.is_empty();
+    let title = if changed {
+        "Certificate has changed"
+    } else {
+        "Untrusted certificate"
+    };
 
-    window.open_dialog(cx, move |dialog, _window, cx| {
+    crate::dialog_window::open(title, px(540.), cx, move |dialog, _window, cx| {
         let request = request.clone();
         let muted = cx.theme().muted_foreground;
         let tone = if changed {
@@ -341,12 +345,6 @@ pub fn open_prompt(request: CertificateRequest, window: &mut Window, cx: &mut Ap
         };
 
         dialog
-            .w(px(540.))
-            .title(if changed {
-                "Certificate has changed"
-            } else {
-                "Untrusted certificate"
-            })
             .child(
                 v_flex()
                     .w_full()
@@ -389,69 +387,34 @@ pub fn open_prompt(request: CertificateRequest, window: &mut Window, cx: &mut Ap
                          and any other one will be questioned again.",
                     )),
             )
-            .footer(
-                DialogFooter::new()
-                    .child(Button::new("reject").primary().label("Reject").on_click({
-                        let request = request.clone();
-                        move |_, window, cx| {
-                            request.answer(false);
-                            window.close_dialog(cx);
+            .button(Button::new("reject").primary().label("Reject").on_click({
+                let request = request.clone();
+                move |_, window, _| {
+                    request.answer(false);
+                    window.remove_window();
+                }
+            }))
+            .button(
+                Button::new("trust")
+                    .map(|button| {
+                        if changed {
+                            button.danger()
+                        } else {
+                            button.outline()
                         }
-                    }))
-                    .child(
-                        Button::new("trust")
-                            .map(|button| {
-                                if changed {
-                                    button.danger()
-                                } else {
-                                    button.outline()
-                                }
-                            })
-                            .label("Trust this certificate")
-                            .on_click({
-                                let request = request.clone();
-                                move |_, window, cx| {
-                                    request.answer(true);
-                                    window.close_dialog(cx);
-                                }
-                            }),
-                    ),
+                    })
+                    .label("Trust this certificate")
+                    .on_click({
+                        let request = request.clone();
+                        move |_, window, _| {
+                            request.answer(true);
+                            window.remove_window();
+                        }
+                    }),
             )
     });
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_trusted_certificate_is_remembered_per_host_and_port() {
-        let dir = crate::tempdir::private_dir("oxidal-certs").expect("dir");
-        let path = dir.join("trusted_certificates.json");
-
-        assert!(stored_for(&path, "files.test", 21).is_empty());
-
-        remember(&path, "Files.Test", 21, "AA:BB").expect("write");
-        remember(&path, "files.test", 21, "AA:BB").expect("write again");
-        remember(&path, "files.test", 21, "CC:DD").expect("second");
-
-        assert_eq!(
-            stored_for(&path, "files.test", 21),
-            vec!["AA:BB".to_string(), "CC:DD".to_string()],
-            "host names compare case-insensitively and duplicates are not stored twice"
-        );
-        assert!(
-            stored_for(&path, "files.test", 990).is_empty(),
-            "a certificate trusted on one port does not vouch for another"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn fingerprints_are_colon_separated_sha256() {
-        let fp = fingerprint(b"abc");
-        assert_eq!(fp.len(), 32 * 3 - 1);
-        assert!(fp.starts_with("BA:78:16:BF"));
-    }
-}
+#[path = "../tests/cert_trust.rs"]
+mod tests;
