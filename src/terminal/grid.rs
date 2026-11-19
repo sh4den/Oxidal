@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::LazyLock;
 
@@ -123,10 +124,113 @@ impl Cell {
         self.ch_flags & FLAG_DIM != 0
     }
 
+    fn same_style(&self, other: &Cell) -> bool {
+        self.ch_flags & !CHAR_MASK == other.ch_flags & !CHAR_MASK
+            && self.fg == other.fg
+            && self.bg == other.bg
+    }
+
     fn is_blank(self) -> bool {
         self.ch_flags == ' ' as u32
             && matches!(self.fg, Color::Default)
             && matches!(self.bg, Color::Default)
+    }
+}
+
+const RUN_BYTES: usize = 11;
+
+fn color_bytes(color: Color) -> [u8; 4] {
+    match color {
+        Color::Default => [0, 0, 0, 0],
+        Color::DefaultFg => [1, 0, 0, 0],
+        Color::DefaultBg => [2, 0, 0, 0],
+        Color::Indexed(i) => [3, i, 0, 0],
+        Color::Rgb(r, g, b) => [4, r, g, b],
+    }
+}
+
+fn color_from_bytes(bytes: &[u8]) -> Color {
+    match bytes[0] {
+        1 => Color::DefaultFg,
+        2 => Color::DefaultBg,
+        3 => Color::Indexed(bytes[1]),
+        4 => Color::Rgb(bytes[1], bytes[2], bytes[3]),
+        _ => Color::Default,
+    }
+}
+
+struct ScrollbackLine {
+    data: Box<[u8]>,
+    runs: u32,
+}
+
+impl ScrollbackLine {
+    fn new(cells: &[Cell], scratch: &mut Vec<u8>) -> Self {
+        fn push_run(scratch: &mut Vec<u8>, first: &Cell, len: usize) {
+            scratch.extend_from_slice(&(len as u16).to_le_bytes());
+            scratch.push((first.ch_flags >> 24) as u8);
+            scratch.extend_from_slice(&color_bytes(first.fg));
+            scratch.extend_from_slice(&color_bytes(first.bg));
+        }
+
+        scratch.clear();
+        let mut runs = 0;
+        let mut start = 0;
+        let mut high = 0;
+        for (index, cell) in cells.iter().enumerate() {
+            high |= cell.ch_flags & CHAR_MASK;
+            if index > start
+                && (!cell.same_style(&cells[start]) || index - start == u16::MAX as usize)
+            {
+                push_run(scratch, &cells[start], index - start);
+                runs += 1;
+                start = index;
+            }
+        }
+        if let Some(first) = cells.get(start)
+            && (runs > 0 || !first.same_style(&Cell::BLANK))
+        {
+            push_run(scratch, first, cells.len() - start);
+            runs += 1;
+        }
+
+        let ascii = high < 0x80;
+        let mut data = Vec::with_capacity(scratch.len() + cells.len());
+        data.extend_from_slice(scratch);
+        if ascii {
+            data.extend(cells.iter().map(|cell| (cell.ch_flags & CHAR_MASK) as u8));
+        } else {
+            let mut buf = [0u8; 4];
+            for cell in cells {
+                data.extend_from_slice(cell.ch().encode_utf8(&mut buf).as_bytes());
+            }
+        }
+
+        Self {
+            data: data.into_boxed_slice(),
+            runs,
+        }
+    }
+
+    fn cells(&self) -> Vec<Cell> {
+        let (runs, text) = self.data.split_at(self.runs as usize * RUN_BYTES);
+        let mut chars = std::str::from_utf8(text).unwrap_or_default().chars();
+        if runs.is_empty() {
+            return chars
+                .map(|ch| Cell::new(ch, Color::Default, Color::Default, 0))
+                .collect();
+        }
+        let mut out = Vec::with_capacity(text.len());
+        for run in runs.as_chunks::<RUN_BYTES>().0 {
+            let len = u16::from_le_bytes([run[0], run[1]]) as usize;
+            let flags = (run[2] as u32) << 24;
+            let fg = color_from_bytes(&run[3..7]);
+            let bg = color_from_bytes(&run[7..11]);
+            for ch in chars.by_ref().take(len) {
+                out.push(Cell::new(ch, fg, bg, flags));
+            }
+        }
+        out
     }
 }
 
@@ -212,7 +316,8 @@ pub struct Grid {
     pub mouse_sgr: bool,
     pub bracketed_paste: bool,
     alt_screen: Option<SavedPrimaryScreen>,
-    scrollback: VecDeque<Box<[Cell]>>,
+    scrollback: VecDeque<ScrollbackLine>,
+    scrollback_scratch: Vec<u8>,
     scrollback_trimmed: usize,
     responses: Vec<u8>,
     last_printed: Option<char>,
@@ -244,6 +349,7 @@ impl Grid {
             bracketed_paste: false,
             alt_screen: None,
             scrollback: VecDeque::new(),
+            scrollback_scratch: Vec::new(),
             scrollback_trimmed: 0,
             responses: Vec::new(),
             last_printed: None,
@@ -275,11 +381,11 @@ impl Grid {
         self.scrollback_trimmed + self.scrollback.len()
     }
 
-    pub fn line_cells(&self, line: usize) -> Option<&[Cell]> {
+    pub fn line_cells(&self, line: usize) -> Option<Cow<'_, [Cell]>> {
         let index = line.checked_sub(self.scrollback_trimmed)?;
         match index.checked_sub(self.scrollback.len()) {
-            None => Some(&self.scrollback[index]),
-            Some(row) => self.cells.get(row).map(|cells| &cells[..]),
+            None => Some(Cow::Owned(self.scrollback[index].cells())),
+            Some(row) => self.cells.get(row).map(|cells| Cow::Borrowed(&cells[..])),
         }
     }
 
@@ -291,7 +397,10 @@ impl Grid {
                 self.scrollback_trimmed += 1;
                 self.scrollback.pop_front();
             }
-            self.scrollback.push_back(Box::from(&row[..used_len(row)]));
+            self.scrollback.push_back(ScrollbackLine::new(
+                &row[..used_len(row)],
+                &mut self.scrollback_scratch,
+            ));
         }
     }
 
@@ -981,40 +1090,5 @@ fn dec_graphics(ch: char) -> char {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reverse_video_swaps_the_default_colours() {
-        let palette = TerminalPalette::default();
-        let mut grid = Grid::new(2, 10);
-        grid.feed(b"\x1b[7mx\x1b[27my");
-
-        let row = grid.line_cells(grid.screen_top_line()).expect("row");
-        assert_eq!(row[0].fg.as_fg(&palette), palette.background);
-        assert_eq!(row[0].bg.as_bg(&palette), Some(palette.foreground));
-        assert_eq!(row[1].fg.as_fg(&palette), palette.foreground);
-        assert_eq!(row[1].bg.as_bg(&palette), None);
-    }
-
-    #[test]
-    fn a_combining_accent_joins_the_letter_before_it() {
-        let mut grid = Grid::new(2, 10);
-        grid.feed("inte\u{301}gre\u{301}!".as_bytes());
-
-        let row = grid.line_cells(grid.screen_top_line()).expect("row");
-        let text: String = row.iter().map(|cell| cell.ch()).collect();
-        assert_eq!(text.trim_end(), "intégré!");
-        assert_eq!(grid.cursor_col, 8);
-    }
-
-    #[test]
-    fn a_combining_mark_with_no_letter_before_it_is_dropped() {
-        let mut grid = Grid::new(2, 10);
-        grid.feed("\u{301}a".as_bytes());
-
-        let row = grid.line_cells(grid.screen_top_line()).expect("row");
-        assert_eq!(row[0].ch(), 'a');
-        assert_eq!(grid.cursor_col, 1);
-    }
-}
+#[path = "../../tests/terminal/grid.rs"]
+mod tests;
