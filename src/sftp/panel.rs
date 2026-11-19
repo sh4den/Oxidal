@@ -1363,22 +1363,25 @@ impl SftpPanel {
                     })),
             )
             .when(is_remote, |this| {
-                this.child(
-                    Button::new("sftp-upload-files")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::new(Lucide::FileUp))
-                        .tooltip("Upload files")
-                        .on_click(cx.listener(|panel, _, _, cx| panel.upload_prompt(false, cx))),
-                )
-                .child(
-                    Button::new("sftp-upload")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::new(Lucide::FolderUp))
-                        .tooltip("Upload folders")
-                        .on_click(cx.listener(|panel, _, _, cx| panel.upload_prompt(true, cx))),
-                )
+                this.child(div().mx_1().w(px(1.)).h(px(14.)).bg(cx.theme().border))
+                    .child(
+                        Button::new("sftp-upload-files")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(Lucide::FileUp))
+                            .tooltip("Upload files")
+                            .on_click(
+                                cx.listener(|panel, _, _, cx| panel.upload_prompt(false, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("sftp-upload")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(Lucide::FolderUp))
+                            .tooltip("Upload folders")
+                            .on_click(cx.listener(|panel, _, _, cx| panel.upload_prompt(true, cx))),
+                    )
             })
             .child(div().flex_1())
             .child(
