@@ -38,6 +38,36 @@ fn searching_icons_matches_every_word() {
     assert_eq!(ItemIcon::suggested().count(), SUGGESTED_ICONS.len());
 }
 
+#[test]
+fn os_logos_round_trip_and_are_bundled() {
+    let folder: SessionFolder = serde_json::from_str(
+        r#"{"id":"6f1d0c3e-0000-4000-8000-0000000000f1","name":"A","icon":"os/ubuntu"}"#,
+    )
+    .expect("folder");
+    let icon = folder.icon.expect("icon");
+    assert!(icon.is_os());
+    assert_eq!(icon.label(), "Ubuntu");
+    let json = serde_json::to_string(&folder).expect("json");
+    assert!(json.contains(r#""icon":"os/ubuntu""#), "{json}");
+
+    assert_ne!(
+        ItemIcon::from_name("apple"),
+        ItemIcon::from_name("os/apple")
+    );
+    for logo in ItemIcon::os_logos() {
+        let path = logo.path();
+        let data = gpui_kit::AssetSource::load(&crate::assets::Assets, &path).expect("load");
+        assert!(data.is_some(), "{path} is not bundled");
+    }
+}
+
+#[test]
+fn searching_os_logos_matches_labels() {
+    let names: Vec<&str> = ItemIcon::search_os("mint").map(ItemIcon::name).collect();
+    assert_eq!(names, ["os/linuxmint"]);
+    assert_eq!(ItemIcon::search_os("macos").count(), 1);
+}
+
 fn session(kind: SessionKind, host: &str, user: &str, port: u16) -> Session {
     let mut session = Session::new("", kind);
     session.host = host.to_string();

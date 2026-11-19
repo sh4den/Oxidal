@@ -198,12 +198,18 @@ impl Render for SelectedIcon {
         } else {
             let mut shown: Vec<ItemIcon> = ItemIcon::suggested().collect();
             if let Some(icon) = current
+                && !icon.is_os()
                 && !shown.contains(&icon)
             {
                 shown.insert(0, icon);
             }
             let total = shown.len();
             (shown, total)
+        };
+        let os_logos: Vec<ItemIcon> = if searching {
+            ItemIcon::search_os(&query).collect()
+        } else {
+            ItemIcon::os_logos().collect()
         };
 
         let swatch = move |selected: bool| {
@@ -235,21 +241,37 @@ impl Render for SelectedIcon {
             )
             .on_click(cx.listener(|this, _, _, cx| this.select(None, cx)));
 
+        let tile = |icon: ItemIcon, cx: &mut Context<Self>| {
+            let label = icon.label();
+            swatch(current == Some(icon))
+                .id(SharedString::new_static(icon.name()))
+                .w(gpui_kit::px(28.))
+                .child(Icon::empty().path(icon.path()).small())
+                .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                .on_click(cx.listener(move |this, _, _, cx| this.select(Some(icon), cx)))
+        };
+
         let grid = h_flex()
             .flex_wrap()
             .gap_1()
             .when(!searching, |this| this.child(auto))
-            .children(icons.into_iter().map(|icon| {
-                let name = icon.name();
-                swatch(current == Some(icon))
-                    .id(SharedString::new_static(name))
-                    .w(gpui_kit::px(28.))
-                    .child(Icon::empty().path(icon.path()).small())
-                    .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
-                    .on_click(cx.listener(move |this, _, _, cx| this.select(Some(icon), cx)))
-            }));
+            .children(icons.into_iter().map(|icon| tile(icon, cx)));
 
-        let note = if searching && total == 0 {
+        let os_section = (!os_logos.is_empty()).then(|| {
+            v_flex()
+                .gap_1()
+                .pt_2()
+                .child(div().text_xs().text_color(muted).child("Operating systems"))
+                .child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .children(os_logos.into_iter().map(|icon| tile(icon, cx))),
+                )
+        });
+        let no_os_match = os_section.is_none();
+
+        let note = if searching && total == 0 && no_os_match {
             Some(format!("No icon matches \"{query}\""))
         } else if total > ICON_RESULTS_MAX {
             Some(format!(
@@ -268,7 +290,7 @@ impl Render for SelectedIcon {
                     .justify_between()
                     .child("Icon")
                     .when_some(current, |this, icon| {
-                        this.child(div().text_xs().text_color(muted).child(icon.name()))
+                        this.child(div().text_xs().text_color(muted).child(icon.label()))
                     }),
             )
             .child(
@@ -282,7 +304,8 @@ impl Render for SelectedIcon {
                     .id("icon-results")
                     .max_h(gpui_kit::px(196.))
                     .overflow_y_scroll()
-                    .child(grid),
+                    .child(grid)
+                    .children(os_section),
             )
             .when_some(note, |this, note| {
                 this.child(div().text_xs().text_color(muted).child(note))
