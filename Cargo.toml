@@ -1,6 +1,6 @@
 [package]
 name = "Oxidal"
-version = "0.9.7"
+version = "1.0.0"
 edition = "2024"
 autotests = false
 
