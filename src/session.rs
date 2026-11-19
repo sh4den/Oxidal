@@ -73,7 +73,41 @@ impl FtpSecurity {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ItemIcon(Lucide);
+pub struct ItemIcon(Glyph);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Glyph {
+    Lucide(Lucide),
+    Os(usize),
+}
+
+const OS_ICONS: &[(&str, &str)] = &[
+    ("os/linux", "Linux"),
+    ("os/ubuntu", "Ubuntu"),
+    ("os/debian", "Debian"),
+    ("os/raspberrypi", "Raspberry Pi OS"),
+    ("os/alpinelinux", "Alpine Linux"),
+    ("os/archlinux", "Arch Linux"),
+    ("os/manjaro", "Manjaro"),
+    ("os/endeavouros", "EndeavourOS"),
+    ("os/fedora", "Fedora"),
+    ("os/centos", "CentOS"),
+    ("os/redhat", "Red Hat"),
+    ("os/rockylinux", "Rocky Linux"),
+    ("os/almalinux", "AlmaLinux"),
+    ("os/opensuse", "openSUSE"),
+    ("os/gentoo", "Gentoo"),
+    ("os/linuxmint", "Linux Mint"),
+    ("os/nixos", "NixOS"),
+    ("os/kalilinux", "Kali Linux"),
+    ("os/popos", "Pop!_OS"),
+    ("os/voidlinux", "Void Linux"),
+    ("os/elementary", "elementary OS"),
+    ("os/freebsd", "FreeBSD"),
+    ("os/openbsd", "OpenBSD"),
+    ("os/netbsd", "NetBSD"),
+    ("os/apple", "macOS"),
+];
 
 const SUGGESTED_ICONS: &[&str] = &[
     "square-terminal",
@@ -139,29 +173,61 @@ static CATALOG: std::sync::LazyLock<IconCatalog> = std::sync::LazyLock::new(|| {
                 .trim_start_matches("icons/")
                 .trim_end_matches(".svg")
                 .to_string();
-            (ItemIcon(*icon), name)
+            (ItemIcon(Glyph::Lucide(*icon)), name)
         })
         .collect();
     let by_name = icons
         .iter()
         .map(|(icon, name)| (name.clone(), *icon))
+        .chain(
+            OS_ICONS
+                .iter()
+                .enumerate()
+                .map(|(index, (name, _))| (name.to_string(), ItemIcon(Glyph::Os(index)))),
+        )
         .collect();
     IconCatalog { icons, by_name }
 });
 
 impl ItemIcon {
-    pub const UNKNOWN: ItemIcon = ItemIcon(Lucide::CircleQuestionMark);
+    pub const UNKNOWN: ItemIcon = ItemIcon(Glyph::Lucide(Lucide::CircleQuestionMark));
 
     pub fn from_name(name: &str) -> Option<Self> {
         CATALOG.by_name.get(name).copied()
     }
 
     pub fn name(self) -> &'static str {
-        CATALOG
-            .icons
-            .iter()
-            .find(|(icon, _)| *icon == self)
-            .map_or("", |(_, name)| name.as_str())
+        match self.0 {
+            Glyph::Os(index) => OS_ICONS[index].0,
+            Glyph::Lucide(_) => CATALOG
+                .icons
+                .iter()
+                .find(|(icon, _)| *icon == self)
+                .map_or("", |(_, name)| name.as_str()),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self.0 {
+            Glyph::Os(index) => OS_ICONS[index].1,
+            Glyph::Lucide(_) => self.name(),
+        }
+    }
+
+    pub fn is_os(self) -> bool {
+        matches!(self.0, Glyph::Os(_))
+    }
+
+    pub fn os_logos() -> impl Iterator<Item = ItemIcon> {
+        (0..OS_ICONS.len()).map(|index| ItemIcon(Glyph::Os(index)))
+    }
+
+    pub fn search_os(query: &str) -> impl Iterator<Item = ItemIcon> + '_ {
+        let words = query_words(query);
+        Self::os_logos().filter(move |icon| {
+            let haystack = format!("{} {}", icon.name(), icon.label()).to_lowercase();
+            words.iter().all(|word| haystack.contains(word.as_str()))
+        })
     }
 
     /// The short list shown before the user searches.
@@ -173,11 +239,7 @@ impl ItemIcon {
 
     /// Every icon whose name contains all the words of `query`, in catalog order.
     pub fn search(query: &str) -> impl Iterator<Item = ItemIcon> + '_ {
-        let words: Vec<String> = query
-            .split(|c: char| c.is_whitespace() || c == '-')
-            .filter(|word| !word.is_empty())
-            .map(str::to_lowercase)
-            .collect();
+        let words = query_words(query);
         CATALOG
             .icons
             .iter()
@@ -186,9 +248,20 @@ impl ItemIcon {
     }
 }
 
+fn query_words(query: &str) -> Vec<String> {
+    query
+        .split(|c: char| c.is_whitespace() || c == '-')
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 impl IconNamed for ItemIcon {
     fn path(self) -> SharedString {
-        self.0.path()
+        match self.0 {
+            Glyph::Lucide(icon) => icon.path(),
+            Glyph::Os(index) => format!("icons/oxidal/{}.svg", OS_ICONS[index].0).into(),
+        }
     }
 }
 
