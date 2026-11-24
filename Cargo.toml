@@ -5,7 +5,7 @@ edition = "2024"
 autotests = false
 
 [dependencies]
-gpui-kit = { version = "0.10", features = [ "tree-sitter-languages" ] }
+gpui-kit = { version = "0.11", features = [ "tree-sitter-languages" ] }
 anyhow = "1.0"
 futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
@@ -20,7 +20,7 @@ vte = "0.15"
 unicode-normalization = "0.1"
 portable-pty = "0.9"
 russh = "0.65"
-russh-sftp = "3.0.1"
+russh-sftp = "4"
 serialport = "4.10.1"
 chrono = "0.4.45"
 open = "5.4.5"
