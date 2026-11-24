@@ -358,6 +358,8 @@ pub struct Session {
     #[serde(default = "default_monitoring")]
     pub monitoring: bool,
     #[serde(default)]
+    pub legacy_algorithms: bool,
+    #[serde(default)]
     pub ftp_security: FtpSecurity,
     #[serde(default)]
     pub ftp_active_mode: bool,
@@ -429,6 +431,7 @@ impl Session {
             folder_id: None,
             show_hidden_files: false,
             monitoring: default_monitoring(),
+            legacy_algorithms: false,
             ftp_security: FtpSecurity::default(),
             ftp_active_mode: false,
             icon: None,
@@ -471,6 +474,7 @@ impl Session {
             self.private_key_path.clone(),
             self.key_passphrase.clone(),
         )
+        .with_legacy_algorithms(self.legacy_algorithms)
     }
 
     pub fn ftp_target(&self) -> crate::sftp::FtpTarget {
