@@ -137,3 +137,89 @@ fn a_blank_key_path_is_treated_as_no_key() {
         assert!(credentials.key_path().is_none());
     }
 }
+
+#[test]
+fn legacy_algorithms_are_off_unless_asked_for() {
+    let credentials = SshCredentials::default();
+    assert!(!credentials.legacy_algorithms);
+
+    let preferred = preferred(false);
+    assert!(!preferred.kex.iter().any(|name| LEGACY_KEX.contains(name)));
+    assert!(
+        !preferred
+            .cipher
+            .iter()
+            .any(|name| LEGACY_CIPHERS.contains(name))
+    );
+    assert!(!preferred.mac.iter().any(|name| LEGACY_MACS.contains(name)));
+}
+
+#[test]
+fn legacy_algorithms_rank_below_every_modern_one() {
+    let defaults = Preferred::default();
+    let legacy = preferred(true);
+
+    let first_legacy = legacy
+        .kex
+        .iter()
+        .position(|name| LEGACY_KEX.contains(name))
+        .expect("legacy kex present");
+    let extensions = legacy
+        .kex
+        .iter()
+        .position(|name| *name == kex::EXTENSION_SUPPORT_AS_CLIENT)
+        .expect("extension markers kept");
+    assert!(
+        legacy.kex[..first_legacy]
+            .iter()
+            .all(|name| defaults.kex.contains(name)),
+        "only modern kex may come before the legacy ones"
+    );
+    assert_eq!(
+        &legacy.kex[first_legacy..extensions],
+        LEGACY_KEX,
+        "legacy kex must sit just before the extension markers"
+    );
+
+    assert_eq!(
+        &legacy.cipher[..defaults.cipher.len()],
+        &defaults.cipher[..]
+    );
+    assert_eq!(&legacy.cipher[defaults.cipher.len()..], LEGACY_CIPHERS);
+    assert_eq!(&legacy.mac[..defaults.mac.len()], &defaults.mac[..]);
+    assert_eq!(&legacy.mac[defaults.mac.len()..], LEGACY_MACS);
+}
+
+fn no_common(kind: russh::AlgorithmKind, theirs: &[&str]) -> russh::Error {
+    russh::Error::NoCommonAlgo {
+        kind,
+        ours: Vec::new(),
+        theirs: theirs.iter().map(|name| name.to_string()).collect(),
+    }
+}
+
+#[test]
+fn a_sha1_only_server_is_pointed_at_legacy_algorithms() {
+    let err = no_common(
+        russh::AlgorithmKind::Kex,
+        &[
+            "diffie-hellman-group-exchange-sha1",
+            "diffie-hellman-group14-sha1",
+        ],
+    );
+    assert!(legacy_would_help(&err));
+
+    let err = no_common(russh::AlgorithmKind::Cipher, &["aes128-cbc", "3des-cbc"]);
+    assert!(legacy_would_help(&err));
+}
+
+#[test]
+fn legacy_algorithms_are_not_suggested_when_they_would_not_help() {
+    let err = no_common(russh::AlgorithmKind::Cipher, &["3des-cbc"]);
+    assert!(!legacy_would_help(&err));
+
+    let err = no_common(russh::AlgorithmKind::Key, &["ssh-dss"]);
+    assert!(!legacy_would_help(&err));
+
+    assert!(!legacy_would_help(&russh::Error::Disconnect));
+}

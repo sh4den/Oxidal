@@ -510,6 +510,7 @@ pub struct SessionWindow {
     tab: SettingsTab,
     folder_id: Option<Uuid>,
     monitoring: bool,
+    legacy_algorithms: bool,
     ftp_security: FtpSecurity,
     ftp_active_mode: bool,
     test_state: TestState,
@@ -636,6 +637,7 @@ impl SessionWindow {
             tab: SettingsTab::available(kind)[0],
             folder_id: session.and_then(|s| s.folder_id),
             monitoring: session.is_none_or(|s| s.monitoring),
+            legacy_algorithms: session.is_some_and(|s| s.legacy_algorithms),
             ftp_security: session.map(|s| s.ftp_security).unwrap_or_default(),
             ftp_active_mode: session.is_some_and(|s| s.ftp_active_mode),
             test_state: TestState::Idle,
@@ -882,7 +884,8 @@ impl SessionWindow {
                 .map(|v| v.to_string())
                 .filter(|v| !v.trim().is_empty()),
             SecretString::from(self.passphrase.read(cx).value().to_string()),
-        );
+        )
+        .with_legacy_algorithms(self.legacy_algorithms);
         let proxy = proxy_config(
             kind,
             self.proxy_host.read(cx).value().trim(),
@@ -983,6 +986,7 @@ impl SessionWindow {
         session.icon = self.selected_icon.read(cx).icon;
         session.color = self.selected_color.read(cx).0;
         session.monitoring = self.monitoring;
+        session.legacy_algorithms = self.legacy_algorithms;
         session.ftp_security = self.ftp_security;
         session.ftp_active_mode = self.ftp_active_mode;
         if session.name.is_empty() {
@@ -1235,8 +1239,53 @@ impl SessionWindow {
                                 ),
                         )
                     })
+                    .child(self.render_legacy_algorithms(cx))
                 },
             )
+    }
+
+    fn render_legacy_algorithms(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let enabled = self.legacy_algorithms;
+        let toggle = |id: &'static str, label: &'static str, value: bool| {
+            Button::new(id)
+                .xsmall()
+                .label(label)
+                .when(enabled == value, |b| b.primary())
+                .when(enabled != value, |b| b.outline())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.legacy_algorithms = value;
+                    this.test_state = TestState::Idle;
+                    cx.notify();
+                }))
+        };
+
+        v_flex()
+            .gap_1()
+            .child("Legacy Algorithms")
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(toggle("legacy-algorithms-off", "Off", false))
+                    .child(toggle("legacy-algorithms-on", "On", true)),
+            )
+            .child(if enabled {
+                cleartext_warning(
+                    "Also offers SHA-1 key exchange, CBC ciphers and SHA-1 MACs. They're only \
+                     used when the server supports nothing newer, but they're weak: keep this \
+                     for old routers, switches and NAS that need it.",
+                    cx,
+                )
+                .into_any_element()
+            } else {
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "Turn on for old devices that fail with \"no matching key exchange \
+                         method\"",
+                    )
+                    .into_any_element()
+            })
     }
 
     fn render_proxy(&self, cx: &mut Context<Self>) -> impl IntoElement {
