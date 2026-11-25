@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use russh::client;
+use russh::{AlgorithmKind, Preferred, cipher, client, kex, mac};
 use secrecy::{ExposeSecret as _, SecretString};
 
 use crate::proxy::ProxyConfig;
@@ -9,6 +9,57 @@ use crate::proxy::ProxyConfig;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(150);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
+
+const LEGACY_KEX: &[kex::Name] = &[kex::DH_GEX_SHA1, kex::DH_G14_SHA1, kex::DH_G1_SHA1];
+const LEGACY_CIPHERS: &[cipher::Name] = &[
+    cipher::AES_256_CBC,
+    cipher::AES_192_CBC,
+    cipher::AES_128_CBC,
+];
+const LEGACY_MACS: &[mac::Name] = &[mac::HMAC_SHA1_ETM, mac::HMAC_SHA1];
+
+/// russh's defaults, with the SHA-1 and CBC algorithms that old devices still
+/// require appended after every modern one, so they're only picked when the
+/// server offers nothing better.
+fn preferred(legacy: bool) -> Preferred {
+    let defaults = Preferred::default();
+    if !legacy {
+        return defaults;
+    }
+
+    let mut kex_order = defaults.kex.to_vec();
+    let extensions = kex_order
+        .iter()
+        .position(|name| *name == kex::EXTENSION_SUPPORT_AS_CLIENT)
+        .unwrap_or(kex_order.len());
+    kex_order.splice(extensions..extensions, LEGACY_KEX.iter().copied());
+
+    Preferred {
+        kex: kex_order.into(),
+        cipher: [&defaults.cipher[..], LEGACY_CIPHERS].concat().into(),
+        mac: [&defaults.mac[..], LEGACY_MACS].concat().into(),
+        ..defaults
+    }
+}
+
+/// Whether a failed negotiation would have succeeded with legacy algorithms on.
+fn legacy_would_help(err: &russh::Error) -> bool {
+    let russh::Error::NoCommonAlgo { kind, theirs, .. } = err else {
+        return false;
+    };
+    match kind {
+        AlgorithmKind::Kex => offers_any(theirs, LEGACY_KEX),
+        AlgorithmKind::Cipher => offers_any(theirs, LEGACY_CIPHERS),
+        AlgorithmKind::Mac => offers_any(theirs, LEGACY_MACS),
+        _ => false,
+    }
+}
+
+fn offers_any<N: AsRef<str>>(theirs: &[String], ours: &[N]) -> bool {
+    theirs
+        .iter()
+        .any(|name| ours.iter().any(|ours| ours.as_ref() == name))
+}
 
 pub struct Handler {
     host: String,
@@ -51,6 +102,7 @@ pub struct SshCredentials {
     pub password: SecretString,
     pub private_key_path: Option<String>,
     pub key_passphrase: SecretString,
+    pub legacy_algorithms: bool,
 }
 
 impl SshCredentials {
@@ -65,7 +117,13 @@ impl SshCredentials {
             password,
             private_key_path,
             key_passphrase,
+            legacy_algorithms: false,
         }
+    }
+
+    pub fn with_legacy_algorithms(mut self, legacy_algorithms: bool) -> Self {
+        self.legacy_algorithms = legacy_algorithms;
+        self
     }
 
     fn key_path(&self) -> Option<&str> {
@@ -116,6 +174,7 @@ pub async fn connect(
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
         window_size: 16 * 1024 * 1024,
+        preferred: preferred(credentials.legacy_algorithms),
         ..Default::default()
     });
 
@@ -139,6 +198,10 @@ pub async fn connect(
             let rejected = rejection.lock().ok().and_then(|mut slot| slot.take());
             match rejected {
                 Some(message) => anyhow::bail!(message),
+                None if !credentials.legacy_algorithms && legacy_would_help(&e) => anyhow::bail!(
+                    "{host} only offers outdated algorithms. Turn on Legacy Algorithms in the \
+                     session's Auth settings to connect anyway ({e})"
+                ),
                 None => return Err(e.into()),
             }
         }
